@@ -33,6 +33,8 @@ tego -m openai-codex/gpt-5.6 -t high # model and thinking level
 
 ## What you get
 
+**Less memory, fewer tokens.** On a benchmark in the VS Code repository, tego's process used 18 to 26 MB while it worked, where oh-my-pi used 250 to 400 MB. Its fixed prompt (system prompt plus tool definitions) is about 6k tokens against 15k for oh-my-pi, and every request carries it. MCP tools load only when the model searches for them, and old tool output is trimmed when that saves money. See [Token use](#token-use).
+
 **Your subscriptions.** Log in with Claude Pro/Max, ChatGPT Plus/Pro or a Google account (Antigravity), or use an API key for any OpenAI-compatible provider. Ollama and LM Studio work without a key. Add several accounts per provider and tego moves to the next one when an account hits its limit. `tego usage` shows the 5-hour and weekly limits of all of them.
 
 **An inline UI.** No full-screen takeover, so scrollback, search and copy work as usual. Markdown, code and diffs render in place, and a small footer shows the model, git branch, context use and token totals. You can keep typing while the agent works. Enter steers the running turn and Alt+Enter queues a follow-up.
