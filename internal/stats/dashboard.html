@@ -1,0 +1,443 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>tego stats · {{label .R.Range}}</title>
+<link rel="preload" href="/fonts/instrument-sans.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/martian-mono.woff2" as="font" type="font/woff2" crossorigin>
+<style>
+@font-face { font-family: "Instrument Sans"; src: url(/fonts/instrument-sans.woff2) format("woff2"); font-weight: 400 700; font-stretch: 75% 100%; font-display: swap; }
+@font-face { font-family: "Martian Mono"; src: url(/fonts/martian-mono.woff2) format("woff2"); font-weight: 100 800; font-stretch: 75% 112.5%; font-display: swap; }
+
+:root {
+  --paper: #f3f4f6; --panel: #ffffff; --line: #e6e7eb; --haze: #f4f5f7; --ink: #15161a; --graphite: #6b6e78;
+  --accent: #c2338e; --bad: #cf3434; --good: #2f8a4c;
+  --read: #2b8c99; --write: #5c55d6; --in: #c98216; --out: #c2338e; --ok: #4a4c55;
+  --m1: #5c55d6; --m2: #2b8c99; --m3: #c98216; --m4: #c2338e; --m5: #4e8f35; --m6: #a3a6af;
+  --sans: "Instrument Sans", system-ui, sans-serif;
+  --mono: "Martian Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #0e0f12; --panel: #16171b; --line: #24262c; --haze: #1d1e23; --ink: #ecedf0; --graphite: #8b8e99;
+    --accent: #e46cc1; --bad: #f06464; --good: #6cc488;
+    --read: #4fb8c4; --write: #8e87f5; --in: #e6a84b; --out: #e46cc1; --ok: #c3c5cd;
+    --m1: #8e87f5; --m2: #4fb8c4; --m3: #e6a84b; --m4: #e46cc1; --m5: #8cc97a; --m6: #5d6069;
+  }
+}
+.k-read { --c: var(--read); } .k-write { --c: var(--write); } .k-in { --c: var(--in); } .k-out { --c: var(--out); }
+.s-ok { --c: var(--ok); } .s-bad { --c: var(--bad); }
+.m1 { --c: var(--m1); } .m2 { --c: var(--m2); } .m3 { --c: var(--m3); } .m4 { --c: var(--m4); } .m5 { --c: var(--m5); } .m6 { --c: var(--m6); }
+
+* { box-sizing: border-box; }
+html { background: var(--paper); scrollbar-color: var(--line) transparent; }
+body { margin: 0; color: var(--ink); background: var(--paper); font: 400 14px/1.5 var(--sans); -webkit-font-smoothing: antialiased; }
+::selection { background: color-mix(in srgb, var(--accent) 24%, transparent); }
+a { color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+.num, .mono { font-family: var(--mono); font-stretch: 87.5%; font-size: 12.5px; letter-spacing: -.01em; }
+.dim { color: var(--graphite); }
+.bad { color: var(--bad); }
+.sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; background: var(--c); flex: none; }
+
+.page { max-width: 1240px; margin: 0 auto; padding: 32px 32px 64px; }
+
+/* Header */
+.top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px 24px; }
+.brand { font-weight: 650; font-size: 17px; text-decoration: none; }
+.brand .prompt { color: var(--accent); font-family: var(--mono); font-weight: 700; margin-right: 6px; }
+.brand span:last-child { color: var(--graphite); font-weight: 400; }
+.period { margin: 3px 0 0; color: var(--graphite); font-size: 13px; }
+.period [data-r="label"] { transition: color .15s; }
+.scrubbing .period [data-r="label"] { color: var(--accent); font-weight: 600; }
+.ranges { display: flex; gap: 2px; padding: 3px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); }
+.ranges a { padding: 5px 13px; border-radius: 7px; color: var(--graphite); font-size: 13px; font-weight: 500; text-decoration: none; }
+.ranges a:hover { color: var(--ink); }
+.ranges a[aria-current="page"] { color: var(--paper); background: var(--ink); }
+
+/* Panels */
+.grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 16px; margin-top: 24px; }
+.s12 { grid-column: span 12; } .s8 { grid-column: span 8; } .s7 { grid-column: span 7; } .s6 { grid-column: span 6; } .s5 { grid-column: span 5; } .s4 { grid-column: span 4; }
+.panel { min-width: 0; padding: 20px 22px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; }
+.head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; margin-bottom: 16px; }
+h2 { margin: 0; font-size: 15px; font-weight: 620; }
+h2 span { margin-left: 6px; color: var(--graphite); font-size: 13px; font-weight: 400; }
+.sub { margin: 2px 0 0; color: var(--graphite); font-size: 12.5px; }
+
+/* Figures */
+.figures { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 0; }
+.fig { display: flex; flex-direction: column; min-width: 0; padding: 0 22px; margin: 0; }
+.fig:first-child { padding-left: 0; }
+.fig:last-child { padding-right: 0; }
+.fig + .fig { border-left: 1px solid var(--line); }
+.fig dt { color: var(--graphite); font-size: 13px; }
+.fig dd { margin: 0; }
+.fig .v { margin-top: 6px; font-family: var(--mono); font-weight: 300; font-size: clamp(26px, 2.9vw, 38px); line-height: 1.05; letter-spacing: -.045em; white-space: nowrap; }
+.fig .meta { display: flex; gap: 10px; align-items: baseline; margin-top: 8px; color: var(--graphite); font-size: 12.5px; white-space: nowrap; }
+.delta { font-weight: 600; color: var(--ink); }
+.delta.good { color: var(--good); } .delta.bad { color: var(--bad); }
+.trend { display: block; width: 100%; height: 40px; margin-top: 14px; }
+.trend .line { fill: none; stroke: var(--c); stroke-width: 1.6; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
+.trend .area { fill: color-mix(in srgb, var(--c) 13%, transparent); }
+.scrubbing .static { visibility: hidden; }
+.facts { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 14px 18px; margin: 20px 0 0; padding-top: 18px; border-top: 1px solid var(--line); }
+.facts dt { color: var(--graphite); font-size: 12.5px; white-space: nowrap; }
+.facts dd { margin: 3px 0 0; font-family: var(--mono); font-stretch: 87.5%; font-size: 14px; white-space: nowrap; }
+.facts dd small { margin-left: 6px; color: var(--graphite); font-size: 11.5px; }
+
+/* Timeline */
+.tab-input { position: absolute; opacity: 0; pointer-events: none; }
+.tabs { display: flex; gap: 2px; padding: 3px; border-radius: 9px; background: var(--haze); }
+.tabs label { padding: 4px 11px; border-radius: 6px; color: var(--graphite); font-size: 13px; font-weight: 500; cursor: pointer; }
+.tabs label:hover { color: var(--ink); }
+.pane { display: none; }
+#v-cost:checked ~ .p-cost, #v-tok:checked ~ .p-tok, #v-req:checked ~ .p-req, #v-mod:checked ~ .p-mod { display: block; }
+#v-cost:checked ~ .head label[for="v-cost"], #v-tok:checked ~ .head label[for="v-tok"], #v-req:checked ~ .head label[for="v-req"], #v-mod:checked ~ .head label[for="v-mod"] { color: var(--ink); background: var(--panel); box-shadow: 0 1px 2px rgb(0 0 0 / .08); }
+.tab-input:focus-visible ~ .head .tabs { outline: 2px solid var(--accent); outline-offset: 3px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 0 0 12px; padding: 0; list-style: none; color: var(--graphite); font-size: 12.5px; }
+.legend li { display: inline-flex; align-items: center; gap: 7px; }
+.legend b { color: var(--ink); font-family: var(--mono); font-stretch: 87.5%; font-weight: 400; font-size: 12.5px; }
+.legend .cum-key { margin-left: auto; }
+.legend .cum-key::before { content: ""; width: 14px; height: 2px; border-radius: 1px; background: var(--ink); opacity: .7; }
+.timeline { display: block; width: 100%; height: auto; overflow: visible; touch-action: pan-y; }
+.timeline .grid, .timeline .base { stroke: var(--line); }
+.timeline .grid { stroke-dasharray: 3 4; }
+.timeline .tick, .dots .tick { fill: var(--graphite); font: 400 11px var(--mono); font-stretch: 87.5%; }
+.timeline .seg { fill: var(--c); transition: opacity .12s; }
+.timeline .hit { fill: transparent; }
+.timeline .cum { fill: none; stroke: var(--ink); stroke-width: 1.5; stroke-opacity: .55; stroke-linejoin: round; }
+.timeline .cum-dot { fill: var(--ink); }
+.timeline.scrub .seg { opacity: .22; }
+.timeline.scrub .col.on .seg { opacity: 1; }
+.timeline.scrub .col.on .hit { fill: color-mix(in srgb, var(--ink) 4%, transparent); }
+@media (prefers-reduced-motion: no-preference) {
+  .timeline .seg { transform-box: fill-box; transform-origin: 50% 100%; animation: rise .7s cubic-bezier(.16, 1, .3, 1) both; animation-delay: calc(var(--i) * 12ms); }
+  @keyframes rise { from { transform: scaleY(0); } }
+}
+
+/* Where the money went */
+.mixbar { display: grid; grid-template-columns: 3.4em 1fr; gap: 8px 12px; align-items: center; font-size: 12.5px; color: var(--graphite); }
+.stack { display: flex; gap: 2px; height: 12px; }
+.stack span { min-width: 3px; border-radius: 3px; background: var(--c); }
+.kinds { margin: 20px 0 0; padding: 0; list-style: none; }
+.kinds li { display: grid; grid-template-columns: 14px 1fr auto; gap: 2px 8px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); }
+.kinds li:first-child { border-top: 0; }
+.kinds b { font-family: var(--mono); font-stretch: 87.5%; font-weight: 400; font-size: 14px; text-align: right; }
+.kinds small { grid-column: 2 / -1; color: var(--graphite); font-size: 12px; }
+.saved { display: flex; justify-content: space-between; align-items: baseline; margin-top: 6px; padding: 12px 14px; border-radius: 10px; background: var(--haze); font-size: 13px; }
+.saved b { font-family: var(--mono); font-stretch: 87.5%; font-weight: 500; color: var(--good); }
+
+/* Model cards */
+.models { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 16px; }
+.model { display: flex; flex-direction: column; gap: 12px; }
+.model .name { display: flex; align-items: center; gap: 8px; font-weight: 600; min-width: 0; }
+.model .name span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model .provider { margin-top: -10px; padding-left: 16px; color: var(--graphite); font-size: 12.5px; }
+.model .cost { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.model .cost b { font-family: var(--mono); font-weight: 300; font-size: 28px; letter-spacing: -.04em; }
+.model .cost span { color: var(--graphite); font-size: 12.5px; }
+.model .trend { margin-top: 0; height: 36px; }
+.model .stack { height: 6px; }
+.model dl { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; margin: 0; padding-top: 12px; border-top: 1px solid var(--line); }
+.model dt { color: var(--graphite); font-size: 12px; }
+.model dd { margin: 1px 0 0; font-family: var(--mono); font-stretch: 87.5%; font-size: 13px; }
+.model dd small { color: var(--graphite); margin-left: 4px; }
+
+/* Bar lists */
+.bars { margin: 0; padding: 0; list-style: none; }
+.bars li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 4px 14px; align-items: baseline; padding: 7px 0; }
+.bars .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bars .meter { grid-column: 1 / -1; display: flex; gap: 2px; height: 5px; border-radius: 3px; background: var(--haze); overflow: hidden; }
+.bars .meter i { display: block; height: 100%; border-radius: 3px; background: var(--c, var(--graphite)); }
+.bars .meter i.fail { background: var(--bad); }
+.bars .num { text-align: right; }
+.bars .num.dim { min-width: 4.5em; }
+li.more { display: none; }
+.show-more { position: absolute; opacity: 0; pointer-events: none; }
+.show-more:checked ~ .bars li.more { display: grid; }
+.show-more:checked ~ .more-btn .closed, .show-more:not(:checked) ~ .more-btn .open { display: none; }
+.more-btn { display: inline-block; margin-top: 8px; color: var(--graphite); font-size: 13px; cursor: pointer; }
+.more-btn:hover { color: var(--ink); }
+.show-more:focus-visible ~ .more-btn { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
+
+/* Who spent it */
+.split + .split { margin-top: 24px; }
+.split h3 { margin: 0 0 10px; color: var(--graphite); font-size: 12.5px; font-weight: 500; }
+.split ul { margin: 10px 0 0; padding: 0; list-style: none; }
+.split li { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto auto; gap: 10px; align-items: center; padding: 5px 0; }
+.split li .num { text-align: right; }
+.split li .num:last-child { min-width: 5em; }
+
+.dots { display: block; width: 100%; height: auto; }
+.dots .l0 { fill: var(--haze); stroke: var(--line); stroke-width: 1; }
+.dots .l1 { fill: color-mix(in srgb, var(--accent) 28%, var(--haze)); }
+.dots .l2 { fill: color-mix(in srgb, var(--accent) 52%, var(--haze)); }
+.dots .l3 { fill: color-mix(in srgb, var(--accent) 76%, var(--haze)); }
+.dots .l4 { fill: var(--accent); }
+
+.lat { margin: 0; padding: 0; list-style: none; display: grid; gap: 14px; }
+.lat li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; }
+.lat .track { grid-column: 1 / -1; height: 8px; border-radius: 4px; background: var(--haze); overflow: hidden; }
+.lat .track span { display: flex; height: 100%; border-radius: 4px; overflow: hidden; }
+.lat .wait { background: var(--in); } .lat .gen { background: var(--write); flex: 1; }
+.lat-key { display: flex; gap: 16px; margin-top: 14px; color: var(--graphite); font-size: 12px; }
+.lat-key span { display: inline-flex; align-items: center; gap: 6px; }
+
+.failures { margin: 0; padding: 0; list-style: none; }
+.failures li { display: grid; grid-template-columns: 9rem 14rem minmax(0, 1fr); gap: 4px 20px; padding: 10px 0; border-top: 1px solid var(--line); }
+.failures li:first-child { border-top: 0; }
+.failures .msg { color: var(--bad); font-family: var(--mono); font-stretch: 87.5%; font-size: 12px; overflow-wrap: anywhere; }
+.ok-note { margin: 0; color: var(--graphite); }
+.ok-note::before { content: "✓"; color: var(--good); margin-right: 8px; }
+
+.empty { grid-column: span 12; padding: 48px 28px; }
+.empty h2 { font-size: 18px; margin-bottom: 6px; }
+.empty p { margin: 0; max-width: 56ch; color: var(--graphite); }
+.empty a { color: var(--accent); }
+footer { margin-top: 36px; color: var(--graphite); font-size: 12.5px; line-height: 1.7; }
+footer p { margin: 0 0 4px; max-width: 115ch; }
+footer code { font-family: var(--mono); font-stretch: 87.5%; font-size: 11.5px; color: var(--ink); }
+kbd { font-family: var(--mono); font-size: 11px; padding: 1px 5px; border-radius: 4px; background: var(--panel); border: 1px solid var(--line); color: var(--ink); }
+
+@media (max-width: 1100px) {
+  .figures { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 22px; }
+  .fig:nth-child(4) { padding-left: 0; border-left: 0; }
+  .facts { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .s8, .s7, .s6, .s5, .s4 { grid-column: span 12; }
+}
+@media (max-width: 640px) {
+  .page { padding: 20px 14px 48px; }
+  .panel { padding: 16px; }
+  .figures { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .fig, .fig + .fig, .fig:nth-child(4) { padding: 0 14px 0 0; border-left: 0; }
+  .fig:nth-child(even) { padding: 0 0 0 14px; border-left: 1px solid var(--line); }
+  .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .failures li { grid-template-columns: minmax(0, 1fr); }
+  .chart-scroll { overflow-x: auto; direction: rtl; margin: 0 -16px; padding: 0 16px; }
+  .chart-scroll .timeline { min-width: 600px; direction: ltr; }
+}
+</style>
+</head>
+<body>
+{{$r := .R}}{{$o := .R.Overall}}{{$p := .P}}{{$hp := .HasPrev}}{{$priced := gt $o.Cost 0.0}}
+<div class="page">
+<header class="top">
+  <div>
+    <a class="brand" href="/"><span class="prompt">❯</span>tego <span>stats</span></a>
+    <p class="period">{{if $o.Requests}}<span data-r="label" data-total="{{window $r}}">{{window $r}}</span> · last request {{ago $o.Last}}{{else}}{{label $r.Range}}{{end}} · {{.PriceSource}}</p>
+  </div>
+  <nav class="ranges" aria-label="Time range">{{range .Ranges}}<a href="?range={{.}}"{{if eq . $r.Range}} aria-current="page"{{end}}>{{.}}</a>{{end}}</nav>
+</header>
+
+<main class="grid">
+{{if not $o.Requests}}
+<section class="panel empty">
+  <h2>No requests in the {{label $r.Range}}</h2>
+  <p>tego records every request it sends to a model. Use it for a while and reload this page{{if ne $r.Range "all"}}, or <a href="?range=all">look at all time</a>{{end}}.</p>
+</section>
+{{else}}
+
+<section class="panel s12" aria-label="Overview">
+  <dl class="figures" aria-live="polite">
+    <div class="fig m4"><dt>Estimated cost</dt><dd class="v" data-r="cost">{{money $o.Cost}}</dd>
+      <dd class="meta static">{{delta $o.Cost $p.Cost $hp ""}}{{if $o.Unpriced}}<span>{{plural $o.Unpriced "request"}} unpriced</span>{{else}}<span>at API prices</span>{{end}}</dd><dd>{{trend $r "cost"}}</dd></div>
+    <div class="fig m1"><dt>Requests</dt><dd class="v" data-r="requests">{{compact $o.Requests}}</dd>
+      <dd class="meta static">{{delta (float $o.Requests) (float $p.Requests) $hp ""}}<span>{{if $hp}}vs {{prev $r.Range}}{{end}}</span></dd><dd>{{trend $r "requests"}}</dd></div>
+    <div class="fig m2"><dt>Tokens</dt><dd class="v" data-r="tokens">{{compact $o.Tokens}}</dd>
+      <dd class="meta static">{{delta (tok $o) (tok $p) $hp ""}}<span>{{compact $o.Output}} output</span></dd><dd>{{trend $r "tokens"}}</dd></div>
+    <div class="fig m3"><dt>Read from cache</dt><dd class="v" data-r="cache">{{pct $o.CacheRate}}</dd>
+      <dd class="meta static">{{delta $o.CacheRate $p.CacheRate $hp "up"}}<span>of input</span></dd><dd>{{trend $r "cache"}}</dd></div>
+    <div class="fig s-bad"><dt>Failed</dt><dd class="v" data-r="failed">{{compact $o.Failed}}</dd>
+      <dd class="meta static">{{delta $o.ErrorRate $p.ErrorRate $hp "down"}}<span>{{pct $o.ErrorRate}} of requests</span></dd><dd>{{trend $r "failures"}}</dd></div>
+  </dl>
+  <dl class="facts">
+    <div><dt>Fresh input</dt><dd>{{compact $o.Input}}</dd></div>
+    <div><dt>Cache reads</dt><dd>{{compact $o.CacheRead}}</dd></div>
+    <div><dt>Cache writes</dt><dd>{{compact $o.CacheWrite}}</dd></div>
+    <div><dt>Output</dt><dd>{{compact $o.Output}}</dd></div>
+    <div><dt>Avg response</dt><dd>{{if $o.AvgDuration}}{{seconds $o.AvgDuration}}{{else}}<span class="dim">–</span>{{end}}</dd></div>
+    <div><dt>First token</dt><dd>{{if $o.AvgTTFT}}{{seconds $o.AvgTTFT}}{{else}}<span class="dim">–</span>{{end}}</dd></div>
+    <div><dt>Output speed</dt><dd>{{if $o.AvgTPS}}{{tps $o.AvgTPS}}<small>tok/s</small>{{else}}<span class="dim">–</span>{{end}}</dd></div>
+    <div><dt>Projects</dt><dd>{{len $r.ByFolder}}</dd></div>
+  </dl>
+</section>
+
+<section class="panel s8" aria-label="Activity">
+  <input class="tab-input" type="radio" name="view" id="v-cost"{{if $priced}} checked{{end}}>
+  <input class="tab-input" type="radio" name="view" id="v-tok">
+  <input class="tab-input" type="radio" name="view" id="v-req"{{if not $priced}} checked{{end}}>
+  <input class="tab-input" type="radio" name="view" id="v-mod">
+  <div class="head">
+    <div><h2>Activity</h2><p class="sub">Per {{$r.Bucket}}. Point at a {{$r.Bucket}} and every figure shows that {{$r.Bucket}}.</p></div>
+    <div class="tabs"><label for="v-cost">Cost</label><label for="v-tok">Tokens</label><label for="v-req">Requests</label><label for="v-mod">Models</label></div>
+  </div>
+  <div class="pane p-cost">
+    <ul class="legend">{{range kinds $o}}<li><i class="sw {{.Class}}"></i>{{.Name}}</li>{{end}}<li class="cum-key">running total</li></ul>
+    <div class="chart-scroll">{{chart $r "cost"}}</div>
+  </div>
+  <div class="pane p-tok">
+    <ul class="legend">{{range $i, $k := kinds $o}}<li><i class="sw {{$k.Class}}"></i>{{$k.Name}} <b data-r="k{{$i}}t">{{compact $k.Tokens}}</b></li>{{end}}</ul>
+    <div class="chart-scroll">{{chart $r "tokens"}}</div>
+  </div>
+  <div class="pane p-req">
+    <ul class="legend"><li><i class="sw s-ok"></i>Requests <b data-r="requests">{{compact $o.Requests}}</b></li><li><i class="sw s-bad"></i>Failed <b data-r="failed">{{compact $o.Failed}}</b></li></ul>
+    <div class="chart-scroll">{{chart $r "requests"}}</div>
+  </div>
+  <div class="pane p-mod">
+    <ul class="legend">{{range $i, $m := $r.TopModels}}<li><i class="sw {{modelColor $i}}"></i>{{if eq $m "other"}}Other models{{else}}{{index (split $m) 1}}{{end}} <b data-r="m{{$i}}">…</b></li>{{end}}</ul>
+    <div class="chart-scroll">{{chart $r "models"}}</div>
+  </div>
+</section>
+
+<section class="panel s4" aria-labelledby="h-money">
+  <div class="head"><div><h2 id="h-money">{{if $priced}}Where the money went{{else}}Tokens by kind{{end}}</h2><p class="sub">{{if $priced}}Share of tokens against share of cost{{else}}No prices for these models{{end}}</p></div></div>
+  <div class="mixbar">
+    <span>Tokens</span><div class="stack">{{range kinds $o}}{{if .Tokens}}<span class="{{.Class}}" style="width:{{width .TokenShare}}" title="{{.Name}} {{pct .TokenShare}}"></span>{{end}}{{end}}</div>
+    {{if $priced}}<span>Cost</span><div class="stack">{{range kinds $o}}{{if .Cost}}<span class="{{.Class}}" style="width:{{width .CostShare}}" title="{{.Name}} {{pct .CostShare}}"></span>{{end}}{{end}}</div>{{end}}
+  </div>
+  <ul class="kinds">{{range $i, $k := kinds $o}}
+    <li class="{{$k.Class}}"><i class="sw"></i><span>{{$k.Name}}</span><b data-r="k{{$i}}c">{{money $k.Cost}}</b>
+      <small class="static">{{pct $k.CostShare}} of cost · {{pct $k.TokenShare}} of tokens · {{compact $k.Tokens}}</small></li>{{end}}
+  </ul>
+  {{if $priced}}<div class="saved"><span>Saved by the cache</span><b>{{money $o.CacheSaved}} · {{pct $o.CacheSavings}}</b></div>{{end}}
+</section>
+
+<section class="s12" aria-labelledby="h-models">
+  <div class="head" style="margin: 12px 4px 12px"><div><h2 id="h-models">Models <span>{{len $r.ByModel}}</span></h2></div></div>
+  <div class="models">{{range $i, $g := $r.ByModel}}{{$m := split $g.Key}}
+    <article class="panel model {{modelColor $i}}">
+      <div class="name"><i class="sw"></i><span>{{index $m 1}}</span></div>
+      <div class="provider">{{index $m 0}}</div>
+      <div class="cost"><b>{{if $g.Cost}}{{money $g.Cost}}{{else if $g.Unpriced}}–{{else}}{{money $g.Cost}}{{end}}</b><span>{{if $g.Unpriced}}no price{{else}}{{pct (share $g.Cost $o.Cost)}} of cost{{end}}</span></div>
+      {{if lt $i 5}}{{modelTrend $r $i}}{{end}}
+      <div class="stack" title="Cost by token kind">{{range spend $g}}{{if $priced}}{{if .Cost}}<span class="{{.Class}}" style="width:{{width .CostShare}}"></span>{{end}}{{else if .Tokens}}<span class="{{.Class}}" style="width:{{width .TokenShare}}"></span>{{end}}{{end}}</div>
+      <dl>
+        <div><dt>Requests</dt><dd>{{compact $g.Requests}}{{if $g.Failed}} <small class="bad">{{$g.Failed}} failed</small>{{end}}</dd></div>
+        <div><dt>Tokens</dt><dd>{{compact $g.Tokens}}</dd></div>
+        <div><dt>Read from cache</dt><dd>{{pct $g.CacheRate}}</dd></div>
+        <div><dt>Response</dt><dd>{{if $g.AvgDuration}}{{seconds $g.AvgDuration}}{{if $g.AvgTPS}}<small>{{tps $g.AvgTPS}} tok/s</small>{{end}}{{else}}<span class="dim">–</span>{{end}}</dd></div>
+      </dl>
+    </article>{{end}}
+  </div>
+</section>
+
+<section class="panel s7" aria-labelledby="h-projects">
+  <div class="head"><div><h2 id="h-projects">Projects <span>{{len $r.ByFolder}}</span></h2><p class="sub">Cost per folder tego worked in</p></div></div>
+  <input class="show-more" type="checkbox" id="more-folders">
+  {{$topCost := 0.0}}{{with $r.ByFolder}}{{$topCost = (index . 0).Cost}}{{end}}
+  <ul class="bars">{{range $i, $g := $r.ByFolder}}
+    <li{{if ge $i 10}} class="more"{{end}}><span class="label" title="{{$g.Key}}">{{folder $g.Key}}</span><span class="num dim">{{compact $g.Requests}} req</span><span class="num">{{money $g.Cost}}</span>
+      <span class="meter m4"><i style="width:{{width (share $g.Cost $topCost)}}"></i></span></li>{{end}}
+  </ul>
+  {{if gt (len $r.ByFolder) 10}}<label class="more-btn" for="more-folders"><span class="closed">Show {{len (slice $r.ByFolder 10)}} more</span><span class="open">Show fewer</span></label>{{end}}
+</section>
+<section class="panel s5" aria-labelledby="h-tools">
+  <div class="head"><div><h2 id="h-tools">Tools <span>{{len $r.ByTool}}</span></h2><p class="sub">Calls, with failed calls in red</p></div></div>
+  {{if $r.ByTool}}{{$top := float (index $r.ByTool 0).Calls}}<ul class="bars">{{range $r.ByTool}}
+    <li><span class="label mono">{{.Tool}}</span><span class="num dim">{{if .Errors}}<span class="bad">{{.Errors}} failed</span>{{end}}</span><span class="num">{{compact .Calls}}</span>
+      <span class="meter"><i style="width:{{width (share (float (sub .Calls .Errors)) $top)}}"></i>{{if .Errors}}<i class="fail" style="width:{{width (share (float .Errors) $top)}}"></i>{{end}}</span></li>{{end}}
+  </ul>{{else}}<p class="ok-note">No tool calls in the {{label $r.Range}}.</p>{{end}}
+</section>
+
+<section class="panel s5" aria-labelledby="h-split">
+  <div class="head"><div><h2 id="h-split">Who spent it</h2><p class="sub">Cost by agent and by provider</p></div></div>
+  <div class="split">
+    <h3>Agents</h3>
+    <div class="stack">{{range $i, $g := $r.ByClass}}<span class="{{modelColor $i}}" style="width:{{width (share $g.Cost $o.Cost)}}" title="{{agent $g.Key}}"></span>{{end}}</div>
+    <ul>{{range $i, $g := $r.ByClass}}<li class="{{modelColor $i}}"><i class="sw"></i><span>{{agent $g.Key}}</span><span class="num dim">{{compact $g.Requests}} req</span><span class="num">{{money $g.Cost}}</span></li>{{end}}</ul>
+  </div>
+  <div class="split">
+    <h3>Providers</h3>
+    <div class="stack">{{range $i, $g := $r.ByProvider}}<span class="{{modelColor $i}}" style="width:{{width (share $g.Cost $o.Cost)}}" title="{{$g.Key}}"></span>{{end}}</div>
+    <ul>{{range $i, $g := $r.ByProvider}}<li class="{{modelColor $i}}"><i class="sw"></i><span>{{$g.Key}}</span><span class="num dim">{{compact $g.Requests}} req</span><span class="num">{{money $g.Cost}}</span></li>{{end}}</ul>
+  </div>
+</section>
+<section class="panel s7" aria-labelledby="h-when">
+  <div class="head"><div><h2 id="h-when">When you work</h2><p class="sub">Requests by weekday and hour, local time; darker squares are busier hours</p></div></div>
+  {{dots $r}}
+</section>
+
+{{with latency $r}}
+<section class="panel s12" aria-labelledby="h-lat">
+  <div class="head"><div><h2 id="h-lat">Response time</h2><p class="sub">Average per model, split at the first token</p></div></div>
+  <ul class="lat">{{range .}}
+    <li><span>{{index (split .Model) 1}}</span><span class="num">{{seconds .Duration}}{{if .TTFT}} <span class="dim">· first token {{seconds .TTFT}}</span>{{end}}{{if .TPS}} <span class="dim">· {{tps .TPS}} tok/s</span>{{end}}</span>
+      <span class="track"><span style="width:{{width .Share}}"><i class="wait" style="width:{{width .WaitShare}}"></i><i class="gen"></i></span></span></li>{{end}}
+  </ul>
+  <div class="lat-key"><span><i class="sw" style="--c: var(--in)"></i>Waiting for the first token</span><span><i class="sw" style="--c: var(--write)"></i>Writing the answer</span></div>
+</section>
+{{end}}
+
+<section class="panel s12" aria-labelledby="h-fail">
+  <div class="head"><div><h2 id="h-fail">Failures <span>{{len $r.Errors}}</span></h2>{{if $r.Errors}}<p class="sub">The most recent, newest first</p>{{end}}</div></div>
+  {{if $r.Errors}}<ul class="failures">{{range $r.Errors}}
+    <li><span class="dim">{{when .TS}}</span><span>{{.Model}} <small class="dim">{{agent .Class}}</small></span><span class="msg">{{oneline .Error}}</span></li>{{end}}
+  </ul>{{else}}<p class="ok-note">No failed requests in the {{label $r.Range}}.</p>{{end}}
+</section>
+{{end}}
+</main>
+
+<footer>
+  <p>Costs are estimates at API list prices from <a href="https://models.dev">models.dev</a>, cache reads and writes and long-prompt prices included; 1-hour cache writes count at twice the input price. Subscription logins aren't billed this way. Price other models under <code>"prices"</code> in <code>~/.tego/config.json</code>.</p>
+  <p>Data in <code>{{.Dir}}/stats.jsonl</code> · <a href="/api/stats?range={{$r.Range}}">JSON</a> · <kbd>1</kbd>–<kbd>5</kbd> range, <kbd>r</kbd> reload, <kbd>←</kbd> <kbd>→</kbd> step through the activity chart</p>
+</footer>
+</div>
+<script id="readouts" type="application/json">{{if $o.Requests}}{{readouts $r}}{{else}}[]{{end}}</script>
+<script>
+(() => {
+  const data = JSON.parse(document.getElementById("readouts").textContent || "[]");
+  const fields = [...document.querySelectorAll("[data-r]")];
+  const apply = (i) => {
+    const d = data[i];
+    if (!d) return;
+    for (const el of fields) {
+      const k = el.dataset.r;
+      let v;
+      if (k === "label") v = i ? d.label : el.dataset.total;
+      else if (/^k\dc$/.test(k)) v = d.kinds[+k[1]][0];
+      else if (/^k\dt$/.test(k)) v = d.kinds[+k[1]][1];
+      else if (/^m\d$/.test(k)) v = d.models[+k[1]];
+      else v = d[k];
+      if (v !== undefined) el.textContent = v;
+    }
+    document.body.classList.toggle("scrubbing", i > 0);
+  };
+  apply(0);
+
+  for (const svg of document.querySelectorAll(".timeline")) {
+    const cols = [...svg.querySelectorAll(".col")];
+    let at = -1;
+    const pick = (j) => {
+      at = j;
+      cols.forEach((c, n) => c.classList.toggle("on", n === j));
+      svg.classList.toggle("scrub", j >= 0);
+      apply(j >= 0 ? +cols[j].dataset.i : 0);
+    };
+    svg.setAttribute("tabindex", "0");
+    svg.addEventListener("pointermove", (e) => {
+      const col = e.target.closest(".col");
+      if (col) pick(cols.indexOf(col));
+    });
+    svg.addEventListener("pointerleave", () => pick(-1));
+    svg.addEventListener("blur", () => pick(-1));
+    svg.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+        const step = e.key === "ArrowRight" ? 1 : -1;
+        pick(at < 0 ? (step > 0 ? 0 : cols.length - 1) : Math.max(0, Math.min(cols.length - 1, at + step)));
+        e.preventDefault();
+      } else if (e.key === "Escape") pick(-1);
+    });
+  }
+
+  const ranges = [...document.querySelectorAll(".ranges a")];
+  document.addEventListener("keydown", (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey || e.target.closest(".timeline")) return;
+    if (e.key >= "1" && e.key <= String(ranges.length)) location.href = ranges[e.key - 1].href;
+    else if (e.key === "r") location.reload();
+  });
+})();
+</script>
+</body>
+</html>
