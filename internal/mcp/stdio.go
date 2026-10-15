@@ -122,6 +122,14 @@ func (t *stdioTransport) writeErr(err error) error {
 	if t.closing.Load() {
 		return errClosed
 	}
+	// A server that exits at once (a bad config, a missing dependency) can
+	// close its stdin before the first message is written: then why it
+	// exited (exit code, stderr) is the useful error, not "broken pipe".
+	select {
+	case <-t.exited:
+		return t.exitErr()
+	case <-time.After(time.Second):
+	}
 	return fmt.Errorf("write to server: %w", err)
 }
 

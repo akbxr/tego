@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -195,6 +196,29 @@ func call(t *testing.T, tool tools.ImageTool, args string) string {
 		t.Fatalf("%s: %v", tool.Def().Name, err)
 	}
 	return out
+}
+
+// A server that exits before the first message is written: the error names
+// the exit, not "broken pipe" (seen on CI, where the process ends sooner).
+func TestStdioWriteAfterExit(t *testing.T) {
+	tr := &stdioTransport{exited: make(chan struct{})}
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sh", "-c", "exit 3")
+	cmd.Stdin = r
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	r.Close()
+	tr.stdin = w
+	go func() { tr.waitErr = cmd.Wait(); close(tr.exited) }()
+	<-tr.exited
+	err = tr.send(context.Background(), []byte(strings.Repeat("x", 1<<20)), 1)
+	if err == nil || !strings.Contains(err.Error(), "server exited (exit status 3)") {
+		t.Fatalf("want the exit reason, got %v", err)
+	}
 }
 
 func TestStdio(t *testing.T) {
