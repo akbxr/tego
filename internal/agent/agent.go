@@ -223,7 +223,18 @@ func (a *Agent) onEvent(ev llm.Event) {
 		a.UI.OnThinking(ev.Text)
 	case llm.EvToolCall:
 		a.UI.OnToolStart(ev.ToolName)
+	case llm.EvToolDelta:
+		if u, ok := a.UI.(ToolDeltaUI); ok {
+			u.OnToolDelta(ev.ToolID, ev.ToolName, ev.Text)
+		}
 	}
+}
+
+// ToolDeltaUI is implemented by UIs that show a tool call while the model is
+// still writing its arguments (the file a long write or edit is producing).
+// chunk is the next piece of the call's raw JSON arguments.
+type ToolDeltaUI interface {
+	OnToolDelta(id, name, chunk string)
 }
 
 // Run sends a user prompt (plus optional image blocks) and loops until the

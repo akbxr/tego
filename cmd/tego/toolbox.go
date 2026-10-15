@@ -47,23 +47,7 @@ func (u *termUI) boxCallLocked(name string, input json.RawMessage) {
 // the box gets the content area's width and margin so the two line up.
 // Called while the TUI draws, so it must not ask the TUI anything.
 func (u *termUI) runningBox(cmd string, el time.Duration, tail []string, width int) []string {
-	const margin = 1 // Options.Margin
-	v := &termUI{dc: u.dc, width: func() int { return max(width-2*margin, 14) }}
-	frame := int(el / (100 * time.Millisecond))
-	secs := fmt.Sprintf(" · %ds", int(el.Seconds()))
-	var b strings.Builder
-	b.WriteString(v.boxTop("Bash", cmd, "", u.dc.dim))
-	for _, l := range tail {
-		v.rowClip(&b, u.dc.dim+l, runewidth.StringWidth(l), u.dc.dim)
-	}
-	body := u.dc.cyan + bashSpinner[frame%len(bashSpinner)] + u.dc.reset + " " + shimmer(u.dc, "running", frame) + u.dc.dim + secs + u.dc.reset
-	v.rowClip(&b, body, runewidth.StringWidth("⣾ running"+secs), u.dc.dim)
-	b.WriteString(v.boxBottom("", u.dc.dim))
-	lines := strings.Split(strings.TrimSuffix(b.String(), "\n"), "\n")
-	for i := range lines {
-		lines[i] = strings.Repeat(" ", margin) + lines[i]
-	}
-	return lines
+	return u.liveBox("Bash", cmd, tail, u.dc.dim, "running", "", el, width)
 }
 
 func (u *termUI) setRunning(cmd string) {

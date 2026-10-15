@@ -76,6 +76,10 @@ type termUI struct {
 	running  string
 	runSince time.Time
 	runOut   []byte // the end of its output so far
+
+	// The edit or write call the model is writing now, for the footer's
+	// live box (streamwrite.go). Guarded by runMu too.
+	writing *liveWrite
 }
 
 // newPrintUI writes the answer to stdout and everything else to stderr,
@@ -184,6 +188,7 @@ func (u *termUI) OnToolStart(string) {
 }
 
 func (u *termUI) OnToolCall(name string, input json.RawMessage) {
+	u.endWrite() // the call is complete: its own box follows
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.endStream()
@@ -279,6 +284,7 @@ func (u *termUI) OnToolResult(name string, input json.RawMessage, output string,
 }
 
 func (u *termUI) OnTurnEnd(m *llm.Message) {
+	u.endWrite() // the response is complete, or cut off: nothing is being written
 	u.mu.Lock()
 	u.endStream()
 	hook := u.onTurnEnd
@@ -375,6 +381,7 @@ func (u *termUI) Finish() {
 	u.endStream()
 	u.mu.Unlock()
 	u.setRunning("") // a turn that ended without the result (aborted, failed)
+	u.endWrite()
 }
 
 func fmtTokens(n int) string {

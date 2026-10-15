@@ -18,8 +18,9 @@ import (
 
 const (
 	anthropicVersion = "2023-06-01"
-	// No fine-grained-tool-streaming: without it the API validates tool
+	// No fine-grained-tool-streaming beta: without it the API validates tool
 	// arguments as JSON; with it, models sometimes stream malformed arrays.
+	// Only write and edit opt in, per tool (eagerInputTools).
 	anthropicAPIKeyBeta = "interleaved-thinking-2025-05-14,extended-cache-ttl-2025-04-11,context-management-2025-06-27,thinking-binding-controls-2026-08-01"
 )
 
@@ -298,7 +299,17 @@ type aTool struct {
 	InputSchema  json.RawMessage `json:"input_schema"`
 	DeferLoading bool            `json:"defer_loading,omitempty"`
 	CacheControl *aCacheControl  `json:"cache_control,omitempty"`
+	// EagerInput streams this tool's input as the model writes it instead
+	// of after validating each parameter (fine-grained tool streaming).
+	EagerInput bool `json:"eager_input_streaming,omitempty"`
 }
+
+// eagerInputTools stream their arguments as they are written, so the UI can
+// show a long file or replacement while it is produced: buffered, a write's
+// content arrived only when complete. They're string-heavy, and malformed
+// JSON (the price of skipping validation) is caught by ToolInput and sent
+// back to the model as an error. Other tools keep validated streaming.
+var eagerInputTools = map[string]bool{"write": true, "edit": true}
 
 type aThinking struct {
 	Type         string         `json:"type"`
@@ -475,7 +486,7 @@ func (p *anthropicProvider) anthropicTools(req *Request, oauth bool, cc *aCacheC
 		if len(schema) == 0 {
 			schema = emptyObjectSchema
 		}
-		at := aTool{Name: wireToolName(t.Name, oauth), Description: t.Description, InputSchema: schema}
+		at := aTool{Name: wireToolName(t.Name, oauth), Description: t.Description, InputSchema: schema, EagerInput: eagerInputTools[t.Name]}
 		if t.Deferred && canDefer {
 			at.DeferLoading = true
 			deferred[at.Name] = true
@@ -900,6 +911,9 @@ func parseAnthropicStream(ctx context.Context, body io.Reader, oauth bool, emit 
 				b.Signature += ev.Delta.Signature
 			case "input_json_delta":
 				acc.addArgs(bi, ev.Delta.PartialJSON)
+				if b := &msg.Blocks[bi]; b.Type == BlockToolUse && ev.Delta.PartialJSON != "" {
+					emit(Event{Type: EvToolDelta, ToolName: b.Name, ToolID: b.ID, Text: ev.Delta.PartialJSON})
+				}
 			}
 		case "content_block_stop":
 			if bi, ok := blockOf[ev.Index]; ok && msg.Blocks[bi].Type == BlockToolUse {

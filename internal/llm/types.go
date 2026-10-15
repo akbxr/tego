@@ -270,6 +270,10 @@ const (
 	// a model can think for seconds before its first visible delta. It is
 	// not forwarded to onEvent and does not count as delivered for retries.
 	EvStarted
+	// EvToolDelta carries a piece of a tool call's JSON arguments as the
+	// model writes them: ToolName, ToolID, Text = the raw JSON chunk. Sent
+	// after the call's EvToolCall, so it is never the first delivered event.
+	EvToolDelta
 )
 
 type Event struct {

@@ -441,8 +441,13 @@ data: {"type":"message_stop"}
 	if string(msg.Blocks[3].Input) != "{}" {
 		t.Fatalf("empty tool input = %s", msg.Blocks[3].Input)
 	}
-	if len(evs) != 5 || evs[0].Type != EvStarted || evs[3].Type != EvToolCall || evs[3].ToolName != "read" {
+	if len(evs) != 7 || evs[0].Type != EvStarted || evs[3].Type != EvToolCall || evs[3].ToolName != "read" {
 		t.Fatalf("events wrong: %+v", evs)
+	}
+	// The call's arguments arrive as they are written, after its EvToolCall.
+	if evs[4].Type != EvToolDelta || evs[5].Type != EvToolDelta || evs[4].ToolID != "tu" ||
+		evs[4].Text+evs[5].Text != `{"path":"a"}` || evs[6].Type != EvToolCall {
+		t.Fatalf("tool deltas wrong: %+v", evs[4:])
 	}
 
 	// Truncated stream: partial tool call is dropped, text kept.
@@ -457,3 +462,28 @@ data: {"type":"message_stop"}
 type staticToken string
 
 func (s staticToken) Token(context.Context) (string, error) { return string(s), nil }
+
+func TestEagerInputOnlyForWriteAndEdit(t *testing.T) {
+	p := &anthropicProvider{name: "anthropic", base: "x"}
+	var tools []Tool
+	for _, n := range []string{"read", "write", "edit", "bash"} {
+		tools = append(tools, Tool{Name: n, Schema: []byte(`{"type":"object"}`)})
+	}
+	body, err := p.buildBody(&Request{Model: "claude-sonnet-5-5", Tools: tools,
+		Messages: []Message{{Role: RoleUser, Blocks: []Block{{Type: BlockText, Text: "hi"}}}}}, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r struct {
+		Tools []struct {
+			Name  string `json:"name"`
+			Eager bool   `json:"eager_input_streaming"`
+		} `json:"tools"`
+	}
+	json.Unmarshal(body, &r)
+	for _, tl := range r.Tools {
+		if want := tl.Name == "write" || tl.Name == "edit"; tl.Eager != want {
+			t.Errorf("%s: eager %v", tl.Name, tl.Eager)
+		}
+	}
+}

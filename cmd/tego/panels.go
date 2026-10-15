@@ -52,11 +52,15 @@ func (a *app) panel(width int) []string {
 	out := todoPanel(c, todos, a.todoThisTurn(a.status.snapshot().busy, rev))
 	out = append(out, agentsPanel(c, ag.Subagents(), width, a.cwd)...)
 	out = append(out, a.pendingPanel(c, width)...)
+	live := a.ui.writingBox(width) // an edit or write being written
 	if cmd, since, tail := a.ui.runningBash(); cmd != "" {
+		live = a.ui.runningBox(cmd, time.Since(since), tail, width)
+	}
+	if live != nil {
 		if len(out) > 0 {
 			out = append(out, "")
 		}
-		out = append(out, a.ui.runningBox(cmd, time.Since(since), tail, width)...)
+		out = append(out, live...)
 		out = append(out, "") // a gap before the Working… line
 	}
 	return out

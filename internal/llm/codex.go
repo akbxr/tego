@@ -442,6 +442,9 @@ func parseCodexStream(ctx context.Context, provider string, body io.Reader, emit
 		case "response.function_call_arguments.delta":
 			if bi, ok := byItem[ev.ItemID]; ok {
 				acc.addArgs(bi, ev.Delta)
+				if b := &msg.Blocks[bi]; b.Type == BlockToolUse && ev.Delta != "" {
+					emit(Event{Type: EvToolDelta, ToolName: b.Name, ToolID: b.ID, Text: ev.Delta})
+				}
 			}
 		case "response.output_item.done":
 			it := ev.Item

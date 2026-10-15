@@ -481,6 +481,11 @@ func parseOpenAIStream(ctx context.Context, provider string, body io.Reader, emi
 				if !pc.notified && pc.name != "" {
 					pc.notified = true
 					emit(Event{Type: EvToolCall, ToolName: pc.name, ToolID: pc.id})
+					if len(pc.args) > 0 { // what arrived before the name
+						emit(Event{Type: EvToolDelta, ToolName: pc.name, ToolID: pc.id, Text: string(pc.args)})
+					}
+				} else if pc.notified && tc.Function.Arguments != "" {
+					emit(Event{Type: EvToolDelta, ToolName: pc.name, ToolID: pc.id, Text: tc.Function.Arguments})
 				}
 			}
 			if c.FinishReason != "" {
