@@ -110,13 +110,69 @@ type Tool struct {
 	Deferred bool `json:"-"`
 }
 
-// Thinking levels.
+// Thinking levels. xhigh and max exist on the newest models only (Claude
+// Opus 4.7+, the 4.6 models for max; GPT-5.2+ for xhigh, GPT-5.6+ for max);
+// each provider clamps a level a model lacks to the nearest one below.
 const (
 	ThinkingOff    = "off"
 	ThinkingLow    = "low"
 	ThinkingMedium = "medium"
 	ThinkingHigh   = "high"
+	ThinkingXHigh  = "xhigh"
+	ThinkingMax    = "max"
 )
+
+// ThinkingLevels lists the levels from least to most thinking.
+var ThinkingLevels = []string{ThinkingOff, ThinkingLow, ThinkingMedium, ThinkingHigh, ThinkingXHigh, ThinkingMax}
+
+// ThinkingRank orders levels (off 0 … max 5); unknown levels are -1.
+func ThinkingRank(level string) int {
+	for i, l := range ThinkingLevels {
+		if l == level {
+			return i
+		}
+	}
+	return -1
+}
+
+// EffectiveThinking is the level model runs at when level is asked for on
+// provider p: providers clamp xhigh and max to what a model supports. It
+// only differs from level for those two; "" when unknown.
+func EffectiveThinking(p Provider, model, level string) string {
+	if ThinkingRank(level) <= ThinkingRank(ThinkingHigh) {
+		return level
+	}
+	if pool, ok := p.(*Pool); ok && len(pool.members) > 0 {
+		p = pool.members[0].Provider
+	}
+	switch p.(type) {
+	case *anthropicProvider:
+		if anthropicLegacyThinking(model) {
+			return ThinkingHigh
+		}
+		return anthropicEffort(model, level)
+	case *codexProvider, *openaiProvider:
+		if e := openaiEffort(model, level); e != "" {
+			return e
+		}
+	case *antigravityProvider:
+		return ThinkingHigh
+	}
+	return ""
+}
+
+// clampThinking returns level, or the highest of the levels a model
+// supports below it ("" when none is).
+func clampThinking(level string, supported ...string) string {
+	r := ThinkingRank(level)
+	best, bestRank := "", -1
+	for _, s := range supported {
+		if sr := ThinkingRank(s); sr <= r && sr > bestRank {
+			best, bestRank = s, sr
+		}
+	}
+	return best
+}
 
 type Request struct {
 	Model     string
@@ -124,7 +180,7 @@ type Request struct {
 	Messages  []Message
 	Tools     []Tool
 	MaxTokens int    // 0 = provider default
-	Thinking  string // off|low|medium|high ("" = off)
+	Thinking  string // off|low|medium|high|xhigh|max ("" = off)
 	SessionID string // stable per session; used for prompt-cache keys / headers
 	LongCache bool   // keep the prompt cache for an hour instead of 5 minutes (Anthropic)
 	Class     string // what the request is for: ClassMain ("" too), ClassSubagent, ClassCompaction, ClassAuxiliary

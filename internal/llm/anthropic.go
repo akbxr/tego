@@ -427,6 +427,11 @@ func (p *anthropicProvider) buildBody(req *Request, version string, t *ccTurn) (
 
 	r.Thinking, r.OutputConfig = anthropicThinking(req.Model, req.Thinking)
 	r.MaxTokens = anthropicMaxTokens(req.Model, req.MaxTokens, r.Thinking)
+	if r.OutputConfig != nil && req.MaxTokens <= 0 && ThinkingRank(r.OutputConfig.Effort) >= ThinkingRank(ThinkingXHigh) {
+		// At xhigh and max the docs suggest at least 64k: thinking and the
+		// answer share the limit, and a long think would cut the answer off.
+		r.MaxTokens = max(r.MaxTokens, 64000)
+	}
 	if r.Thinking != nil && anthropicBindsThinking(req.Model) {
 		r.Thinking.BlockBinding = dropMismatchedThinking
 	}
@@ -614,7 +619,36 @@ func claudeGenAtLeast(model string, major, minor int) bool {
 	return x > major || (x == major && y >= minor)
 }
 
-var thinkingBudgets = map[string]int{ThinkingLow: 4000, ThinkingMedium: 12000, ThinkingHigh: 24000}
+var thinkingBudgets = map[string]int{ThinkingLow: 4000, ThinkingMedium: 12000, ThinkingHigh: 24000,
+	ThinkingXHigh: 32000, ThinkingMax: 48000}
+
+// anthropicEffort is the effort level model accepts for level, from the
+// table in platform.claude.com/docs/en/build-with-claude/effort:
+//   - max: Opus and Sonnet 4.6+, Haiku 5.5+, every Fable and Mythos model
+//   - xhigh: Opus 4.7+, Sonnet and Haiku 5+ (Haiku from 5.5), Fable and
+//     Mythos 5+ (not Mythos Preview)
+//
+// "Not every model that supports max supports xhigh" (Opus and Sonnet 4.6).
+func anthropicEffort(model, level string) string {
+	m := strings.ToLower(model)
+	family := func(f string) bool { return strings.Contains(m, f) }
+	frontier := family("fable") || family("mythos")
+	levels := []string{ThinkingLow, ThinkingMedium, ThinkingHigh}
+	switch {
+	case frontier,
+		(family("opus") || family("sonnet")) && claudeGenAtLeast(model, 4, 6),
+		family("haiku") && claudeGenAtLeast(model, 5, 5):
+		levels = append(levels, ThinkingMax)
+	}
+	switch {
+	case frontier && !family("preview"),
+		family("opus") && claudeGenAtLeast(model, 4, 7),
+		family("sonnet") && claudeGenAtLeast(model, 5, 0),
+		family("haiku") && claudeGenAtLeast(model, 5, 5):
+		levels = append(levels, ThinkingXHigh)
+	}
+	return clampThinking(level, levels...)
+}
 
 func anthropicThinking(model, level string) (*aThinking, *aOutputConfig) {
 	budget, ok := thinkingBudgets[level]
@@ -629,7 +663,7 @@ func anthropicThinking(model, level string) (*aThinking, *aOutputConfig) {
 		// Newer models omit thinking text unless asked for a summary.
 		t.Display = "summarized"
 	}
-	return t, &aOutputConfig{Effort: level}
+	return t, &aOutputConfig{Effort: anthropicEffort(model, level)}
 }
 
 func anthropicMaxTokens(model string, requested int, thinking *aThinking) int {

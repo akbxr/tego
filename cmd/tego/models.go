@@ -201,7 +201,13 @@ func (a *app) switchModel(spec string) bool {
 	return true
 }
 
-var thinkingLevels = []string{llm.ThinkingOff, llm.ThinkingLow, llm.ThinkingMedium, llm.ThinkingHigh}
+var thinkingLevels = llm.ThinkingLevels
+
+// thinkingDetail describes the upper levels in the picker.
+var thinkingDetail = map[string]string{
+	llm.ThinkingXHigh: "long agentic work; newest models only",
+	llm.ThinkingMax:   "no limit on thinking; newest models only",
+}
 
 // pickThinking opens the thinking-level picker on the current level.
 func (a *app) pickThinking(title string) (string, bool) {
@@ -209,8 +215,12 @@ func (a *app) pickThinking(title string) (string, bool) {
 	sel := 0
 	for i, l := range thinkingLevels {
 		items[i].Label = l
+		items[i].Detail = thinkingDetail[l]
+		if eff := a.effectiveThinking(l); eff != "" && eff != l {
+			items[i].Detail = "runs as " + eff + " on this model"
+		}
 		if l == a.ag.Thinking {
-			items[i].Detail, sel = "current", i
+			items[i].Detail, sel = strings.TrimPrefix(items[i].Detail+" · current", " · "), i
 		}
 	}
 	idx, err := a.tui.Pick(title, items, "", sel)
@@ -220,11 +230,23 @@ func (a *app) pickThinking(title string) (string, bool) {
 	return thinkingLevels[idx], true
 }
 
+// effectiveThinking is what level runs as on the current model ("" if unknown).
+func (a *app) effectiveThinking(level string) string {
+	if a.ag == nil || a.ag.Provider == nil {
+		return ""
+	}
+	return llm.EffectiveThinking(a.ag.Provider, a.ag.Model, level)
+}
+
 func (a *app) setThinking(level string) {
 	a.ag.Thinking = level
 	a.cfg.Thinking = level
 	if err := a.cfg.Save(); err != nil {
 		a.ui.Errorf("saving thinking level: %v", err)
+	}
+	if eff := a.effectiveThinking(level); eff != "" && eff != level {
+		a.ui.Dim("thinking → %s (this model tops out at %s)", level, eff)
+		return
 	}
 	a.ui.Dim("thinking → %s", level)
 }

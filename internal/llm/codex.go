@@ -224,8 +224,8 @@ func codexBody(req *Request) ([]byte, error) {
 	if r.Input == nil {
 		r.Input = []any{}
 	}
-	if _, ok := thinkingBudgets[req.Thinking]; ok {
-		r.Reasoning = &cxReasoning{Effort: req.Thinking, Summary: "auto"}
+	if eff := openaiEffort(req.Model, req.Thinking); eff != "" {
+		r.Reasoning = &cxReasoning{Effort: eff, Summary: "auto"}
 	}
 	if len(req.Tools) > 0 {
 		parallel := true

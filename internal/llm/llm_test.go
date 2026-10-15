@@ -239,6 +239,75 @@ func TestAnthropicThinkingSelection(t *testing.T) {
 	}
 }
 
+func TestUpperEffortLevels(t *testing.T) {
+	// Anthropic: the table in platform.claude.com/docs/en/build-with-claude/effort.
+	for _, c := range []struct{ model, level, want string }{
+		{"claude-opus-5-5", ThinkingMax, "max"},
+		{"claude-opus-5-5", ThinkingXHigh, "xhigh"},
+		{"claude-sonnet-5-5", ThinkingXHigh, "xhigh"},
+		{"claude-haiku-5-5", ThinkingMax, "max"},
+		{"claude-fable-5-1", ThinkingXHigh, "xhigh"},
+		{"claude-mythos-preview", ThinkingMax, "max"},
+		{"claude-mythos-preview", ThinkingXHigh, "high"}, // max but no xhigh
+		{"claude-opus-4-7", ThinkingXHigh, "xhigh"},
+		{"claude-opus-4-6", ThinkingMax, "max"},
+		{"claude-opus-4-6", ThinkingXHigh, "high"}, // "not every model that supports max supports xhigh"
+		{"claude-sonnet-4-6", ThinkingXHigh, "high"},
+		{"claude-sonnet-4-6", ThinkingMax, "max"},
+		{"claude-haiku-4-5", ThinkingMax, "high"},
+		{"claude-opus-5-5", ThinkingHigh, "high"},
+	} {
+		if got := anthropicEffort(c.model, c.level); got != c.want {
+			t.Errorf("anthropic %s %s: %q, want %q", c.model, c.level, got, c.want)
+		}
+	}
+	// Budget-mode models: the top levels get the larger budgets.
+	if th, oc := anthropicThinking("claude-sonnet-4-5-20250929", ThinkingMax); th.BudgetTokens != 48000 || oc != nil {
+		t.Errorf("legacy max: %+v %+v", th, oc)
+	}
+	// xhigh and max get room to think (the docs: start at 64k).
+	for level, want := range map[string]int{ThinkingMax: 64000, ThinkingXHigh: 64000, ThinkingHigh: 32000} {
+		p := &anthropicProvider{name: "anthropic", base: "x"}
+		body, err := p.buildBody(&Request{Model: "claude-opus-5-5", Thinking: level,
+			Messages: []Message{{Role: RoleUser, Blocks: []Block{{Type: BlockText, Text: "hi"}}}}}, "", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var r struct {
+			MaxTokens int `json:"max_tokens"`
+		}
+		json.Unmarshal(body, &r)
+		if r.MaxTokens != want {
+			t.Errorf("%s: max_tokens %d, want %d", level, r.MaxTokens, want)
+		}
+	}
+	// OpenAI and Codex: xhigh from GPT-5.2, max from GPT-5.6.
+	for _, c := range []struct{ model, level, want string }{
+		{"gpt-5.6", ThinkingMax, "max"},
+		{"gpt-6-luna", ThinkingMax, "max"},
+		{"gpt-5.4", ThinkingMax, "xhigh"},
+		{"gpt-5.2-codex", ThinkingXHigh, "xhigh"},
+		{"gpt-5.1", ThinkingMax, "high"},
+		{"o3", ThinkingXHigh, "high"},
+		{"gpt-5.6", ThinkingOff, ""},
+		{"gpt-5.6", ThinkingMedium, "medium"},
+	} {
+		if got := openaiEffort(c.model, c.level); got != c.want {
+			t.Errorf("openai %s %s: %q, want %q", c.model, c.level, got, c.want)
+		}
+	}
+	// Antigravity stops at high: max runs as gemini-3.8-flash-high.
+	if tg := resolveAntigravityModel("gemini-3.8-flash", ThinkingMax, 0); tg.wire != "gemini-3.8-flash-high" {
+		t.Errorf("antigravity max: %q", tg.wire)
+	}
+	if got := EffectiveThinking(&antigravityProvider{}, "claude-opus-5-5", ThinkingMax); got != ThinkingHigh {
+		t.Errorf("EffectiveThinking antigravity: %q", got)
+	}
+	if got := EffectiveThinking(&anthropicProvider{}, "claude-opus-4-6", ThinkingXHigh); got != ThinkingHigh {
+		t.Errorf("EffectiveThinking opus 4.6: %q", got)
+	}
+}
+
 func TestParseAnthropicStream(t *testing.T) {
 	stream := `event: message_start
 data: {"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":10,"cache_read_input_tokens":5,"output_tokens":1}}}

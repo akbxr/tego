@@ -88,7 +88,7 @@ In my own benchmarks, 3 runs per task, the results depend a lot on the repositor
 }
 ```
 
-The model and thinking level you pick with `/model` are saved here. API keys can also come from the environment (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY` and others). Credentials are stored in `~/.tego/auth.json` with mode 0600.
+The model and thinking level you pick with `/model` are saved here. Thinking goes from `off` through `low`, `medium` and `high` to `xhigh` and `max`, which the newest Claude and GPT models support. On a model without them, tego runs the highest level that model has and says so. API keys can also come from the environment (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY` and others). Credentials are stored in `~/.tego/auth.json` with mode 0600.
 
 ## Commands
 

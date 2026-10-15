@@ -429,6 +429,11 @@ func thinkingOn(level string) bool {
 // Unknown ids are sent unchanged, with thinking chosen by model family.
 func resolveAntigravityModel(model, thinking string, maxTokens int) agTarget {
 	id := strings.ToLower(strings.TrimSpace(model))
+	// Antigravity offers low, medium and high for every model (Claude
+	// included): xhigh and max run as high.
+	if ThinkingRank(thinking) > ThinkingRank(ThinkingHigh) {
+		thinking = ThinkingHigh
+	}
 	on := thinkingOn(thinking)
 	t := agTarget{wire: model, reasoning: true, images: true}
 	budget := -1 // budget-mode thinking tokens; -1 = level mode or none

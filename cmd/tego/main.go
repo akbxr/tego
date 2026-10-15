@@ -47,7 +47,7 @@ Usage:
 
 Flags:
   -m, --model provider/model      e.g. anthropic/claude-sonnet-4-5, openai-codex/gpt-5, ollama/qwen3
-  -t, --thinking off|low|medium|high
+  -t, --thinking off|low|medium|high|xhigh|max
   -c, --continue                  continue the most recent session in this directory
   -r, --resume <id>               resume a session by id prefix (no id: list)
   -p, --print                     non-interactive
@@ -359,13 +359,7 @@ func firstNonEmpty(v ...string) string {
 	return ""
 }
 
-func validThinking(t string) bool {
-	switch t {
-	case llm.ThinkingOff, llm.ThinkingLow, llm.ThinkingMedium, llm.ThinkingHigh:
-		return true
-	}
-	return false
-}
+func validThinking(t string) bool { return llm.ThinkingRank(t) >= 0 }
 
 func uuid4() string {
 	var b [16]byte

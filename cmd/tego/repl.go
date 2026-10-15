@@ -20,7 +20,7 @@ import (
 var builtinCommands = []struct{ name, icon, help string }{
 	{"help", "?", "Show commands"},
 	{"model", "◆", "Pick a model, or /model <query|provider/id> (-r refreshes the list)"},
-	{"thinking", "✦", "Pick or set thinking: off|low|medium|high"},
+	{"thinking", "✦", "Pick or set thinking: off|low|medium|high|xhigh|max"},
 	{"resume", "↺", "Resume a different session"},
 	{"branch", "⟲", "Rewind to a previous turn, keeping the old path as a branch (alias /rewind, Esc Esc)"},
 	{"undo", "↶", "Put the files back as they were before a prompt of this session"},
@@ -597,7 +597,7 @@ func (a *app) command(line string, done chan<- error) bool {
 			}
 		}
 		if !validThinking(args) {
-			a.ui.Errorf("thinking must be off|low|medium|high")
+			a.ui.Errorf("thinking must be off|low|medium|high|xhigh|max")
 			return false
 		}
 		a.setThinking(args)

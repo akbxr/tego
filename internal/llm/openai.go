@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -167,6 +169,29 @@ func openaiReasoningModel(model string) bool {
 	return false
 }
 
+var gptVersionRe = regexp.MustCompile(`gpt-(\d+)(?:\.(\d+))?`)
+
+// openaiEffort is the reasoning effort model accepts for level: xhigh from
+// GPT-5.2, max from GPT-5.6 (the levels the OpenAI catalog lists per model);
+// o-series and older GPT-5 models stop at high. "" for off.
+func openaiEffort(model, level string) string {
+	if ThinkingRank(level) <= 0 {
+		return ""
+	}
+	levels := []string{ThinkingLow, ThinkingMedium, ThinkingHigh}
+	if m := gptVersionRe.FindStringSubmatch(strings.ToLower(model)); m != nil {
+		major, _ := strconv.Atoi(m[1])
+		minor, _ := strconv.Atoi(m[2])
+		if major > 5 || major == 5 && minor >= 2 {
+			levels = append(levels, ThinkingXHigh)
+		}
+		if major > 5 || major == 5 && minor >= 6 {
+			levels = append(levels, ThinkingMax)
+		}
+	}
+	return clampThinking(level, levels...)
+}
+
 func openaiBody(req *Request) ([]byte, error) {
 	r := oaRequest{
 		Model:               req.Model,
@@ -174,8 +199,8 @@ func openaiBody(req *Request) ([]byte, error) {
 		StreamOptions:       map[string]bool{"include_usage": true},
 		MaxCompletionTokens: req.MaxTokens,
 	}
-	if _, ok := thinkingBudgets[req.Thinking]; ok && openaiReasoningModel(req.Model) {
-		r.ReasoningEffort = req.Thinking
+	if openaiReasoningModel(req.Model) {
+		r.ReasoningEffort = openaiEffort(req.Model, req.Thinking)
 	}
 	if req.System != "" {
 		r.Messages = append(r.Messages, oaMessage{Role: "system", Content: req.System})
