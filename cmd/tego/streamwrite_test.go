@@ -47,8 +47,9 @@ func TestLiveWriteBox(t *testing.T) {
 			t.Fatalf("box lacks %q:\n%s", want, all)
 		}
 	}
-	if strings.Contains(all, "filler line\nfiller") || strings.Count(all, "filler") > liveWriteRows {
-		t.Fatalf("more than the last %d rows:\n%s", liveWriteRows, all)
+	// No height known (no TUI): the minimum rows, the last of the content.
+	if n := strings.Count(all, "filler"); n != liveWriteMinRows-2 {
+		t.Fatalf("%d filler rows, want the last %d rows of the content:\n%s", n, liveWriteMinRows, all)
 	}
 	for _, l := range box { // the frame lines up with the finished box: margin + content width
 		if w := runewidth.StringWidth(l); w != 99 {
@@ -94,5 +95,25 @@ func TestLiveEditBoxAndEndings(t *testing.T) {
 	stream(u, "r1", "read", `{"path":"/p/c.go"}`)
 	if u.writing != nil {
 		t.Fatal("a box for read")
+	}
+}
+
+func TestLiveWriteRowsFollowTheScreen(t *testing.T) {
+	for h, want := range map[int]int{0: 8, 10: 8, 30: 12, 45: 18, 100: 20} {
+		if got := liveWriteRows(h); got != want {
+			t.Errorf("height %d: %d rows, want %d", h, got, want)
+		}
+	}
+	// A tall screen gets a tall box, sized once when the call starts.
+	u, _ := boxUI(80)
+	h := 50
+	u.height = func() int { return h }
+	c, _ := json.Marshal(strings.Repeat("row\n", 40))
+	stream(u, "w1", "write", `{"path":"/p/a.txt","content":`+string(c[:len(c)-1]))
+	aged(u)
+	h = 10 // the box made the content area smaller: the size holds
+	stream(u, "w1", "write", "")
+	if n := strings.Count(strings.Join(u.writingBox(100), "\n"), "row"); n != 20 {
+		t.Fatalf("%d rows shown, want 20", n)
 	}
 }

@@ -80,6 +80,9 @@ type termUI struct {
 	// The edit or write call the model is writing now, for the footer's
 	// live box (streamwrite.go). Guarded by runMu too.
 	writing *liveWrite
+	// height is the content area's height (nil outside the TUI). It takes
+	// the TUI's lock: never call it while the TUI draws.
+	height func() int
 }
 
 // newPrintUI writes the answer to stdout and everything else to stderr,
@@ -101,7 +104,7 @@ func newPrintUI() *termUI {
 // newTUIUI renders everything above the TUI footer.
 func newTUIUI(w io.Writer, width, height func() int) *termUI {
 	c := colorPalette()
-	u := &termUI{out: w, diag: w, c: c, dc: c, atBOL: true, width: width}
+	u := &termUI{out: w, diag: w, c: c, dc: c, atBOL: true, width: width, height: height}
 	u.md = markdown.NewStream(w, markdown.Options{Width: width, Height: height, Color: c.reset != ""})
 	return u
 }

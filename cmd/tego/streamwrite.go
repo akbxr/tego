@@ -19,22 +19,41 @@ type liveWrite struct {
 	id, tool string
 	since    time.Time
 	args     *partialArgs
+	rows     int // content rows shown, fixed when the call starts
 }
 
 const (
 	liveWriteDelay = time.Second // short calls finish before a box would help
-	liveWriteRows  = 6           // content rows shown
+	// Content rows: two fifths of the screen, within these bounds.
+	liveWriteMinRows = 8
+	liveWriteMaxRows = 20
 )
+
+// liveWriteRows sizes the live box for a screen of height rows (0 when
+// unknown). Taken once per call: the box itself shrinks the content area,
+// and a size that followed it would make the box jump.
+func liveWriteRows(height int) int {
+	if height <= 0 {
+		return liveWriteMinRows
+	}
+	return min(max(height*2/5, liveWriteMinRows), liveWriteMaxRows)
+}
 
 // OnToolDelta receives the next piece of a tool call's arguments.
 func (u *termUI) OnToolDelta(id, name, chunk string) {
 	if name != "edit" && name != "write" || !u.boxed(name) {
 		return
 	}
+	// Before runMu: the TUI holds its own lock while it draws and then takes
+	// runMu, so asking it for the height under runMu could deadlock.
+	height := 0
+	if u.height != nil {
+		height = u.height()
+	}
 	u.runMu.Lock()
 	defer u.runMu.Unlock()
 	if u.writing == nil || u.writing.id != id {
-		u.writing = &liveWrite{id: id, tool: name, since: time.Now(), args: newPartialArgs()}
+		u.writing = &liveWrite{id: id, tool: name, since: time.Now(), args: newPartialArgs(), rows: liveWriteRows(height)}
 	}
 	u.writing.args.add(chunk)
 }
@@ -62,12 +81,12 @@ func (u *termUI) writingBox(width int) []string {
 	var color, what string
 	switch w.tool {
 	case "write":
-		lines, total := p.tail("content", false, liveWriteRows)
+		lines, total := p.tail("content", false, w.rows)
 		rows, color = lines, u.dc.green
 		what = fmt.Sprintf("%s", plural(total, "line"))
 	default: // edit: the replacement text, the part the model invents
 		item := len(p.items) > 0
-		lines, total := p.tail("new_string", item, liveWriteRows)
+		lines, total := p.tail("new_string", item, w.rows)
 		rows, color = lines, u.dc.green
 		what = plural(total, "line")
 		if n := len(p.items); n > 1 {
