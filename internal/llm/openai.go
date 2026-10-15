@@ -28,6 +28,16 @@ func (p *openaiProvider) Name() string { return p.name }
 // old history is the only way to keep a long session small.
 var implicitCacheHosts = []string{"api.openai.com", "generativelanguage.googleapis.com", "api.deepseek.com", "api.x.ai"}
 
+// openRouter reports whether the endpoint is OpenRouter.
+func (p *openaiProvider) openRouter() bool { return strings.Contains(p.base, "openrouter.ai") }
+
+// KnownCacheTTL: through OpenRouter, Claude's cache has Anthropic's exact
+// lifetime (5 minutes, or an hour with LongCache), set by our marker.
+func (p *openaiProvider) KnownCacheTTL(model string) bool {
+	m := strings.ToLower(model)
+	return p.openRouter() && (strings.HasPrefix(m, "anthropic/") || strings.HasPrefix(m, "~anthropic/"))
+}
+
 func (p *openaiProvider) ImplicitPrefixCache(string) bool {
 	for _, h := range implicitCacheHosts {
 		if strings.Contains(p.base, h) {
@@ -38,7 +48,7 @@ func (p *openaiProvider) ImplicitPrefixCache(string) bool {
 }
 
 func (p *openaiProvider) Stream(ctx context.Context, req *Request, onEvent func(Event)) (*Message, error) {
-	body, err := openaiBody(req)
+	body, err := openaiBody(req, p.openRouter())
 	if err != nil {
 		return nil, err
 	}
@@ -127,6 +137,35 @@ type oaRequest struct {
 	StreamOptions       any         `json:"stream_options,omitempty"`
 	MaxCompletionTokens int         `json:"max_completion_tokens,omitempty"`
 	ReasoningEffort     string      `json:"reasoning_effort,omitempty"`
+	// OpenRouter: automatic caching for models whose cache needs a marker,
+	// and the key that keeps a session on one provider (and its cache).
+	CacheControl *aCacheControl `json:"cache_control,omitempty"`
+	SessionID    string         `json:"session_id,omitempty"`
+}
+
+// openRouterExplicitCache lists the model prefixes OpenRouter caches only
+// with a cache_control marker (Anthropic, Gemini through OpenRouter, Alibaba
+// Qwen); the others (OpenAI, DeepSeek, xAI, Moonshot, ...) cache on their own.
+// Without it a Claude session through OpenRouter pays full input price on
+// every turn.
+var openRouterExplicitCache = []string{"anthropic/", "~anthropic/", "google/gemini", "~google/gemini", "qwen/"}
+
+// openRouterCache returns the top-level cache_control for model on
+// OpenRouter, or nil when the model caches without one. OpenRouter turns it
+// into a breakpoint on the last cacheable block, which moves forward as the
+// conversation grows.
+func openRouterCache(model string, long bool) *aCacheControl {
+	m := strings.ToLower(model)
+	for _, p := range openRouterExplicitCache {
+		if strings.HasPrefix(m, p) {
+			c := &aCacheControl{Type: "ephemeral"}
+			if long && (strings.HasPrefix(m, "anthropic/") || strings.HasPrefix(m, "~anthropic/")) {
+				c.TTL = "1h" // the 1h TTL is Claude-only on OpenRouter
+			}
+			return c
+		}
+	}
+	return nil
 }
 
 // openaiMessages converts history. Tool messages cannot carry images, so
@@ -192,12 +231,18 @@ func openaiEffort(model, level string) string {
 	return clampThinking(level, levels...)
 }
 
-func openaiBody(req *Request) ([]byte, error) {
+func openaiBody(req *Request, openRouter bool) ([]byte, error) {
 	r := oaRequest{
 		Model:               req.Model,
 		Stream:              true,
 		StreamOptions:       map[string]bool{"include_usage": true},
 		MaxCompletionTokens: req.MaxTokens,
+	}
+	if openRouter {
+		r.CacheControl = openRouterCache(req.Model, req.LongCache)
+		if len(req.SessionID) <= 256 {
+			r.SessionID = req.SessionID // sticky routing: the cache stays on one provider
+		}
 	}
 	if openaiReasoningModel(req.Model) {
 		r.ReasoningEffort = openaiEffort(req.Model, req.Thinking)
@@ -313,7 +358,8 @@ type oaChunk struct {
 		PromptTokens        int `json:"prompt_tokens"`
 		CompletionTokens    int `json:"completion_tokens"`
 		PromptTokensDetails *struct {
-			CachedTokens int `json:"cached_tokens"`
+			CachedTokens     int `json:"cached_tokens"`
+			CacheWriteTokens int `json:"cache_write_tokens"` // OpenRouter, GPT-5.6+
 		} `json:"prompt_tokens_details"`
 	} `json:"usage"`
 	Error *struct {
@@ -398,12 +444,15 @@ func parseOpenAIStream(ctx context.Context, provider string, body io.Reader, emi
 			return msg, &APIError{Provider: provider, Status: status, Body: ch.Error.Message}
 		}
 		if u := ch.Usage; u != nil {
-			cached := 0
-			if u.PromptTokensDetails != nil {
-				cached = u.PromptTokensDetails.CachedTokens
+			cached, written := 0, 0
+			if d := u.PromptTokensDetails; d != nil {
+				cached, written = d.CachedTokens, d.CacheWriteTokens
 			}
-			msg.Usage.Input = u.PromptTokens - cached
+			// prompt_tokens counts all three; cache writes cost more than
+			// plain input (1.25x, 2x for an hour), so they're kept apart.
+			msg.Usage.Input = max(u.PromptTokens-cached-written, 0)
 			msg.Usage.CacheRead = cached
+			msg.Usage.CacheWrite = written
 			msg.Usage.Output = u.CompletionTokens
 		}
 		for _, c := range ch.Choices {

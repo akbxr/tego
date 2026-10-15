@@ -308,6 +308,74 @@ func TestUpperEffortLevels(t *testing.T) {
 	}
 }
 
+func TestOpenRouterCacheUsage(t *testing.T) {
+	// OpenRouter reports writes and reads inside prompt_tokens.
+	stream := `data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10339,"completion_tokens":60,"prompt_tokens_details":{"cached_tokens":8000,"cache_write_tokens":2300}}}
+
+data: [DONE]
+`
+	msg, err := parseOpenAIStream(context.Background(), "openrouter", strings.NewReader(stream), func(Event) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u := msg.Usage; u.Input != 39 || u.CacheRead != 8000 || u.CacheWrite != 2300 || u.Output != 60 {
+		t.Fatalf("usage %+v", u)
+	}
+}
+
+func TestOpenRouterCaching(t *testing.T) {
+	type body struct {
+		CacheControl *aCacheControl `json:"cache_control"`
+		SessionID    string         `json:"session_id"`
+	}
+	build := func(model string, openRouter, long bool) body {
+		raw, err := openaiBody(&Request{Model: model, SessionID: "sess-1", LongCache: long,
+			Messages: []Message{{Role: RoleUser, Blocks: []Block{{Type: BlockText, Text: "hi"}}}}}, openRouter)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var b body
+		json.Unmarshal(raw, &b)
+		return b
+	}
+	for _, c := range []struct {
+		model      string
+		openRouter bool
+		long       bool
+		wantCache  string // "" none, else the TTL ("5m" for the default)
+		wantSess   bool
+	}{
+		{"anthropic/claude-sonnet-5", true, false, "5m", true},
+		{"anthropic/claude-opus-5-5", true, true, "1h", true}, // interactive: an hour, as with Anthropic direct
+		{"~anthropic/claude-sonnet-latest", true, false, "5m", true},
+		{"google/gemini-3.8-flash", true, true, "5m", true}, // a marker, but no 1h TTL outside Claude
+		{"qwen/qwen3-coder-plus", true, false, "5m", true},
+		{"openai/gpt-5.6", true, false, "", true},              // caches on its own
+		{"deepseek/deepseek-v4", true, false, "", true},        // likewise
+		{"anthropic/claude-sonnet-5", false, false, "", false}, // a non-OpenRouter endpoint gets neither
+	} {
+		b := build(c.model, c.openRouter, c.long)
+		got := ""
+		if b.CacheControl != nil {
+			got = b.CacheControl.TTL
+			if got == "" {
+				got = "5m"
+			}
+			if b.CacheControl.Type != "ephemeral" {
+				t.Errorf("%s: cache type %q", c.model, b.CacheControl.Type)
+			}
+		}
+		if got != c.wantCache || (b.SessionID != "") != c.wantSess {
+			t.Errorf("%s (openrouter=%v long=%v): cache %q session %q", c.model, c.openRouter, c.long, got, b.SessionID)
+		}
+	}
+	or := &openaiProvider{base: "https://openrouter.ai/api/v1"}
+	if !KnownCacheTTL(or, "anthropic/claude-opus-5-5") || KnownCacheTTL(or, "openai/gpt-5.6") ||
+		KnownCacheTTL(&openaiProvider{base: "http://localhost:1234/v1"}, "anthropic/claude-opus-5-5") {
+		t.Error("KnownCacheTTL through OpenRouter")
+	}
+}
+
 func TestParseAnthropicStream(t *testing.T) {
 	stream := `event: message_start
 data: {"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":10,"cache_read_input_tokens":5,"output_tokens":1}}}

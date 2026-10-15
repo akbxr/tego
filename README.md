@@ -62,7 +62,8 @@ tego tries hard not to resend what the model already has.
 
 - MCP tools stay out of the prompt until the model searches for them. With 63 tools connected, that took tool definitions from about 18.9k to 3.4k tokens per request.
 - When the Anthropic prompt cache has expired anyway, tego trims old tool output before the next request instead of paying to cache it again. On Claude 4.5 and newer, the API also clears old tool results once a prompt passes 200k tokens. Replaying four long Opus sessions, the two together cut prompt cost by about 23%. That is an estimate, and it already counts the files the model reads again afterwards.
-- `grep` returns 100 lines per page, clipped at 200 columns, and a cut result ends with match counts per file and an `offset` for the next page. 
+- `grep` returns 100 lines per page, clipped at 200 columns, and a cut result ends with match counts per file and an `offset` for the next page.
+- Through OpenRouter, Claude, Gemini and Qwen only cache with a marker, so tego sends one, plus a session id that keeps the conversation on the same provider and its cache.
 - Only when the context still nears the window does tego ask the model for a summary, and the last 20k tokens always stay verbatim.
 - The system prompt holds only what stays fixed for a project. The date and git branch go after your prompt, so a resume on another day keeps the cache.
 

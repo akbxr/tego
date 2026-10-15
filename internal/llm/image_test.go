@@ -87,7 +87,7 @@ func TestAnthropicImages(t *testing.T) {
 
 func TestOpenAIImages(t *testing.T) {
 	msgs := append(imageHistory(), Message{Role: RoleUser, Blocks: []Block{{Type: BlockText, Text: "next"}}})
-	body, err := openaiBody(&Request{Model: "gpt-4o", Messages: msgs})
+	body, err := openaiBody(&Request{Model: "gpt-4o", Messages: msgs}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
