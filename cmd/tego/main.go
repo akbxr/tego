@@ -43,6 +43,7 @@ Usage:
   tego usage                      subscription limits of every logged-in account
   tego stats [-r 7d] [-j]         usage statistics in the terminal (-j: JSON)
   tego stats serve                usage dashboard in the browser
+  tego update [--check]           install the latest release
 
 Flags:
   -m, --model provider/model      e.g. anthropic/claude-sonnet-4-5, openai-codex/gpt-5, ollama/qwen3
@@ -157,6 +158,8 @@ func run() error {
 			return nil
 		case "stats":
 			return cmdStats(cfg, args[1:])
+		case "update":
+			return cmdUpdate(cfg.Dir, args[1:])
 		case "usage":
 			start := time.Now()
 			all := fetchUsage(context.Background(), cfg, store)
@@ -282,6 +285,11 @@ func run() error {
 	}()
 	if app.interactive {
 		app.banner()
+		updateOff := cfg.UpdateCheck == "off" || os.Getenv("TEGO_NO_UPDATE_CHECK") != ""
+		if v := updateNotice(cfg.Dir, version, updateOff); v != "" {
+			app.updateBanner(v)
+		}
+		go refreshUpdateCache(cfg.Dir, version, updateOff) // for the next start; never blocks this one
 		if noModel != nil {
 			app.ui.OnInfo("No model available yet: run /login to sign in (Claude, ChatGPT, Google Antigravity) or store an API key, then /model.")
 		}

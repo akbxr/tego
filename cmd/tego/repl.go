@@ -429,6 +429,13 @@ func (a *app) banner() {
 	fmt.Fprintf(a.out, "%s/help commands · /model · /resume · !cmd shell · esc interrupts · esc esc rewinds · shift+enter newline · while working: enter steers, alt+enter queues · ctrl+v pastes images%s\n", c.dim, c.reset)
 }
 
+// updateBanner tells the user a newer release exists, under the banner.
+func (a *app) updateBanner(latest string) {
+	c := a.ui.c
+	fmt.Fprintf(a.out, "%s⬆ Update available:%s %s%s → %s%s%s · run %stego update%s\n",
+		c.bold+c.yellow, c.reset, c.dim, version, c.reset+c.green, latest, c.reset+c.dim, c.reset+c.cyan, c.reset)
+}
+
 func (a *app) usageLine(before llm.Usage, d time.Duration) {
 	t := a.ag.Usage()
 	in, out, cache := t.Input-before.Input, t.Output-before.Output, t.CacheRead-before.CacheRead

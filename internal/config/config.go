@@ -22,14 +22,15 @@ import (
 )
 
 type Config struct {
-	Model         string                         `json:"model,omitempty"`     // provider/model-id
-	Thinking      string                         `json:"thinking,omitempty"`  // off|low|medium|high
-	WebModel      string                         `json:"web_model,omitempty"` // model for native web_search (default: provider-specific)
-	Subagents     int                            `json:"subagents,omitempty"` // subagents running at once (default 8); more tasks queue
-	MCPTools      string                         `json:"mcp_tools,omitempty"` // "auto" (default: deferred behind tool_search above 10 tools), "lazy", "eager"
-	Accounts      string                         `json:"accounts,omitempty"`  // with several logins per provider: "fallback" (default: switch on limits) or "round-robin"
-	Icons         string                         `json:"icons,omitempty"`     // status-line icons: "nerd" (Nerd Font glyphs) or "unicode" (default)
-	Notify        string                         `json:"notify,omitempty"`    // "off" disables the notification (sound) when a turn finishes
+	Model         string                         `json:"model,omitempty"`        // provider/model-id
+	Thinking      string                         `json:"thinking,omitempty"`     // off|low|medium|high
+	WebModel      string                         `json:"web_model,omitempty"`    // model for native web_search (default: provider-specific)
+	Subagents     int                            `json:"subagents,omitempty"`    // subagents running at once (default 8); more tasks queue
+	MCPTools      string                         `json:"mcp_tools,omitempty"`    // "auto" (default: deferred behind tool_search above 10 tools), "lazy", "eager"
+	Accounts      string                         `json:"accounts,omitempty"`     // with several logins per provider: "fallback" (default: switch on limits) or "round-robin"
+	Icons         string                         `json:"icons,omitempty"`        // status-line icons: "nerd" (Nerd Font glyphs) or "unicode" (default)
+	Notify        string                         `json:"notify,omitempty"`       // "off" disables the notification (sound) when a turn finishes
+	UpdateCheck   string                         `json:"update_check,omitempty"` // "off" stops the daily check for a newer release
 	ContextWindow int                            `json:"context_window,omitempty"`
 	AutoCompact   *bool                          `json:"auto_compact,omitempty"`
 	CompactAt     int                            `json:"compact_at_percent,omitempty"`  // auto-compact above this % of the window (default: window - max(15%, 16k))

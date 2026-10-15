@@ -18,6 +18,8 @@ git clone https://github.com/akbxr/tego && cd tego
 go build -ldflags="-s -w" -o ~/.local/bin/tego ./cmd/tego
 ```
 
+`tego update` installs the latest release over the running binary after checking its checksum, and `tego update --check` only tells you whether there is one. tego also looks for a new release once a day in the background and shows `⬆ Update available` under the banner when it finds one. Set `"update_check": "off"` in the config or `TEGO_NO_UPDATE_CHECK=1` to turn that off.
+
 ## Quick start
 
 ```sh
