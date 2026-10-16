@@ -20,7 +20,7 @@ import (
 // thinking, edit inputs) cannot be cleared, so the prompt stayed above it,
 // the server cleared a little more on every new tool use, and sessions past
 // 600k tokens rewrote the whole cache again and again (127 times in three
-// days, ~$550 at API prices).
+// days, ~$450 of cache writes at API prices).
 const (
 	clearTrigger = 200_000 // tokens before the first pass
 	clearAtLeast = 80_000
