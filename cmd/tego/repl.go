@@ -343,10 +343,6 @@ func (a *app) refreshStatus() {
 	}
 	a.status.update(func(s *statusInfo) {
 		s.model, s.spec, s.thinking = modelLabel(a.ag.Model), a.ag.ProviderName+"/"+a.ag.Model, a.ag.Thinking
-		s.account = ""
-		if pool, ok := a.ag.Provider.(*llm.Pool); ok {
-			s.account = pool.Active()
-		}
 		if a.ag.Provider == nil {
 			s.model, s.spec = "no model · /login", "none"
 		}

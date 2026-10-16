@@ -206,13 +206,6 @@ func firstLine(s string) string {
 	return line
 }
 
-// Active describes the account in use, e.g. "me@x.com (2/3)".
-func (p *Pool) Active() string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return fmt.Sprintf("%s (%d/%d)", p.members[p.current].Label, p.current+1, len(p.members))
-}
-
 // AccountStatus is one line of /accounts output.
 type AccountStatus struct {
 	Label     string

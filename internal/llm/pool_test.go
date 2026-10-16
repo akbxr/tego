@@ -74,8 +74,8 @@ func TestPoolFallbackSwitchesOnLimitAndRestsAccount(t *testing.T) {
 	if got := answer(t, p, prompt("s")); got != "b" || a.calls != 1 {
 		t.Fatalf("second prompt answered by %q (a called %d times)", got, a.calls)
 	}
-	if p.Active() != "b (2/2)" {
-		t.Fatalf("Active = %q", p.Active())
+	if st := p.Status(); len(st) != 2 || st[0].Active || !st[1].Active {
+		t.Fatalf("status %+v, want b active", st)
 	}
 	// Once b is limited, a is back from its rest and takes over.
 	time.Sleep(60 * time.Millisecond)

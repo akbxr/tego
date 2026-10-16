@@ -25,7 +25,6 @@ type statusInfo struct {
 	usage     llm.Usage
 	title     string
 	git       string // styled branch + counts, "" outside a repo
-	account   string // active account when several are logged in, e.g. "me@x.com (2/3)"
 	busy      bool
 	busySince time.Time
 	todoDone  int
@@ -114,9 +113,6 @@ func (b *statusBar) status(width int) []string {
 		parts = append(parts, c.yellow+c.bold+"⏸ plan mode"+c.reset)
 	}
 	parts = append(parts, c.cyan+"◆ "+s.model+c.reset)
-	if s.account != "" {
-		parts = append(parts, c.cyan+"◎ "+s.account+c.reset)
-	}
 	parts = append(parts, c.blue+b.icons.folder+" "+b.cwd+c.reset)
 	if s.git != "" {
 		parts = append(parts, s.git)
