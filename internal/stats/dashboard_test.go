@@ -44,6 +44,8 @@ func TestDashboardRenders(t *testing.T) {
 	add(Record{Kind: "request", TS: now.UnixMilli(), Folder: "/p0", Class: "subagent", Provider: "ollama", Model: "qwen3", Input: 10, Output: 5})
 	add(Record{Kind: "request", TS: now.UnixMilli(), Folder: "/p0", Class: "auxiliary", Provider: "anthropic", Model: "claude-haiku-4-5",
 		Error: "429 <rate limited>"})
+	add(Record{Kind: "request", TS: now.UnixMilli(), Folder: "/p0", Class: "auxiliary", Provider: "anthropic", Model: "claude-haiku-5-5",
+		Input: 9000, Output: 300, WebSearches: 2})
 	add(Record{Kind: "tool", TS: now.UnixMilli(), Tool: "bash", ToolError: true})
 	if err := os.WriteFile(filepath.Join(dir, "stats.jsonl"), []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -55,7 +57,13 @@ func TestDashboardRenders(t *testing.T) {
 		if code != 200 {
 			t.Fatalf("%s: status %d: %s", rng, code, body)
 		}
-		for _, want := range []string{`data-r="requests">14<`, "Where the money went", `class="panel model`, "Show 2 more", `"label":`,
+		// Searches cost money, not tokens: in the cost panel and the cost
+		// chart's legend, not the token chart's (whose entries carry a count).
+		if !strings.Contains(body, "2 searches</small>") || !strings.Contains(body, `k-search"></i>Web searches</li>`) ||
+			strings.Contains(body, `k-search"></i>Web searches <b`) {
+			t.Errorf("%s: web search row wrong", rng)
+		}
+		for _, want := range []string{`data-r="requests">15<`, "Where the money went", `class="panel model`, "Show 2 more", `"label":`,
 			"1 request unpriced", "429 &lt;rate limited&gt;", "Titles and search", `class="seg s-bad"`, "Response time"} {
 			if !strings.Contains(body, want) {
 				t.Errorf("%s: page lacks %q", rng, want)

@@ -117,8 +117,16 @@ func Summary(w io.Writer, rep *Report, color bool) {
 	}
 	row("Cost", cost)
 	if s := o.Spend; o.Cost > 0 {
-		row("", fmt.Sprintf("%scache reads %s · cache writes %s · fresh input %s · output %s%s", c.dim,
-			Money(s.CacheRead), Money(s.CacheWrite), Money(s.Input), Money(s.Output), c.reset))
+		search := ""
+		if o.WebSearches > 0 {
+			noun := "web searches"
+			if o.WebSearches == 1 {
+				noun = "web search"
+			}
+			search = fmt.Sprintf(" · %s %s %s", Compact(o.WebSearches), noun, Money(s.WebSearch))
+		}
+		row("", fmt.Sprintf("%scache reads %s · cache writes %s · fresh input %s · output %s%s%s", c.dim,
+			Money(s.CacheRead), Money(s.CacheWrite), Money(s.Input), Money(s.Output), search, c.reset))
 	}
 	if o.AvgDuration > 0 {
 		lat := "avg " + Seconds(o.AvgDuration)

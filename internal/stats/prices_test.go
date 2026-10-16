@@ -1,6 +1,9 @@
 package stats
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestFastModeCostsTwice(t *testing.T) {
 	p := Price{Input: 4, Output: 20, CacheRead: 0.4, CacheWrite: 5} // Opus 5.5
@@ -54,5 +57,41 @@ func TestHeatLevel(t *testing.T) {
 		if got := heatLevel(c.n, c.peak); got != c.want {
 			t.Errorf("heatLevel(%d, %d) = %d, want %d", c.n, c.peak, got, c.want)
 		}
+	}
+}
+
+// Web search is billed per search on top of its tokens, and is in the
+// totals, the terminal summary and the dashboard's cost.
+func TestWebSearchFee(t *testing.T) {
+	haiku := Price{Input: 0.1, Output: 0.5, CacheRead: 0.01, CacheWrite: 0.125}
+	r := Record{Kind: "request", Class: "auxiliary", Input: 10000, Output: 400, WebSearches: 3}
+	s, _ := priceRequest(haiku, &r)
+	if s.WebSearch != 0.03 || s.Total() != 0.001+0.0002+0.03 {
+		t.Fatalf("spend %+v, total %v", s, s.Total())
+	}
+	var tot Totals
+	tot.add(&r, haiku, true)
+	tot.add(&Record{Input: 100, Output: 10}, haiku, true)
+	if tot.WebSearches != 3 || tot.Spend.WebSearch != 0.03 || tot.Cost != tot.Spend.Total() {
+		t.Fatalf("totals %+v", tot)
+	}
+	rows := kindRows(tot)
+	last := rows[len(rows)-1]
+	if last.Class != kindSearch || last.Searches != 3 || last.Cost != 0.03 || last.Tokens != 0 {
+		t.Fatalf("kind row %+v", last)
+	}
+	var out strings.Builder
+	Summary(&out, &Report{Range: "all", Overall: tot}, false)
+	if !strings.Contains(out.String(), "3 web searches $0.03") {
+		t.Fatalf("summary:\n%s", out.String())
+	}
+	// Google grounding costs $14 per 1,000.
+	if s, _ := priceRequest(haiku, &Record{Model: "gemini-3.5-flash-lite", WebSearches: 2}); s.WebSearch != 0.028 {
+		t.Fatalf("gemini search fee %v", s.WebSearch)
+	}
+	tot.WebSearches = 1
+	out.Reset()
+	if Summary(&out, &Report{Range: "all", Overall: tot}, false); !strings.Contains(out.String(), "1 web search $") {
+		t.Fatalf("summary, one search:\n%s", out.String())
 	}
 }

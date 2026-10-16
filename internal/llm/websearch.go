@@ -18,6 +18,9 @@ type Source struct{ Title, URL string }
 type WebResult struct {
 	Text    string
 	Sources []Source
+	// For the stats: what the search used, and how many searches it ran.
+	usage    Usage
+	searches int
 }
 
 // WebSearcher is implemented by providers with a server-side web search tool.
@@ -121,6 +124,12 @@ type aWebRequest struct {
 type aWebResponse struct {
 	StopReason string            `json:"stop_reason"`
 	Content    []json.RawMessage `json:"content"`
+	Usage      struct {
+		aUsage
+		ServerToolUse struct {
+			WebSearchRequests int `json:"web_search_requests"`
+		} `json:"server_tool_use"`
+	} `json:"usage"`
 }
 
 type aWebBlock struct {
@@ -169,7 +178,10 @@ func (p *anthropicProvider) webSearchBody(model, query, version string, msgs []a
 // WebSearch asks the model to answer query using Anthropic's server-side
 // web search tool (non-streaming). Long searches that stop with pause_turn
 // are continued a few times.
-func (p *anthropicProvider) WebSearch(ctx context.Context, model, query string) (*WebResult, error) {
+func (p *anthropicProvider) WebSearch(ctx context.Context, model, query string) (res *WebResult, err error) {
+	var used Usage
+	searches := 0
+	defer func(start time.Time) { reportWebSearch(p.name, model, start, used, searches, err) }(time.Now())
 	msgs := []aRawMessage{{Role: RoleUser, Content: query}}
 	var t *ccTurn
 	if p.oauth != nil {
@@ -199,6 +211,12 @@ func (p *anthropicProvider) WebSearch(ctx context.Context, model, query string) 
 		if err != nil {
 			return nil, err
 		}
+		u := resp.Usage
+		used.Input += u.InputTokens
+		used.Output += u.OutputTokens
+		used.CacheRead += u.CacheRead
+		used.CacheWrite += u.CacheCreation
+		searches += u.ServerToolUse.WebSearchRequests
 		blocks = append(blocks, resp.Content...)
 		if resp.StopReason != "pause_turn" || pause >= webSearchMaxPauses {
 			break
@@ -291,12 +309,19 @@ func codexWebBody(model, query string) ([]byte, error) {
 }
 
 // WebSearch runs a forced web_search call on the Codex Responses backend.
-func (p *codexProvider) WebSearch(ctx context.Context, model, query string) (*WebResult, error) {
+func (p *codexProvider) WebSearch(ctx context.Context, model, query string) (res *WebResult, err error) {
+	defer func(start time.Time) {
+		var u Usage
+		n := 0
+		if res != nil {
+			u, n = res.usage, res.searches
+		}
+		reportWebSearch(p.name, model, start, u, n, err)
+	}(time.Now())
 	body, err := codexWebBody(model, query)
 	if err != nil {
 		return nil, err
 	}
-	var res *WebResult
 	err = withRetry(ctx, func() error {
 		token, err := p.oauth.Token(ctx)
 		if err != nil {
@@ -341,6 +366,13 @@ type cxWebEvent struct {
 	Item     *cxWebItem `json:"item"`
 	Response *struct {
 		Error *cxErrorBody `json:"error"`
+		Usage *struct {
+			InputTokens        int `json:"input_tokens"`
+			OutputTokens       int `json:"output_tokens"`
+			InputTokensDetails *struct {
+				CachedTokens int `json:"cached_tokens"`
+			} `json:"input_tokens_details"`
+		} `json:"usage"`
 	} `json:"response"`
 	Code    string       `json:"code"`
 	Message string       `json:"message"`
@@ -354,6 +386,7 @@ func parseCodexWebStream(ctx context.Context, provider string, body io.Reader) (
 	var text, deltas strings.Builder
 	var cited, found sourceSet
 	searched := false
+	searches := 0 // web_search_call items: each is billed
 	sse := newSSEReader(body)
 	for {
 		e, rerr := sse.Next()
@@ -384,6 +417,7 @@ func parseCodexWebStream(ctx context.Context, provider string, body io.Reader) (
 			switch it.Type {
 			case "web_search_call":
 				searched = true
+				searches++
 				if it.Action != nil {
 					for _, s := range it.Action.Sources {
 						u := s.URL
@@ -423,7 +457,15 @@ func parseCodexWebStream(ctx context.Context, provider string, body io.Reader) (
 			if answer == "" && len(cited.list) == 0 {
 				return nil, errors.New(provider + ": web search returned no results")
 			}
-			return &WebResult{Text: answer, Sources: cited.list}, nil
+			res := &WebResult{Text: answer, Sources: cited.list, searches: searches}
+			if r := ev.Response; r != nil && r.Usage != nil {
+				cached := 0
+				if r.Usage.InputTokensDetails != nil {
+					cached = r.Usage.InputTokensDetails.CachedTokens
+				}
+				res.usage = Usage{Input: r.Usage.InputTokens - cached, CacheRead: cached, Output: r.Usage.OutputTokens}
+			}
+			return res, nil
 		case "response.failed":
 			var eb *cxErrorBody
 			if ev.Response != nil {

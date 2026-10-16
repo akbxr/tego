@@ -117,15 +117,28 @@ type Spend struct {
 	Output     float64 `json:"output"`
 	CacheRead  float64 `json:"cache_read"`
 	CacheWrite float64 `json:"cache_write"`
+	WebSearch  float64 `json:"web_search"` // the per-search fee of native web search
 }
 
-func (s Spend) Total() float64 { return s.Input + s.Output + s.CacheRead + s.CacheWrite }
+func (s Spend) Total() float64 { return s.Input + s.Output + s.CacheRead + s.CacheWrite + s.WebSearch }
 
 func (s *Spend) add(o Spend) {
 	s.Input += o.Input
 	s.Output += o.Output
 	s.CacheRead += o.CacheRead
 	s.CacheWrite += o.CacheWrite
+	s.WebSearch += o.WebSearch
+}
+
+// webSearchFee is the price of one search a native web search ran, on top
+// of its tokens: $14 per 1,000 Google searches grounding a Gemini 3+
+// answer (past 5,000 free a month, which a log can't tell apart), $10 per
+// 1,000 on Anthropic and OpenAI.
+func webSearchFee(model string) float64 {
+	if strings.HasPrefix(model, "gemini") {
+		return 14.0 / 1000
+	}
+	return 10.0 / 1000
 }
 
 // priceRequest prices one request, and what its input side would have
@@ -150,6 +163,7 @@ func priceRequest(p Price, r *Record) (s Spend, uncached float64) {
 		Output:     float64(r.Output) * p.Output / 1e6,
 		CacheRead:  float64(r.CacheRead) * p.CacheRead / 1e6,
 		CacheWrite: float64(r.CacheWrite) * write / 1e6,
+		WebSearch:  float64(r.WebSearches) * webSearchFee(r.Model),
 	}
 	return s, float64(r.Input+r.CacheRead+r.CacheWrite) * p.Input / 1e6
 }

@@ -238,7 +238,11 @@ var tokenKinds = []kind{
 	{"k-write", "Cache writes", func(t *Totals) int64 { return t.CacheWrite }, func(s Spend) float64 { return s.CacheWrite }, func(b *Bucket) int64 { return b.CacheWrite }},
 	{"k-in", "Fresh input", func(t *Totals) int64 { return t.Input }, func(s Spend) float64 { return s.Input }, func(b *Bucket) int64 { return b.Input }},
 	{"k-out", "Output", func(t *Totals) int64 { return t.Output }, func(s Spend) float64 { return s.Output }, func(b *Bucket) int64 { return b.Output }},
+	// Not tokens: the per-search fee of native web search. Token charts skip it.
+	{kindSearch, "Web searches", func(*Totals) int64 { return 0 }, func(s Spend) float64 { return s.WebSearch }, func(*Bucket) int64 { return 0 }},
 }
+
+const kindSearch = "k-search"
 
 // KindRow is one token kind's share of tokens and of cost.
 type KindRow struct {
@@ -246,6 +250,7 @@ type KindRow struct {
 	Tokens                int64
 	Cost                  float64
 	TokenShare, CostShare float64
+	Searches              int64 // web searches (the kindSearch row)
 }
 
 func kindRows(t Totals) []KindRow {
@@ -253,6 +258,9 @@ func kindRows(t Totals) []KindRow {
 	total, cost := float64(t.Tokens()), t.Spend.Total()
 	for i, k := range tokenKinds {
 		r := KindRow{Class: k.Class, Name: k.Name, Tokens: k.tokens(&t), Cost: k.cost(t.Spend)}
+		if k.Class == kindSearch {
+			r.Searches = t.WebSearches
+		}
 		if total > 0 {
 			r.TokenShare = float64(r.Tokens) / total
 		}
@@ -379,6 +387,9 @@ func chart(rep *Report, which string) template.HTML {
 		}
 	case "tokens":
 		for _, k := range tokenKinds {
+			if k.Class == kindSearch {
+				continue
+			}
 			layers = append(layers, layer{k.Class, func(b *Bucket) float64 { return float64(k.bucket(b)) }})
 		}
 	case "cost":

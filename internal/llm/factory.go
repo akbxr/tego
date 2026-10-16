@@ -178,6 +178,9 @@ type RequestStat struct {
 	StopReason string
 	Err        string   // "" on success
 	Tools      []string // tool calls the answer made
+	// WebSearches is the number of searches a native web search ran; they
+	// are billed per search on top of the tokens.
+	WebSearches int
 }
 
 var requestHook atomic.Pointer[func(RequestStat)]
@@ -218,6 +221,25 @@ func reportRequest(provider string, req *Request, start, first, started time.Tim
 	for _, b := range msg.Blocks {
 		if b.Type == BlockToolUse {
 			st.Tools = append(st.Tools, b.Name)
+		}
+	}
+	(*hook)(st)
+}
+
+// reportWebSearch reports a native web search (WebSearcher) to the stats
+// hook: a side request, with usage u and the number of searches it ran.
+// It is not streamed, so it has no time to first token and no output speed.
+func reportWebSearch(provider, model string, start time.Time, u Usage, searches int, err error) {
+	hook := requestHook.Load()
+	if hook == nil {
+		return
+	}
+	st := RequestStat{Provider: provider, Model: model, Class: ClassAuxiliary, Start: start, Duration: time.Since(start),
+		Usage: u, StopReason: "end_turn", WebSearches: searches}
+	if err != nil {
+		st.StopReason, st.Err = "error", err.Error()
+		if errors.Is(err, context.Canceled) {
+			st.StopReason, st.Err = "aborted", ""
 		}
 	}
 	(*hook)(st)

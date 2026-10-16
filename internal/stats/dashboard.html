@@ -14,7 +14,7 @@
 :root {
   --paper: #f3f4f6; --panel: #ffffff; --line: #e6e7eb; --haze: #f4f5f7; --ink: #15161a; --graphite: #6b6e78;
   --accent: #c2338e; --bad: #cf3434; --good: #2f8a4c;
-  --read: #2b8c99; --write: #5c55d6; --in: #c98216; --out: #c2338e; --ok: #4a4c55;
+  --read: #2b8c99; --write: #5c55d6; --in: #c98216; --out: #c2338e; --search: #3d8a4f; --ok: #4a4c55;
   --m1: #5c55d6; --m2: #2b8c99; --m3: #c98216; --m4: #c2338e; --m5: #4e8f35; --m6: #a3a6af;
   --sans: "Instrument Sans", system-ui, sans-serif;
   --mono: "Martian Mono", ui-monospace, Menlo, monospace;
@@ -23,11 +23,11 @@
   :root {
     --paper: #0e0f12; --panel: #16171b; --line: #24262c; --haze: #1d1e23; --ink: #ecedf0; --graphite: #8b8e99;
     --accent: #e46cc1; --bad: #f06464; --good: #6cc488;
-    --read: #4fb8c4; --write: #8e87f5; --in: #e6a84b; --out: #e46cc1; --ok: #c3c5cd;
+    --read: #4fb8c4; --write: #8e87f5; --in: #e6a84b; --out: #e46cc1; --search: #6cc583; --ok: #c3c5cd;
     --m1: #8e87f5; --m2: #4fb8c4; --m3: #e6a84b; --m4: #e46cc1; --m5: #8cc97a; --m6: #5d6069;
   }
 }
-.k-read { --c: var(--read); } .k-write { --c: var(--write); } .k-in { --c: var(--in); } .k-out { --c: var(--out); }
+.k-read { --c: var(--read); } .k-write { --c: var(--write); } .k-in { --c: var(--in); } .k-out { --c: var(--out); } .k-search { --c: var(--search); }
 .s-ok { --c: var(--ok); } .s-bad { --c: var(--bad); }
 .m1 { --c: var(--m1); } .m2 { --c: var(--m2); } .m3 { --c: var(--m3); } .m4 { --c: var(--m4); } .m5 { --c: var(--m5); } .m6 { --c: var(--m6); }
 
@@ -278,7 +278,7 @@ kbd { font-family: var(--mono); font-size: 11px; padding: 1px 5px; border-radius
     <div class="chart-scroll">{{chart $r "cost"}}</div>
   </div>
   <div class="pane p-tok">
-    <ul class="legend">{{range $i, $k := kinds $o}}<li><i class="sw {{$k.Class}}"></i>{{$k.Name}} <b data-r="k{{$i}}t">{{compact $k.Tokens}}</b></li>{{end}}</ul>
+    <ul class="legend">{{range $i, $k := kinds $o}}{{if ne $k.Class "k-search"}}<li><i class="sw {{$k.Class}}"></i>{{$k.Name}} <b data-r="k{{$i}}t">{{compact $k.Tokens}}</b></li>{{end}}{{end}}</ul>
     <div class="chart-scroll">{{chart $r "tokens"}}</div>
   </div>
   <div class="pane p-req">
@@ -297,9 +297,11 @@ kbd { font-family: var(--mono); font-size: 11px; padding: 1px 5px; border-radius
     <span>Tokens</span><div class="stack">{{range kinds $o}}{{if .Tokens}}<span class="{{.Class}}" style="width:{{width .TokenShare}}" title="{{.Name}} {{pct .TokenShare}}"></span>{{end}}{{end}}</div>
     {{if $priced}}<span>Cost</span><div class="stack">{{range kinds $o}}{{if .Cost}}<span class="{{.Class}}" style="width:{{width .CostShare}}" title="{{.Name}} {{pct .CostShare}}"></span>{{end}}{{end}}</div>{{end}}
   </div>
-  <ul class="kinds">{{range $i, $k := kinds $o}}
+  <ul class="kinds">{{range $i, $k := kinds $o}}{{if eq $k.Class "k-search"}}{{if $k.Searches}}
     <li class="{{$k.Class}}"><i class="sw"></i><span>{{$k.Name}}</span><b data-r="k{{$i}}c">{{money $k.Cost}}</b>
-      <small class="static">{{pct $k.CostShare}} of cost · {{pct $k.TokenShare}} of tokens · {{compact $k.Tokens}}</small></li>{{end}}
+      <small class="static">{{pct $k.CostShare}} of cost · {{compact $k.Searches}} {{if eq $k.Searches 1}}search{{else}}searches{{end}}</small></li>{{end}}{{else}}
+    <li class="{{$k.Class}}"><i class="sw"></i><span>{{$k.Name}}</span><b data-r="k{{$i}}c">{{money $k.Cost}}</b>
+      <small class="static">{{pct $k.CostShare}} of cost · {{pct $k.TokenShare}} of tokens · {{compact $k.Tokens}}</small></li>{{end}}{{end}}
   </ul>
   {{if $priced}}<div class="saved"><span>Saved by the cache</span><b>{{money $o.CacheSaved}} · {{pct $o.CacheSavings}}</b></div>{{end}}
 </section>

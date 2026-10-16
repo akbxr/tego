@@ -11,17 +11,18 @@ var Ranges = []string{"24h", "7d", "30d", "90d", "all"}
 
 // Totals aggregates requests. Derived fields are filled by finish.
 type Totals struct {
-	Requests   int     `json:"requests"`
-	Failed     int     `json:"failed"`
-	Input      int64   `json:"input_tokens"`
-	Output     int64   `json:"output_tokens"`
-	CacheRead  int64   `json:"cache_read_tokens"`
-	CacheWrite int64   `json:"cache_write_tokens"`
-	Cost       float64 `json:"cost"`          // API-equivalent estimate, priced requests only
-	Spend      Spend   `json:"cost_by_token"` // Cost split by token kind
-	Unpriced   int     `json:"unpriced"`      // requests whose model has no price
-	First      int64   `json:"first_ts,omitempty"`
-	Last       int64   `json:"last_ts,omitempty"`
+	Requests    int     `json:"requests"`
+	Failed      int     `json:"failed"`
+	Input       int64   `json:"input_tokens"`
+	Output      int64   `json:"output_tokens"`
+	CacheRead   int64   `json:"cache_read_tokens"`
+	CacheWrite  int64   `json:"cache_write_tokens"`
+	Cost        float64 `json:"cost"`          // API-equivalent estimate, priced requests only
+	Spend       Spend   `json:"cost_by_token"` // Cost split by token kind
+	Unpriced    int     `json:"unpriced"`      // requests whose model has no price
+	WebSearches int64   `json:"web_searches"`  // searches native web search ran
+	First       int64   `json:"first_ts,omitempty"`
+	Last        int64   `json:"last_ts,omitempty"`
 
 	ErrorRate    float64 `json:"error_rate"`
 	CacheRate    float64 `json:"cache_rate"`    // share of input tokens read from cache
@@ -80,6 +81,7 @@ func (t *Totals) add(r *Record, p Price, priced bool) {
 	t.Output += int64(r.Output)
 	t.CacheRead += int64(r.CacheRead)
 	t.CacheWrite += int64(r.CacheWrite)
+	t.WebSearches += int64(r.WebSearches)
 	if priced {
 		s, unc := priceRequest(p, r)
 		t.Spend.add(s)

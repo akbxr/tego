@@ -26,19 +26,21 @@ type Record struct {
 	Provider string `json:"provider,omitempty"`
 	Model    string `json:"model,omitempty"`
 	// request
-	Input      int      `json:"input,omitempty"`
-	Output     int      `json:"output,omitempty"`
-	CacheRead  int      `json:"cache_read,omitempty"`
-	CacheWrite int      `json:"cache_write,omitempty"`
-	LongCache  bool     `json:"long_cache,omitempty"`
-	Fast       bool     `json:"fast,omitempty"` // ran in fast mode: every token at twice the price
-	DurationMs int64    `json:"duration_ms,omitempty"`
-	TTFTMs     int64    `json:"ttft_ms,omitempty"`
-	GenStartMs int64    `json:"gen_start_ms,omitempty"` // when generation began (older records: none)
-	GenOutput  int      `json:"gen_output,omitempty"`   // output generated after that (0 = all of Output)
-	Stop       string   `json:"stop,omitempty"`
-	Error      string   `json:"error,omitempty"`
-	Tools      []string `json:"tools,omitempty"`
+	Input      int  `json:"input,omitempty"`
+	Output     int  `json:"output,omitempty"`
+	CacheRead  int  `json:"cache_read,omitempty"`
+	CacheWrite int  `json:"cache_write,omitempty"`
+	LongCache  bool `json:"long_cache,omitempty"`
+	Fast       bool `json:"fast,omitempty"` // ran in fast mode: every token at twice the price
+	// WebSearches a native web search ran, billed per search (webSearchFee).
+	WebSearches int      `json:"web_searches,omitempty"`
+	DurationMs  int64    `json:"duration_ms,omitempty"`
+	TTFTMs      int64    `json:"ttft_ms,omitempty"`
+	GenStartMs  int64    `json:"gen_start_ms,omitempty"` // when generation began (older records: none)
+	GenOutput   int      `json:"gen_output,omitempty"`   // output generated after that (0 = all of Output)
+	Stop        string   `json:"stop,omitempty"`
+	Error       string   `json:"error,omitempty"`
+	Tools       []string `json:"tools,omitempty"`
 	// tool
 	Tool      string `json:"tool,omitempty"`
 	ToolError bool   `json:"tool_error,omitempty"`
@@ -79,7 +81,7 @@ func RequestRecord(st llm.RequestStat, folder string) Record {
 		Input: st.Usage.Input, Output: st.Usage.Output, CacheRead: st.Usage.CacheRead, CacheWrite: st.Usage.CacheWrite,
 		LongCache: st.LongCache, Fast: st.Usage.Fast, DurationMs: st.Duration.Milliseconds(), TTFTMs: st.TTFT.Milliseconds(),
 		GenStartMs: st.GenStart.Milliseconds(), GenOutput: st.GenOutput,
-		Stop: st.StopReason, Error: st.Err, Tools: st.Tools}
+		Stop: st.StopReason, Error: st.Err, Tools: st.Tools, WebSearches: st.WebSearches}
 }
 
 // Load reads the stats log plus the history imported from session files

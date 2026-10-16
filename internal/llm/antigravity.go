@@ -594,7 +594,8 @@ type agFunctionDecl struct {
 }
 
 type agTool struct {
-	FunctionDeclarations []agFunctionDecl `json:"functionDeclarations"`
+	FunctionDeclarations []agFunctionDecl `json:"functionDeclarations,omitempty"`
+	GoogleSearch         *struct{}        `json:"googleSearch,omitempty"` // grounding (web search)
 }
 
 type agToolConfig struct {
@@ -628,6 +629,10 @@ type agRequest struct {
 }
 
 func antigravityBody(req *Request, provider, project string, t agTarget, tr agTurn) ([]byte, error) {
+	return encodeAntigravity(antigravityRequest(req, provider, project, t, tr))
+}
+
+func antigravityRequest(req *Request, provider, project string, t agTarget, tr agTurn) *agRequest {
 	inner := agInnerRequest{
 		Contents:  antigravityContents(req.Messages, provider, req.Model, t),
 		Labels:    tr.labels,
@@ -650,7 +655,7 @@ func antigravityBody(req *Request, provider, project string, t agTarget, tr agTu
 		inner.ToolConfig = tc
 	}
 	inner.GenerationConfig = &agGenerationConfig{MaxOutputTokens: t.maxOutput, ThinkingConfig: t.thinking}
-	r := agRequest{
+	return &agRequest{
 		Project:     project,
 		RequestID:   tr.requestID,
 		Request:     inner,
@@ -658,10 +663,13 @@ func antigravityBody(req *Request, provider, project string, t agTarget, tr agTu
 		UserAgent:   "antigravity",
 		RequestType: "agent",
 	}
+}
+
+func encodeAntigravity(r *agRequest) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
-	if err := enc.Encode(&r); err != nil {
+	if err := enc.Encode(r); err != nil {
 		return nil, err
 	}
 	return bytes.TrimSuffix(buf.Bytes(), []byte{'\n'}), nil

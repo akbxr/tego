@@ -88,6 +88,9 @@ var defaultSmallModels = map[string]string{
 	"google-antigravity": "gemini-3.5-flash-lite",
 }
 
+// DefaultSmallModelFor is a provider's default small model ("" if none).
+func DefaultSmallModelFor(provider string) string { return defaultSmallModels[provider] }
+
 // SmallModelSpec is the provider/model spec of the cheaper model for side
 // work in a session on provider, "" for none (the session's model does it).
 func (c *Config) SmallModelSpec(provider string) string {
