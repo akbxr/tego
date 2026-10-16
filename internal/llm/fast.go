@@ -69,10 +69,14 @@ func (p *anthropicProvider) fastFor(req *Request) bool {
 	return p.fast.off == "" && !time.Now().Before(p.fast.until)
 }
 
-// fastRejected handles an error to a fast request. A rate limit or overload
-// rests fast mode for a while; a refusal that names fast mode, speed or
-// usage credits turns it off for the session. It returns the note for the
-// user and whether the request should be sent again at standard speed.
+// fastRejected handles an error to a fast request. A refusal that names
+// fast mode, speed or usage credits turns it off for the session; a rate
+// limit or overload rests it for a while. It returns the note for the user
+// and whether the request should be sent again at standard speed.
+//
+// Without usage credits the API answers 429 rate_limit_error "Usage credits
+// are required for fast mode." (measured): that is a refusal, not a rate
+// limit, so it is checked first, and waiting would not help.
 func (p *anthropicProvider) fastRejected(err error) (string, bool) {
 	var ae *APIError
 	if !errors.As(err, &ae) {
@@ -81,6 +85,9 @@ func (p *anthropicProvider) fastRejected(err error) (string, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	switch body := strings.ToLower(ae.Body); {
+	case ae.Status == 429 && (strings.Contains(body, "credit") || strings.Contains(body, "overage")):
+		p.fast.off = shortReason(ae.Body)
+		return "fast mode unavailable (" + p.fast.off + "): standard speed for this session", true
 	case ae.Status == 429 || ae.Status == 529:
 		wait := ae.RetryAfter
 		if wait <= 0 {

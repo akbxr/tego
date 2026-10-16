@@ -137,6 +137,27 @@ func TestFastModeFallsBackWhenRateLimited(t *testing.T) {
 	}
 }
 
+// Without usage credits the API answers 429 (measured): fast mode is off for
+// the session, not resting for a minute and failing again.
+func TestFastModeOffWithoutUsageCredits(t *testing.T) {
+	f := &fastServer{reject: func() (int, string) {
+		return 429, `{"type":"error","error":{"type":"rate_limit_error","message":"Usage credits are required for fast mode."},"request_id":"req_1"}`
+	}}
+	srv := httptest.NewServer(http.HandlerFunc(f.handler))
+	defer srv.Close()
+	p := &anthropicProvider{name: "anthropic", base: srv.URL, key: "k"}
+	msg, err := p.Stream(context.Background(), fastRequest("claude-opus-5-5"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.FastNote != "fast mode unavailable (Usage credits are required for fast mode.): standard speed for this session" {
+		t.Fatalf("note %q", msg.FastNote)
+	}
+	if p.fastFor(fastRequest("claude-opus-5-5")) || !p.fast.until.IsZero() {
+		t.Fatalf("fast mode not off for the session: %+v", p.fast)
+	}
+}
+
 func TestFastModeOffWhenRefused(t *testing.T) {
 	f := &fastServer{reject: func() (int, string) {
 		return 400, `{"type":"error","error":{"type":"invalid_request_error","message":"Fast mode is not enabled for this organization"}}`
