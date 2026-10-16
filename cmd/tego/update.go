@@ -73,6 +73,15 @@ func selfUpdate(ctx context.Context, out io.Writer, dir, exe, current string, ch
 		defer recordLatest(dir, rel.Tag) // the startup notice now knows
 	}
 	latest := strings.TrimPrefix(rel.Tag, "v")
+	if !releaseVersion(current) {
+		// A build from a checkout: replacing it would quietly undo the
+		// user's own changes, and it may well be newer than the release.
+		fmt.Fprintf(out, "tego %s is a development build; the latest release is %s.\n", current, latest)
+		if !check {
+			fmt.Fprintf(out, "Not replacing it. Rebuild from source, or install the release: curl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | sh\n", updateRepo)
+		}
+		return nil
+	}
 	if !newerVersion(latest, current) {
 		fmt.Fprintf(out, "tego %s is the latest version\n", current)
 		return nil

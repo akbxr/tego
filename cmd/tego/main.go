@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,7 +31,44 @@ import (
 	"github.com/akbxr/tego/internal/web"
 )
 
-var version = "0.1.0"
+// version is set by the release build (-ldflags "-X main.version=0.2.0").
+// Otherwise it comes from the build info: the module version for go install
+// …@v0.2.0, or "dev" plus the commit for a build from a checkout, which
+// must not look like an old release and offer an update.
+var version = ""
+
+func init() {
+	if version == "" {
+		version = buildVersion()
+	}
+}
+
+func buildVersion() string {
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "dev"
+	}
+	if v := strings.TrimPrefix(bi.Main.Version, "v"); v != "" && v != "(devel)" {
+		return v
+	}
+	rev, dirty := "", false
+	for _, s := range bi.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+		case "vcs.modified":
+			dirty = s.Value == "true"
+		}
+	}
+	v := "dev"
+	if len(rev) >= 7 {
+		v += "-" + rev[:7]
+	}
+	if dirty {
+		v += "-dirty"
+	}
+	return v
+}
 
 const usage = `tego — lightweight coding agent
 

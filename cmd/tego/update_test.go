@@ -112,6 +112,9 @@ func TestUpdateLeavesTheBinaryAlone(t *testing.T) {
 		{name: "check only", tag: "v0.2.0", current: "0.1.0", check: true, wantOut: "tego 0.2.0 is available"},
 		{name: "bad checksum", tag: "v0.2.0", current: "0.1.0", badSum: true, wantErr: "checksum mismatch"},
 		{name: "no build here", tag: "v0.2.0", current: "0.1.0", none: true, wantErr: "has no build for"},
+		// A build from a checkout is never replaced: it holds the user's own work.
+		{name: "dev build", tag: "v0.2.0", current: "dev-a0b2175-dirty", wantOut: "Not replacing it"},
+		{name: "dev build check", tag: "v0.2.0", current: "dev", check: true, wantOut: "development build; the latest release is 0.2.0"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			fakeRelease(t, c.tag, c.badSum, c.none)
@@ -183,6 +186,17 @@ func TestUpdateRecordsTheLatestVersion(t *testing.T) {
 	// The updated binary is 0.2.0: it must not be told about 0.2.0.
 	if v := updateNotice(dir, "0.2.0", false); v != "" {
 		t.Fatalf("notice %q right after updating", v)
+	}
+}
+
+func TestBuildVersionIsNotARelease(t *testing.T) {
+	// The test binary is a build from a checkout: never an old release that
+	// gets offered an update.
+	if v := buildVersion(); releaseVersion(v) || !strings.HasPrefix(v, "dev") {
+		t.Fatalf("buildVersion %q", v)
+	}
+	if updateNotice(t.TempDir(), "dev-abc1234", false) != "" {
+		t.Fatal("notice for a dev build")
 	}
 }
 
