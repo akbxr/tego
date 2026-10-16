@@ -19,7 +19,10 @@ import (
 
 var notifySeq atomic.Int64
 
-func (a *app) notifyDone() {
+func (a *app) notifyDone() { a.notify("Complete") }
+
+// notify tells the user, wherever they are, that the session needs them.
+func (a *app) notify(body string) {
 	if a.cfg.Notify == "off" || a.tui == nil || os.Getenv("TEGO_NOTIFY") == "off" {
 		return
 	}
@@ -27,7 +30,6 @@ func (a *app) notifyDone() {
 	if s := a.ag.Session; s != nil && s.Title != "" {
 		title = s.Title
 	}
-	const body = "Complete"
 	if a.herdr != nil {
 		a.herdr.notify(title, body)
 		return

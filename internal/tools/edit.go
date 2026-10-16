@@ -136,6 +136,46 @@ func (t *editTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 	return strings.TrimSuffix(b.String(), "\n") + t.env.diagnose(ctx, p), nil
 }
 
+// Preview is the diff an edit or write call would make, in the format of
+// their results, without writing anything; "" when there is none to show
+// (a new file, or a call that would fail). For a user asked to approve it.
+func Preview(env *Env, name string, input json.RawMessage) string {
+	var in struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+		oneEdit
+		Edits []oneEdit `json:"edits"`
+	}
+	if decode(input, &in) != nil || in.Path == "" {
+		return ""
+	}
+	data, err := os.ReadFile(env.abs(in.Path))
+	if err != nil {
+		return ""
+	}
+	switch name {
+	case "write":
+		return diffSnippet(string(data), in.Content, maxEditHunks)
+	case "edit":
+		edits := in.Edits
+		if len(edits) == 0 {
+			edits = []oneEdit{in.oneEdit}
+		}
+		cur, per := string(data), max(maxEditHunks/len(edits), 6)
+		var hunks []string
+		for _, e := range edits {
+			res, err := applyEdit(cur, e.OldString, e.NewString, e.ReplaceAll)
+			if err != nil {
+				return ""
+			}
+			hunks = append(hunks, diffSnippet(cur, res.content, per))
+			cur = res.content
+		}
+		return strings.Join(hunks, "\n... next change\n")
+	}
+	return ""
+}
+
 func dedupe(s []string) []string {
 	var out []string
 	seen := map[string]bool{}

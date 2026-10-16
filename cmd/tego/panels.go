@@ -56,6 +56,9 @@ func (a *app) panel(width int) []string {
 	if cmd, since, tail := a.ui.runningBash(); cmd != "" {
 		live = a.ui.runningBox(cmd, time.Since(since), tail, width)
 	}
+	if box := a.ui.approvalLive(width); box != nil {
+		live = box // a call waiting for the user: what it would do, above the picker
+	}
 	if live != nil {
 		if len(out) > 0 {
 			out = append(out, "")

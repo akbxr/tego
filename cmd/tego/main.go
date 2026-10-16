@@ -86,6 +86,7 @@ Usage:
 Flags:
   -m, --model provider/model      e.g. anthropic/claude-sonnet-4-5, openai-codex/gpt-5, ollama/qwen3
   --fast                          fast mode (Claude Opus 4.8+): faster output, twice the price
+  --permissions yolo|edits|ask    which tool calls wait for your approval (default yolo: none)
   -t, --thinking off|low|medium|high|xhigh|max
   -c, --continue                  continue the most recent session in this directory
   -r, --resume <id>               resume a session by id prefix (no id: list)
@@ -98,6 +99,7 @@ Config: ~/.tego/config.json (TEGO_HOME overrides ~/.tego)`
 
 type options struct {
 	model, thinking, resume string
+	permissions             string
 	print, cont, noSession  bool
 	fast                    bool
 	listResume              bool
@@ -139,6 +141,8 @@ func parseArgs(args []string) (*options, error) {
 			o.print = true
 		case "--fast":
 			o.fast = true
+		case "--permissions":
+			o.permissions, err = val()
 		case "--no-session":
 			o.noSession = true
 		case "-v", "--version":
@@ -262,8 +266,12 @@ func run() error {
 		return fmt.Errorf("invalid thinking level %q", thinking)
 	}
 
+	perms := firstNonEmpty(o.permissions, cfg.Permissions, agent.PermYolo)
+	if !agent.ValidPermission(perms) {
+		return fmt.Errorf("invalid permission mode %q (yolo, edits or ask)", perms)
+	}
 	app := &app{cfg: cfg, store: store, cwd: cwd, noSession: o.noSession, interactive: !o.print, out: os.Stdout, icons: icons(cfg.Icons),
-		fast: o.fast || cfg.Fast}
+		fast: o.fast || cfg.Fast, perms: perms}
 	if app.interactive {
 		app.undo = undo.Open(cfg.Dir, cwd)
 	}
@@ -467,7 +475,8 @@ type app struct {
 	// plan is plan mode (/plan, Shift+Tab), shared with the agent; planTurn
 	// marks a running prompt that started in plan mode.
 	plan     atomic.Bool
-	fast     bool // fast mode at start (--fast or the config); the agent's Fast after that
+	fast     bool   // fast mode at start (--fast or the config); the agent's Fast after that
+	perms    string // permission mode at start (--permissions or the config); the agent's Perms after that
 	planTurn bool
 }
 
@@ -493,12 +502,14 @@ func (a *app) init(spec, thinking string) error {
 		// for an hour. One-shot -p runs and subagents keep the cheaper 5 min.
 		LongCache: a.interactive,
 		Plan:      &a.plan,
+		Perms:     agent.NewPermissions(a.perms),
 		// From the models.dev prices: models with a cache-write premium get
 		// a more conservative warm elision threshold.
 		CacheWritePremium: statsPrices(a.cfg).CacheWritePremium,
 	}
 	if a.tui != nil {
 		a.ag.Steer = a.takeSteering // messages typed mid-turn steer it
+		a.ag.Approve = a.approve    // without a terminal, calls that need approval are refused
 	}
 	task := &agent.TaskTool{Parent: a.ag, System: agent.SystemPrompt(a.cwd, files, a.skills, agent.SubagentMode), Env: a.env, Concurrency: a.cfg.Subagents}
 	a.ag.Tools = append(tools.Builtins(a.env), task,

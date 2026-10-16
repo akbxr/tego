@@ -25,6 +25,7 @@ type Config struct {
 	Model         string                         `json:"model,omitempty"`        // provider/model-id
 	Thinking      string                         `json:"thinking,omitempty"`     // off|low|medium|high|xhigh|max
 	Fast          bool                           `json:"fast,omitempty"`         // fast mode on models that have it (/fast)
+	Permissions   string                         `json:"permissions,omitempty"`  // yolo (default) | edits | ask: which tool calls wait for approval
 	WebModel      string                         `json:"web_model,omitempty"`    // model for native web_search (default: provider-specific)
 	Subagents     int                            `json:"subagents,omitempty"`    // subagents running at once (default 8); more tasks queue
 	MCPTools      string                         `json:"mcp_tools,omitempty"`    // "auto" (default: deferred behind tool_search above 10 tools), "lazy", "eager"

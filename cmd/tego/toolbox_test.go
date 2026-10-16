@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/akbxr/tego/internal/agent"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -230,5 +231,74 @@ func TestBashTitleWithTabsFitsTheWidth(t *testing.T) {
 	checkFrame(t, buf.String(), w)
 	if strings.ContainsAny(buf.String(), "\t\x1b") {
 		t.Fatalf("finished box keeps a tab or escape: %q", buf.String())
+	}
+}
+
+func TestApprovalBox(t *testing.T) {
+	const w = 60
+	u, _ := boxUI(w)
+	in := func(v any) json.RawMessage { b, _ := json.Marshal(v); return b }
+	frame := func(lines []string) []string { return checkFrame(t, strings.Join(lines, "\n"), w) }
+
+	rows := frame(u.approvalBox(agent.Approval{Tool: "bash", Input: in(map[string]string{"command": "go build ./...\ngo test ./..."})}, "", 20))
+	if !strings.Contains(rows[0], "Bash: go build ./... …") || !strings.Contains(rows[2], "go test ./...") ||
+		!strings.Contains(rows[len(rows)-1], "waiting for approval") {
+		t.Fatalf("bash approval:\n%s", strings.Join(rows, "\n"))
+	}
+	rows = frame(u.approvalBox(agent.Approval{Agent: "explorer", Tool: "edit", Input: in(map[string]string{"path": "/p/a.go"})}, "-1\tpackage a\n+1\tpackage b", 20))
+	if !strings.Contains(rows[0], "Edit: a.go") || !strings.Contains(rows[1], "-1 │ package a") || !strings.Contains(rows[2], "+1 │ package b") ||
+		!strings.Contains(rows[3], "subagent explorer · waiting for approval") {
+		t.Fatalf("edit approval:\n%s", strings.Join(rows, "\n"))
+	}
+	// A new file: its first lines.
+	if rows = frame(u.approvalBox(agent.Approval{Tool: "write", Input: in(map[string]string{"path": "/p/n.go", "content": "package n\n"})}, "", 20)); !strings.Contains(rows[1], "+1 │ package n") {
+		t.Fatalf("write approval:\n%s", strings.Join(rows, "\n"))
+	}
+	// An MCP tool: its input.
+	if out := strings.Join(frame(u.approvalBox(agent.Approval{Tool: "mcp__db__drop", Input: json.RawMessage(`{"table":"users"}`)}, "", 20)), "\n"); !strings.Contains(out, "mcp__db__drop") || !strings.Contains(out, `"table": "users"`) {
+		t.Fatalf("mcp approval:\n%s", out)
+	}
+	// A long diff stops at rows, with a count of the rest.
+	var diff []string
+	for i := 1; i <= 30; i++ {
+		diff = append(diff, fmt.Sprintf("+%d\tline %d", i, i))
+	}
+	rows = frame(u.approvalBox(agent.Approval{Tool: "write", Input: in(map[string]string{"path": "/p/a.go"})}, strings.Join(diff, "\n"), 8))
+	if len(rows) != 10 || !strings.Contains(rows[8], "… 23 more lines") {
+		t.Fatalf("clamped approval (%d rows):\n%s", len(rows), strings.Join(rows, "\n"))
+	}
+}
+
+// The approval box lives in the footer while the user decides, lined up
+// with the boxes in the scrollback, and nothing of it is printed.
+func TestApprovalInFooter(t *testing.T) {
+	u, buf := boxUI(80)
+	if u.approvalLive(80) != nil {
+		t.Fatal("a box with nothing waiting")
+	}
+	u.showApproval(agent.Approval{Tool: "bash", Input: json.RawMessage(`{"command":"make deploy"}`)}, "")
+	box := u.approvalLive(80)
+	if len(box) != 3 || !strings.HasPrefix(box[0], " ╭─ Bash: make deploy") || runewidth.StringWidth(box[0]) != 79 {
+		t.Fatalf("footer box %q", box)
+	}
+	u.hideApproval()
+	if u.approvalLive(80) != nil || buf.Len() != 0 {
+		t.Fatalf("after the answer: box %v, printed %q", u.approvalLive(80), buf.String())
+	}
+}
+
+func TestDeclinedCallBoxes(t *testing.T) {
+	u, buf := boxUI(60)
+	cmd, _ := json.Marshal(map[string]string{"command": "make deploy"})
+	u.OnToolResult("bash", cmd, agent.Declined+" this bash call, so it did not run.", true)
+	rows := checkFrame(t, buf.String(), 60)
+	if !strings.Contains(rows[len(rows)-1], "✗ declined") {
+		t.Fatalf("bash:\n%s", buf.String())
+	}
+	buf.Reset()
+	ed, _ := json.Marshal(map[string]string{"path": "/p/a.go"})
+	u.OnToolResult("edit", ed, agent.Declined+" this edit call, so it did not run.", true)
+	if rows = checkFrame(t, buf.String(), 60); !strings.Contains(rows[0], "✗ declined") {
+		t.Fatalf("edit:\n%s", buf.String())
 	}
 }

@@ -58,6 +58,12 @@ type Agent struct {
 	// which toggles it between turns, and with subagents.
 	Plan     *atomic.Bool
 	planSaid bool // the last plan reminder said plan mode was on
+	// Perms is the permission mode and the session's rules (permission.go),
+	// shared with subagents; nil runs everything. Approve asks the user
+	// about a call the mode makes wait; nil refuses such calls.
+	Perms   *Permissions
+	Approve Approver
+	Name    string // a subagent's name, for the user asked about its calls
 	// Steer, when set, returns the messages the user sent while the agent
 	// was working (each as the blocks of one user message). It is polled
 	// after each tool round and when the model would stop, so a message

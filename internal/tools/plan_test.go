@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -77,5 +78,42 @@ func TestPlanBlocked(t *testing.T) {
 	}
 	if PlanBlocked("edit", in(map[string]any{"path": "a"})) == "" || PlanBlocked("write", nil) == "" {
 		t.Fatal("edit/write allowed")
+	}
+}
+
+func TestCommandPrefixes(t *testing.T) {
+	for _, c := range []struct {
+		cmd  string
+		want string // "" = no rule may cover it
+	}{
+		{"go test ./...", "go test"},
+		{"go test ./... && git status", "go test|git status"},
+		{"npm run build 2>/dev/null | tail -5", "npm run|tail"},
+		{"cd web && make build", "cd|make build"},
+		{"git -C repo push origin", "git push"},
+		{"touch x", "touch"},
+		{"rm tmp.txt", "rm"},
+		{"env FOO=1 go vet ./...", "go vet"},
+		{"python3 -m pytest -q", "python3"},
+		{"git log -p", "git log"},
+		{"cp -r a b", "cp"},
+		// What a rule must never cover.
+		{"sudo rm -rf build", ""},
+		{"bash -c 'rm -rf x'", ""},
+		{"sh script.sh", ""},
+		{"find . -name x | xargs rm", ""},
+		{"echo $(rm -rf x)", ""},
+		{"echo `rm x`", ""},
+		{"go test > out.txt", ""},
+		{`echo hi >"out.txt"`, ""},
+		{"python3 -c 'import os'", ""},
+		{"node -e 'x'", ""},
+		{"awk '{print}' f", ""},
+		{"eval rm x", ""},
+	} {
+		got, ok := CommandPrefixes(c.cmd)
+		if s := strings.Join(got, "|"); (c.want == "") == ok || ok && s != c.want {
+			t.Errorf("%q: %q ok=%v, want %q", c.cmd, s, ok, c.want)
+		}
 	}
 }

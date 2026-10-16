@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -8,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/akbxr/tego/internal/agent"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -152,11 +154,14 @@ func (u *termUI) boxResultLocked(name string, input json.RawMessage, output stri
 	if isErr {
 		border = u.dc.red
 	}
+	declined := isErr && strings.HasPrefix(output, agent.Declined)
 	var b strings.Builder
 	if name == "bash" {
 		u.setRunning("")
 		mark := ""
 		switch m := exitCodeRe.FindStringSubmatch(output); {
+		case declined:
+			mark = "✗ declined"
 		case m != nil:
 			mark, border = "✗ exit "+m[1], u.dc.red // the command ran but failed
 		case isErr:
@@ -174,7 +179,10 @@ func (u *termUI) boxResultLocked(name string, input json.RawMessage, output stri
 	}
 	_ = json.Unmarshal(input, &in)
 	mark := ""
-	if isErr {
+	switch {
+	case declined:
+		mark = "✗ declined"
+	case isErr:
 		mark = "✗"
 	}
 	b.WriteString(u.boxTop(boxTitles[name], u.shortPath(in.Path), mark, border))
@@ -189,6 +197,106 @@ func (u *termUI) boxResultLocked(name string, input json.RawMessage, output stri
 	}
 	b.WriteString(u.boxBottom("", border))
 	fmt.Fprint(u.diag, b.String())
+}
+
+// pendingApproval is the call waiting for the user, shown in the footer
+// above the picker until they answer (then the call's own box, or its
+// refusal, goes to the scrollback as usual).
+type pendingApproval struct {
+	req     agent.Approval
+	preview string
+	rows    int // body rows at most, fixed when it is shown
+}
+
+// showApproval puts a call waiting for approval in the footer.
+func (u *termUI) showApproval(req agent.Approval, preview string) {
+	u.endWrite() // the call is complete: the live box of it being written goes
+	u.mu.Lock()
+	u.endStream()
+	u.mu.Unlock()
+	// Before runMu: the TUI draws under its own lock and then takes runMu.
+	height := 0
+	if u.height != nil {
+		height = u.height()
+	}
+	u.runMu.Lock()
+	u.approval = &pendingApproval{req: req, preview: preview, rows: liveWriteRows(height)}
+	u.runMu.Unlock()
+}
+
+func (u *termUI) hideApproval() {
+	u.runMu.Lock()
+	u.approval = nil
+	u.runMu.Unlock()
+}
+
+// approvalLive is the footer box of the call waiting for approval (nil if
+// none). Called while the TUI draws.
+func (u *termUI) approvalLive(width int) []string {
+	u.runMu.Lock()
+	p := u.approval
+	u.runMu.Unlock()
+	if p == nil {
+		return nil
+	}
+	const margin = 1 // as liveBox: lines up with the boxes in the scrollback
+	v := &termUI{dc: u.dc, width: func() int { return max(width-2*margin, 14) }, cwd: u.cwd, home: u.home}
+	lines := v.approvalBox(p.req, p.preview, p.rows)
+	for i := range lines {
+		lines[i] = strings.Repeat(" ", margin) + lines[i]
+	}
+	return lines
+}
+
+// approvalBox frames a call that waits for the user's approval in yellow,
+// like the box it will become: the diff an edit or write would make
+// (preview, from tools.Preview), a command in full, another tool's input.
+// At most rows rows of it are shown, then a count of the rest.
+func (u *termUI) approvalBox(req agent.Approval, preview string, rows int) []string {
+	border := u.dc.yellow
+	var in struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+		Command string `json:"command"`
+	}
+	_ = json.Unmarshal(req.Input, &in)
+	var top string
+	var body strings.Builder
+	switch req.Tool {
+	case "bash":
+		top = u.boxTop("Bash", u.bashLabel(req.Input), "", border)
+		u.plainRows(&body, strings.Split(strings.TrimSpace(in.Command), "\n"), "", border, rows)
+	case "edit", "write":
+		top = u.boxTop(boxTitles[req.Tool], u.shortPath(in.Path), "", border)
+		switch {
+		case preview != "":
+			diff, _ := splitDiff(strings.Split(preview, "\n"))
+			u.diffRows(&body, diff, border)
+		case req.Tool == "write":
+			u.writeBody(&body, nil, in.Content, border) // a new file: its first lines
+		default:
+			u.row(&body, "no preview: the change doesn't match the file as it is now, so the edit will fail", u.dc.dim, border)
+		}
+	default:
+		top = u.boxTop(req.Tool, "", "", border)
+		var pretty bytes.Buffer
+		if json.Indent(&pretty, req.Input, "", "  ") != nil {
+			pretty.Write(req.Input)
+		}
+		u.plainRows(&body, strings.Split(pretty.String(), "\n"), "", border, rows)
+	}
+	lines := strings.Split(strings.TrimSuffix(body.String(), "\n"), "\n")
+	if n := len(lines) - rows; n > 0 {
+		var more strings.Builder
+		u.row(&more, fmt.Sprintf("… %d more lines", n+1), u.dc.dim, border)
+		lines = append(lines[:rows-1], strings.TrimSuffix(more.String(), "\n"))
+	}
+	mark := "waiting for approval"
+	if req.Agent != "" {
+		mark = "subagent " + req.Agent + " · " + mark
+	}
+	out := append([]string{strings.TrimSuffix(top, "\n")}, lines...)
+	return append(out, strings.TrimSuffix(u.boxBottom(mark, border), "\n"))
 }
 
 // editBody: the replacement count, the numbered diff, then any syntax-check

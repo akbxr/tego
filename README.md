@@ -44,6 +44,7 @@ tego -m openai-codex/gpt-5.6 -t high # model and thinking level
 **Tools.** `read`, `write`, `edit`, `bash`, `grep`, `glob`, `web_search`, parallel subagents and a live todo list. One edit call can change several places in a file. Bash shows its output live, and `background: true` keeps a dev server running between turns. Read-only calls run in parallel.
 
 **Guard rails.**
+- Permission modes decide which tool calls wait for you. `yolo`, the default, runs everything. `edits` lets file edits run and asks before shell commands and MCP tools that may change things. `ask` asks before edits too. Reads, searches and read-only commands such as `git status` or `go test` never ask. The prompt shows the diff or the full command, and "don't ask again" covers that kind of call for the rest of the session: file edits, or commands by name and subcommand (`go test`, `npm run`). A rule never covers `sudo`, a shell or interpreter given code to run, command substitution or a redirect into a file. Set the mode with `/permissions`, `--permissions` or `"permissions"` in the config. With `-p` there is nobody to ask, so those calls are refused.
 - After every edit tego runs a syntax check for the language and shows the model what broke.
 - An edit fails if the file changed since the agent read it, and the error carries the current content so the retry works.
 - `/undo` puts the files back as they were before any prompt of the session. Snapshots live in a separate git repository under `~/.tego/snapshots/`, so your own `.git` stays untouched.
@@ -101,6 +102,7 @@ The model and thinking level you pick with `/model` are saved here. Thinking goe
 | `/undo` | Restore the files from before a prompt |
 | `/plan [prompt]` | Plan mode on or off (also Shift+Tab) |
 | `/fast [on\|off]` | Fast mode on or off (Claude Opus 4.8+) |
+| `/permissions [yolo\|edits\|ask]` | Which tool calls wait for your approval |
 | `/compact`, `/retry` | Summarise the context, retry a failed turn |
 | `/login`, `/accounts`, `/usage` | Accounts and subscription limits |
 | `/stats`, `/mcp`, `/skills` | Usage, MCP servers, skills |

@@ -186,6 +186,73 @@ func hasArg(args []string, want string) bool {
 	return false
 }
 
+// withSubcommands are the commands whose first operand picks what they do
+// ("go test", "git push"): a rule covers that subcommand only. For other
+// commands the operands are files and such, and a rule covers the command.
+var withSubcommands = map[string]bool{"git": true, "go": true, "npm": true, "pnpm": true, "yarn": true, "bun": true,
+	"npx": true, "cargo": true, "docker": true, "podman": true, "kubectl": true, "helm": true, "make": true, "just": true,
+	"gh": true, "pip": true, "pip3": true, "uv": true, "poetry": true, "brew": true, "apt": true, "apt-get": true,
+	"dotnet": true, "mvn": true, "gradle": true, "terraform": true, "composer": true, "bundle": true, "rails": true,
+	"rake": true, "mix": true, "deno": true, "nx": true, "turbo": true, "swift": true, "zig": true, "flutter": true}
+
+// runsArgs are commands that run code given in their arguments: a rule for
+// "bash" or "xargs" would allow anything.
+var runsArgs = map[string]bool{"bash": true, "sh": true, "zsh": true, "dash": true, "ksh": true, "fish": true,
+	"eval": true, "source": true, ".": true, "xargs": true, "parallel": true, "watch": true, "timeout": true,
+	"ssh": true, "su": true}
+
+// interpreters run code given with one of inlineCode's options.
+var interpreters = map[string]bool{"python": true, "python3": true, "node": true, "ruby": true, "perl": true,
+	"php": true, "deno": true, "bun": true, "lua": true, "osascript": true, "awk": true}
+
+var inlineCode = map[string]bool{"-c": true, "-e": true, "--eval": true, "-p": true, "--print": true, "-r": true}
+
+// CommandPrefixes returns each simple command of a shell command line as its
+// name and subcommand ("go test", "npm run", "ls"), for rules that allow
+// commands by prefix. ok is false when the line does more than run simple
+// commands (a command substitution, a redirection into a file, a shell or
+// interpreter given code to run): what that runs or writes is not in the
+// prefixes, so no rule may cover it.
+func CommandPrefixes(command string) (prefixes []string, ok bool) {
+	if strings.Contains(command, "$(") || strings.Contains(command, "`") || strings.Contains(command, "<(") || strings.Contains(command, ">(") {
+		return nil, false
+	}
+	bare := quotedRe.ReplaceAllString(command, "''")
+	for _, m := range redirectRe.FindAllStringSubmatch(bare, -1) {
+		if m[1] != "/dev/null" {
+			return nil, false
+		}
+	}
+	if quotedTargetRe.MatchString(bare) {
+		return nil, false
+	}
+	for _, argv := range simpleCommands(command) {
+		if len(argv) > 0 && (path.Base(argv[0]) == "sudo" || path.Base(argv[0]) == "doas") {
+			return nil, false // a rule for rm must not allow sudo rm
+		}
+		argv = stripWrappers(argv)
+		if len(argv) == 0 {
+			continue
+		}
+		p := path.Base(argv[0])
+		if runsArgs[p] {
+			return nil, false
+		}
+		for _, a := range argv[1:] {
+			if interpreters[p] && (inlineCode[a] || p == "awk") {
+				return nil, false
+			}
+		}
+		if withSubcommands[p] {
+			if sub := firstOperand(p, argv[1:]); sub != "" {
+				p += " " + sub
+			}
+		}
+		prefixes = append(prefixes, p)
+	}
+	return prefixes, len(prefixes) > 0
+}
+
 // PlanBlocked returns why a call of tool name with input may not run in plan
 // mode ("" if it may). Tools other than bash and bash_output are decided by
 // the caller.

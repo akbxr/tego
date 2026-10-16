@@ -10,6 +10,10 @@ import (
 // ErrCanceled is returned by Pick when the user dismisses the list.
 var ErrCanceled = errors.New("canceled")
 
+// ErrBusy is returned by Pick and Ask while another picker or prompt is
+// open: try again once it closes.
+var ErrBusy = errors.New("another picker is open")
+
 // PickItem is one selectable row: Label is matched and shown, Detail is shown
 // dimmed after it and also matched.
 type PickItem struct {

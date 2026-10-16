@@ -139,6 +139,10 @@ func (a *Agent) prepare(ctx context.Context, call llm.Block) (tools.Tool, llm.Bl
 		res.Content = why
 		return nil, res, false
 	}
+	if why := a.permissionRefusal(ctx, t, call); why != "" {
+		res.Content = why
+		return nil, res, false
+	}
 	return t, llm.Block{}, true
 }
 

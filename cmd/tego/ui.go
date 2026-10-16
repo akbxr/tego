@@ -80,6 +80,9 @@ type termUI struct {
 	// The edit or write call the model is writing now, for the footer's
 	// live box (streamwrite.go). Guarded by runMu too.
 	writing *liveWrite
+	// The call waiting for the user's approval (toolbox.go), shown in the
+	// footer. Guarded by runMu too.
+	approval *pendingApproval
 	// height is the content area's height (nil outside the TUI). It takes
 	// the TUI's lock: never call it while the TUI draws.
 	height func() int

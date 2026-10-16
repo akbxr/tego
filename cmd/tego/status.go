@@ -11,6 +11,7 @@ import (
 
 	"github.com/mattn/go-runewidth"
 
+	"github.com/akbxr/tego/internal/agent"
 	"github.com/akbxr/tego/internal/llm"
 )
 
@@ -23,6 +24,7 @@ type statusInfo struct {
 	// fast mode is on for this model; fastResting: the last response still
 	// ran at standard speed (rate limited, or not available to the account)
 	fast, fastResting bool
+	perms             string // permission mode; yolo is not shown
 	ctxTokens         int
 	window            int
 	usage             llm.Usage
@@ -139,6 +141,9 @@ func (b *statusBar) status(width int) []string {
 		parts = append(parts, c.dim+"↯ fast (standard now)"+c.reset)
 	case s.fast:
 		parts = append(parts, c.yellow+"↯ fast"+c.reset)
+	}
+	if s.perms != "" && s.perms != agent.PermYolo {
+		parts = append(parts, c.cyan+"⛉ "+s.perms+c.reset)
 	}
 	if s.todoTotal > 0 {
 		parts = append(parts, fmt.Sprintf("%s☑ %d/%d%s", c.green, s.todoDone, s.todoTotal, c.reset))

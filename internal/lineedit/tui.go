@@ -323,7 +323,11 @@ func (t *TUI) Pick(title string, items []PickItem, query string, selected int) (
 func (t *TUI) Ask(title, initial string) (string, error) {
 	t.mu.Lock()
 	if !t.live() || t.pick != nil {
+		busy := t.pick != nil
 		t.mu.Unlock()
+		if busy {
+			return "", ErrBusy
+		}
 		return "", errors.New("prompt unavailable")
 	}
 	ps := &pickState{picker: picker{query: []rune(initial)}, title: title, res: make(chan pickResult, 1), input: true}
@@ -346,7 +350,11 @@ func (t *TUI) PickWith(items []PickItem, o PickOptions) (PickResult, error) {
 	}
 	t.mu.Lock()
 	if !t.live() || t.pick != nil {
+		busy := t.pick != nil
 		t.mu.Unlock()
+		if busy {
+			return PickResult{Index: -1}, ErrBusy
+		}
 		return PickResult{Index: -1}, errors.New("picker unavailable")
 	}
 	ps := &pickState{
