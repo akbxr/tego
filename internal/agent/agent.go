@@ -33,9 +33,12 @@ type Agent struct {
 	ProviderName string
 	Model        string
 	Thinking     string
-	System       string
-	Tools        []tools.Tool
-	Dynamic      func() []tools.Tool // extra tools that may change between requests (MCP); goroutine-safe
+	// Fast asks for fast mode on models that have it (llm.Request.Fast).
+	// FastActive says whether the last response actually ran fast.
+	Fast, FastActive bool
+	System           string
+	Tools            []tools.Tool
+	Dynamic          func() []tools.Tool // extra tools that may change between requests (MCP); goroutine-safe
 	// LazyThreshold: when there are more Dynamic tools than this, they are
 	// deferred behind tool_search instead of sent with every request.
 	// 0 = always defer, negative = never.
@@ -311,7 +314,7 @@ func (a *Agent) loop(ctx context.Context) error {
 		req := &llm.Request{
 			Model: a.Model, System: a.System, Messages: a.Messages, Tools: a.toolDefs(),
 			Thinking: a.Thinking, SessionID: a.SessionID, LongCache: a.LongCache, Class: class,
-			ClearToolResults: a.clearPolicy(),
+			ClearToolResults: a.clearPolicy(), Fast: a.Fast,
 		}
 		msg, err := a.Provider.Stream(ctx, req, a.onEvent)
 		if err != nil {
@@ -338,6 +341,12 @@ func (a *Agent) loop(ctx context.Context) error {
 			a.LastCtx = n
 		}
 		a.noteServerEdits(msg)
+		if msg.Usage != nil {
+			a.FastActive = msg.Usage.Fast
+		}
+		if msg.FastNote != "" {
+			a.UI.OnInfo(msg.FastNote)
+		}
 		calls := sanitizeCalls(msg)
 		a.append(*msg)
 		a.UI.OnTurnEnd(msg)

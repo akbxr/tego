@@ -34,6 +34,7 @@ type anthropicProvider struct {
 	ccVersion   string // version adopted after a claude_code_version_too_old rejection
 	fallbackSID string
 	sessions    map[string]*ccSession
+	fast        fastState // fast mode after a rate limit or refusal (fast.go)
 }
 
 func (p *anthropicProvider) Name() string { return p.name }
@@ -54,13 +55,33 @@ func (p *anthropicProvider) Stream(ctx context.Context, req *Request, onEvent fu
 		if p.oauth != nil {
 			t = p.turn(ctx, p.sessionID(req), req.Class, req.Messages)
 		}
-		resp, err := p.send(ctx, t, func(version string) ([]byte, error) { return p.buildBody(req, version, t) })
+		fast := p.fastFor(req)
+		send := func() (*http.Response, error) {
+			return p.send(ctx, t, fast, func(version string) ([]byte, error) { return p.buildBodySpeed(req, version, t, fast) })
+		}
+		resp, err := send()
+		note := ""
+		if err != nil && fast {
+			// A fast mode rate limit or refusal: carry on at standard speed
+			// now rather than wait, as Claude Code does.
+			var again bool
+			if note, again = p.fastRejected(err); again {
+				fast = false
+				resp, err = send()
+			}
+		}
 		if err != nil {
 			return nil, err
 		}
 		defer resp.Body.Close()
 		var msgID string
 		msg, err := parseAnthropicStream(ctx, resp.Body, p.oauth != nil, emit, &msgID)
+		if msg != nil {
+			msg.FastNote = note
+		}
+		if err != nil && fast {
+			p.fastRejected(err) // overloaded mid-stream: the retry runs at standard speed
+		}
 		if t != nil {
 			p.finish(t, resp.Header.Get("request-id"), msgID)
 		}
@@ -74,7 +95,7 @@ func (p *anthropicProvider) Stream(ctx context.Context, req *Request, onEvent fu
 // send posts the body built for the advertised Claude Code version, adopting
 // a newer version once if the OAuth backend rejects it. t is the Claude Code
 // context of an OAuth request (nil with an API key).
-func (p *anthropicProvider) send(ctx context.Context, t *ccTurn, build func(version string) ([]byte, error)) (*http.Response, error) {
+func (p *anthropicProvider) send(ctx context.Context, t *ccTurn, fast bool, build func(version string) ([]byte, error)) (*http.Response, error) {
 	endpoint := p.base + "/v1/messages"
 	if p.oauth != nil {
 		endpoint += "?beta=true"
@@ -93,7 +114,15 @@ func (p *anthropicProvider) send(ctx context.Context, t *ccTurn, build func(vers
 		if err != nil {
 			return nil, err
 		}
-		resp, err := postJSON(ctx, p.name, endpoint, body, p.header(token, version, t))
+		h := p.header(token, version, t)
+		if fast {
+			betas := h.Get("anthropic-beta")
+			if betas != "" {
+				betas += ","
+			}
+			h.Set("anthropic-beta", betas+fastBeta)
+		}
+		resp, err := postJSON(ctx, p.name, endpoint, body, h)
 		if err == nil {
 			return resp, nil
 		}
@@ -396,6 +425,7 @@ type aRequest struct {
 	ContextManagement *aContextManagement `json:"context_management,omitempty"`
 	OutputConfig      *aOutputConfig      `json:"output_config,omitempty"`
 	Diagnostics       *aDiagnostics       `json:"diagnostics,omitempty"`
+	Speed             string              `json:"speed,omitempty"` // "fast" for fast mode
 	Stream            bool                `json:"stream"`
 }
 
@@ -404,8 +434,17 @@ var emptyObjectSchema = json.RawMessage(`{"type":"object","properties":{}}`)
 // buildBody encodes req; t is the Claude Code context of an OAuth request
 // (nil with an API key).
 func (p *anthropicProvider) buildBody(req *Request, version string, t *ccTurn) ([]byte, error) {
+	return p.buildBodySpeed(req, version, t, p.fastFor(req))
+}
+
+// buildBodySpeed is buildBody with the speed decided: after a fast mode
+// rejection the same request goes out again at standard speed.
+func (p *anthropicProvider) buildBodySpeed(req *Request, version string, t *ccTurn, fast bool) ([]byte, error) {
 	oauth := t != nil
 	r := aRequest{Model: req.Model, Stream: true}
+	if fast {
+		r.Speed = "fast"
+	}
 	cc := ephemeral
 	if req.LongCache {
 		// 1h entries cost 2x to write (vs 1.25x) but survive pauses between
@@ -701,10 +740,11 @@ func anthropicMaxTokens(model string, requested int, thinking *aThinking) int {
 // ---- response stream ----
 
 type aUsage struct {
-	InputTokens   int `json:"input_tokens"`
-	OutputTokens  int `json:"output_tokens"`
-	CacheRead     int `json:"cache_read_input_tokens"`
-	CacheCreation int `json:"cache_creation_input_tokens"`
+	InputTokens   int    `json:"input_tokens"`
+	OutputTokens  int    `json:"output_tokens"`
+	CacheRead     int    `json:"cache_read_input_tokens"`
+	CacheCreation int    `json:"cache_creation_input_tokens"`
+	Speed         string `json:"speed"` // "fast" or "standard"
 }
 
 // aInputTransformation reports a change the API made to the request, e.g.
@@ -856,6 +896,7 @@ func parseAnthropicStream(ctx context.Context, body io.Reader, oauth bool, emit 
 				msg.Usage.Output = u.OutputTokens
 				msg.Usage.CacheRead = u.CacheRead
 				msg.Usage.CacheWrite = u.CacheCreation
+				msg.Usage.Fast = u.Speed == "fast"
 				if msgID != nil {
 					*msgID = ev.Message.ID
 				}
@@ -936,6 +977,9 @@ func parseAnthropicStream(ctx context.Context, body io.Reader, oauth bool, emit 
 				}
 				if u.OutputTokens > 0 {
 					msg.Usage.Output = u.OutputTokens
+				}
+				if u.Speed != "" {
+					msg.Usage.Fast = u.Speed == "fast"
 				}
 			}
 		case "message_stop":

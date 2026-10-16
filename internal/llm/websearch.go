@@ -179,7 +179,7 @@ func (p *anthropicProvider) WebSearch(ctx context.Context, model, query string) 
 	for pause := 0; ; pause++ {
 		var resp aWebResponse
 		err := withRetry(ctx, func() error {
-			r, err := p.send(ctx, t, func(version string) ([]byte, error) {
+			r, err := p.send(ctx, t, false, func(version string) ([]byte, error) {
 				return p.webSearchBody(model, query, version, msgs, t)
 			})
 			if err != nil {

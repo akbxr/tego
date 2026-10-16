@@ -21,6 +21,7 @@ var builtinCommands = []struct{ name, icon, help string }{
 	{"help", "?", "Show commands"},
 	{"model", "◆", "Pick a model, or /model <query|provider/id> (-r refreshes the list)"},
 	{"thinking", "✦", "Pick or set thinking: off|low|medium|high|xhigh|max"},
+	{"fast", "↯", "Fast mode on or off: Claude Opus 4.8+ writes up to 2.5x faster at twice the price"},
 	{"resume", "↺", "Resume a different session"},
 	{"branch", "⟲", "Rewind to a previous turn, keeping the old path as a branch (alias /rewind, Esc Esc)"},
 	{"undo", "↶", "Put the files back as they were before a prompt of this session"},
@@ -343,6 +344,8 @@ func (a *app) refreshStatus() {
 	}
 	a.status.update(func(s *statusInfo) {
 		s.model, s.spec, s.thinking = modelLabel(a.ag.Model), a.ag.ProviderName+"/"+a.ag.Model, a.ag.Thinking
+		s.fast = a.ag.Fast && a.ag.Provider != nil && llm.SupportsFast(a.ag.Provider, a.ag.Model)
+		s.fastResting = s.fast && s.usage.Output > 0 && !a.ag.FastActive
 		if a.ag.Provider == nil {
 			s.model, s.spec = "no model · /login", "none"
 		}
@@ -597,6 +600,17 @@ func (a *app) command(line string, done chan<- error) bool {
 			return false
 		}
 		a.setThinking(args)
+	case "fast":
+		switch args {
+		case "":
+			a.setFast(!a.ag.Fast)
+		case "on":
+			a.setFast(true)
+		case "off":
+			a.setFast(false)
+		default:
+			a.ui.Errorf("usage: /fast [on|off]")
+		}
 	case "compact":
 		a.startJob(done, func(ctx context.Context) error { return a.ag.Compact(ctx, args) })
 		return false

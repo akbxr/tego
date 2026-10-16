@@ -78,6 +78,10 @@ type Message struct {
 	// done (Antigravity): output speed is timed over it. 0 = all of Output.
 	GenOutput    int      `json:"-"`
 	droppedPaths []string // wire paths of the dropped blocks (Anthropic)
+	// FastNote says why a request that asked for fast mode ran at standard
+	// speed (rate limited, not enabled for the account); "" otherwise. Set
+	// on the request where that started, not on every one after.
+	FastNote string `json:"-"`
 }
 
 // BlockRef is block Block of message Msg in a request's messages.
@@ -89,6 +93,9 @@ type Usage struct {
 	Output     int `json:"output"`
 	CacheRead  int `json:"cache_read,omitempty"`
 	CacheWrite int `json:"cache_write,omitempty"`
+	// Fast is set when the response ran in fast mode, which bills every
+	// token class at twice the standard price.
+	Fast bool `json:"fast,omitempty"`
 }
 
 // ContextTokens is the prompt size the request consumed.
@@ -183,7 +190,11 @@ type Request struct {
 	Thinking  string // off|low|medium|high|xhigh|max ("" = off)
 	SessionID string // stable per session; used for prompt-cache keys / headers
 	LongCache bool   // keep the prompt cache for an hour instead of 5 minutes (Anthropic)
-	Class     string // what the request is for: ClassMain ("" too), ClassSubagent, ClassCompaction, ClassAuxiliary
+	// Fast asks for fast mode where the model has it (Claude Opus 4.8, 5
+	// and 5.5 on Anthropic): up to 2.5x the output speed at twice the price.
+	// Elsewhere it is ignored.
+	Fast  bool
+	Class string // what the request is for: ClassMain ("" too), ClassSubagent, ClassCompaction, ClassAuxiliary
 	// ClearToolResults asks providers whose ClearsToolResults reports true
 	// to clear old tool results server-side; nil = never.
 	ClearToolResults *ClearPolicy

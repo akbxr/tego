@@ -31,6 +31,7 @@ type Record struct {
 	CacheRead  int      `json:"cache_read,omitempty"`
 	CacheWrite int      `json:"cache_write,omitempty"`
 	LongCache  bool     `json:"long_cache,omitempty"`
+	Fast       bool     `json:"fast,omitempty"` // ran in fast mode: every token at twice the price
 	DurationMs int64    `json:"duration_ms,omitempty"`
 	TTFTMs     int64    `json:"ttft_ms,omitempty"`
 	GenStartMs int64    `json:"gen_start_ms,omitempty"` // when generation began (older records: none)
@@ -76,7 +77,7 @@ func RequestRecord(st llm.RequestStat, folder string) Record {
 	return Record{Kind: "request", TS: st.Start.UnixMilli(), Folder: folder, Session: st.SessionID, Class: class,
 		Provider: st.Provider, Model: st.Model,
 		Input: st.Usage.Input, Output: st.Usage.Output, CacheRead: st.Usage.CacheRead, CacheWrite: st.Usage.CacheWrite,
-		LongCache: st.LongCache, DurationMs: st.Duration.Milliseconds(), TTFTMs: st.TTFT.Milliseconds(),
+		LongCache: st.LongCache, Fast: st.Usage.Fast, DurationMs: st.Duration.Milliseconds(), TTFTMs: st.TTFT.Milliseconds(),
 		GenStartMs: st.GenStart.Milliseconds(), GenOutput: st.GenOutput,
 		Stop: st.StopReason, Error: st.Err, Tools: st.Tools}
 }

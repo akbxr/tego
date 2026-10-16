@@ -85,6 +85,7 @@ Usage:
 
 Flags:
   -m, --model provider/model      e.g. anthropic/claude-sonnet-4-5, openai-codex/gpt-5, ollama/qwen3
+  --fast                          fast mode (Claude Opus 4.8+): faster output, twice the price
   -t, --thinking off|low|medium|high|xhigh|max
   -c, --continue                  continue the most recent session in this directory
   -r, --resume <id>               resume a session by id prefix (no id: list)
@@ -98,6 +99,7 @@ Config: ~/.tego/config.json (TEGO_HOME overrides ~/.tego)`
 type options struct {
 	model, thinking, resume string
 	print, cont, noSession  bool
+	fast                    bool
 	listResume              bool
 	prompt                  []string
 }
@@ -135,6 +137,8 @@ func parseArgs(args []string) (*options, error) {
 			o.cont = true
 		case "-p", "--print":
 			o.print = true
+		case "--fast":
+			o.fast = true
 		case "--no-session":
 			o.noSession = true
 		case "-v", "--version":
@@ -258,7 +262,8 @@ func run() error {
 		return fmt.Errorf("invalid thinking level %q", thinking)
 	}
 
-	app := &app{cfg: cfg, store: store, cwd: cwd, noSession: o.noSession, interactive: !o.print, out: os.Stdout, icons: icons(cfg.Icons)}
+	app := &app{cfg: cfg, store: store, cwd: cwd, noSession: o.noSession, interactive: !o.print, out: os.Stdout, icons: icons(cfg.Icons),
+		fast: o.fast || cfg.Fast}
 	if app.interactive {
 		app.undo = undo.Open(cfg.Dir, cwd)
 	}
@@ -462,6 +467,7 @@ type app struct {
 	// plan is plan mode (/plan, Shift+Tab), shared with the agent; planTurn
 	// marks a running prompt that started in plan mode.
 	plan     atomic.Bool
+	fast     bool // fast mode at start (--fast or the config); the agent's Fast after that
 	planTurn bool
 }
 
@@ -477,6 +483,7 @@ func (a *app) init(spec, thinking string) error {
 		Env:            func() string { return agent.EnvNote(a.cwd) },
 		Notices:        a.env.ShellNotices,
 		Thinking:       thinking,
+		Fast:           a.fast,
 		AutoCompact:    a.cfg.AutoCompactEnabled(),
 		CompactPercent: a.cfg.CompactAt,
 		KeepRecent:     a.cfg.KeepRecent,

@@ -17,18 +17,21 @@ import (
 // statusInfo is the snapshot the footer renders. The TUI redraws from its
 // own goroutine, so it never touches agent state directly.
 type statusInfo struct {
-	model     string // display name
-	spec      string // provider/model-id
-	thinking  string
-	ctxTokens int
-	window    int
-	usage     llm.Usage
-	title     string
-	git       string // styled branch + counts, "" outside a repo
-	busy      bool
-	busySince time.Time
-	todoDone  int
-	todoTotal int
+	model    string // display name
+	spec     string // provider/model-id
+	thinking string
+	// fast mode is on for this model; fastResting: the last response still
+	// ran at standard speed (rate limited, or not available to the account)
+	fast, fastResting bool
+	ctxTokens         int
+	window            int
+	usage             llm.Usage
+	title             string
+	git               string // styled branch + counts, "" outside a repo
+	busy              bool
+	busySince         time.Time
+	todoDone          int
+	todoTotal         int
 }
 
 type statusBar struct {
@@ -130,6 +133,12 @@ func (b *statusBar) status(width int) []string {
 	}
 	if s.thinking != "" && s.thinking != llm.ThinkingOff {
 		parts = append(parts, c.dim+"✦ "+s.thinking+c.reset)
+	}
+	switch {
+	case s.fastResting:
+		parts = append(parts, c.dim+"↯ fast (standard now)"+c.reset)
+	case s.fast:
+		parts = append(parts, c.yellow+"↯ fast"+c.reset)
 	}
 	if s.todoTotal > 0 {
 		parts = append(parts, fmt.Sprintf("%s☑ %d/%d%s", c.green, s.todoDone, s.todoTotal, c.reset))

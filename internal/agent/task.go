@@ -92,7 +92,7 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 				return
 			}
 			sub := &Agent{
-				Provider: p.Provider, ProviderName: p.ProviderName, Model: p.Model, Thinking: p.Thinking,
+				Provider: p.Provider, ProviderName: p.ProviderName, Model: p.Model, Thinking: p.Thinking, Fast: p.Fast,
 				System: t.System, Tools: tools.Builtins(t.Env), Dynamic: p.Dynamic, LazyThreshold: p.LazyThreshold, SessionID: p.SessionID + "-" + name,
 				ContextWindow: p.ContextWindow, AutoCompact: true, MaxTurns: 150, Subagent: true, ToolStat: p.ToolStat,
 				CacheWritePremium: p.CacheWritePremium, Env: p.Env, Plan: p.Plan,

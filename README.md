@@ -89,7 +89,7 @@ In my own benchmarks, 3 runs per task, the results depend a lot on the repositor
 }
 ```
 
-The model and thinking level you pick with `/model` are saved here. Thinking goes from `off` through `low`, `medium` and `high` to `xhigh` and `max`, which the newest Claude and GPT models support. On a model without them, tego runs the highest level that model has and says so. API keys can also come from the environment (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY` and others). Credentials are stored in `~/.tego/auth.json` with mode 0600.
+The model and thinking level you pick with `/model` are saved here. Thinking goes from `off` through `low`, `medium` and `high` to `xhigh` and `max`, which the newest Claude and GPT models support. On a model without them, tego runs the highest level that model has and says so. `/fast` (or `--fast`) turns on Claude's fast mode for Opus 5.5, Opus 5 and Opus 4.8: up to 2.5 times the output speed at twice the price per token, and on a subscription it is billed from usage credits only. When fast mode is rate limited tego carries on at standard speed and the status line says so. API keys can also come from the environment (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY` and others). Credentials are stored in `~/.tego/auth.json` with mode 0600.
 
 ## Commands
 
@@ -100,6 +100,7 @@ The model and thinking level you pick with `/model` are saved here. Thinking goe
 | `/tree`, `/fork`, `/clone` | Branch a session |
 | `/undo` | Restore the files from before a prompt |
 | `/plan [prompt]` | Plan mode on or off (also Shift+Tab) |
+| `/fast [on\|off]` | Fast mode on or off (Claude Opus 4.8+) |
 | `/compact`, `/retry` | Summarise the context, retry a failed turn |
 | `/login`, `/accounts`, `/usage` | Accounts and subscription limits |
 | `/stats`, `/mcp`, `/skills` | Usage, MCP servers, skills |

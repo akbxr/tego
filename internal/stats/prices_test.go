@@ -2,6 +2,17 @@ package stats
 
 import "testing"
 
+func TestFastModeCostsTwice(t *testing.T) {
+	p := Price{Input: 4, Output: 20, CacheRead: 0.4, CacheWrite: 5} // Opus 5.5
+	r := Record{Input: 1000, Output: 500, CacheRead: 20000, CacheWrite: 3000}
+	std, _ := priceRequest(p, &r)
+	r.Fast = true
+	fast, _ := priceRequest(p, &r)
+	if got, want := fast.Total(), 2*std.Total(); got < want-1e-9 || got > want+1e-9 {
+		t.Fatalf("fast %.6f, want twice %.6f", got, std.Total())
+	}
+}
+
 func TestCacheWritePremium(t *testing.T) {
 	ps := Prices{}
 	for model, want := range map[string]bool{

@@ -133,6 +133,11 @@ func (s *Spend) add(o Spend) {
 // cache writes cost twice the input price.
 func priceRequest(p Price, r *Record) (s Spend, uncached float64) {
 	p = p.forPrompt(r.Input + r.CacheRead + r.CacheWrite)
+	if r.Fast {
+		// Fast mode bills every token class at twice the standard rate
+		// (Opus 5.5: $8/$40 against $4/$20), cache multipliers on top.
+		p.Input, p.Output, p.CacheRead, p.CacheWrite = 2*p.Input, 2*p.Output, 2*p.CacheRead, 2*p.CacheWrite
+	}
 	write := p.CacheWrite
 	if write == 0 {
 		write = p.Input
