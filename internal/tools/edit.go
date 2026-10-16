@@ -74,7 +74,7 @@ func (t *editTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 	if st.IsDir() {
 		return "", fmt.Errorf("%s is a directory", in.Path)
 	}
-	data, err := os.ReadFile(p)
+	data, err := t.env.readText(ctx, p)
 	if err != nil {
 		return "", err
 	}
@@ -116,7 +116,7 @@ func (t *editTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 		}
 		cur, count = res.content, count+res.count
 	}
-	if err := os.WriteFile(p, []byte(cur), st.Mode().Perm()); err != nil {
+	if err := t.env.writeText(ctx, p, []byte(cur), st.Mode().Perm()); err != nil {
 		return "", err
 	}
 	t.env.markSeen(p, sha256.Sum256([]byte(cur)))

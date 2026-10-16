@@ -72,8 +72,47 @@ func (t *bashTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 		return out + t.env.noteShellWrite(in.Command), err
 	}
 	dur := time.Duration(timeout * float64(time.Second))
+	if t.env.Terminal != nil {
+		out, err := runInTerminal(ctx, t.env.Terminal, t.env.Cwd, in.Command, dur)
+		return out + t.env.noteShellWrite(in.Command), err
+	}
 	out, err := runShell(ctx, t.env.Cwd, in.Command, dur)
 	return out + t.env.noteShellWrite(in.Command), err
+}
+
+// runInTerminal runs command in the editor's terminal and reports it as
+// runShell does. The terminal keeps the end of the output.
+func runInTerminal(ctx context.Context, term Terminal, dir, command string, timeout time.Duration) (string, error) {
+	start := time.Now()
+	r, err := term.Run(ctx, command, dir, timeout, outHeadBytes+outTailBytes)
+	if err != nil && ctx.Err() == nil {
+		return "", fmt.Errorf("the editor's terminal failed: %w", err)
+	}
+	text := strings.TrimRight(r.Output, "\n")
+	if r.Truncated {
+		text = "[earlier output dropped]\n" + text
+	}
+	var notes []string
+	switch {
+	case ctx.Err() != nil:
+		notes = append(notes, "[aborted]")
+	case r.TimedOut:
+		notes = append(notes, fmt.Sprintf("[timed out after %ds]", int(time.Since(start).Round(time.Second)/time.Second)))
+	case r.Signal != "":
+		notes = append(notes, "[killed: "+r.Signal+"]")
+	case r.ExitCode != 0:
+		notes = append(notes, fmt.Sprintf("[exit code %d]", r.ExitCode))
+	}
+	if len(notes) > 0 {
+		if text != "" {
+			text += "\n"
+		}
+		text += strings.Join(notes, " ")
+	}
+	if text == "" {
+		text = "(no output)"
+	}
+	return text, nil
 }
 
 func runShell(ctx context.Context, dir, command string, timeout time.Duration) (string, error) {

@@ -79,6 +79,7 @@ Usage:
   tego login [provider]           Claude Pro/Max, ChatGPT, Google Antigravity, or store an API key
   tego logout <provider>
   tego usage                      subscription limits of every logged-in account
+  tego acp                        Agent Client Protocol agent on stdio, for editors (Zed, JetBrains, Neovim…)
   tego stats [-r 7d] [-j]         usage statistics in the terminal (-j: JSON)
   tego stats serve                usage dashboard in the browser
   tego update [--check]           install the latest release
@@ -204,6 +205,8 @@ func run() error {
 			return nil
 		case "stats":
 			return cmdStats(cfg, args[1:])
+		case "acp":
+			return cmdACP(cfg, store, os.Stdin, os.Stdout)
 		case "update":
 			return cmdUpdate(cfg.Dir, args[1:])
 		case "usage":

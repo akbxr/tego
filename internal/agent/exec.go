@@ -59,6 +59,9 @@ func (a *Agent) runCalls(ctx context.Context, calls []llm.Block) []llm.Block {
 		var wg sync.WaitGroup
 		sem := make(chan struct{}, maxParallelReads)
 		for _, k := range rest[n:m] {
+			a.callStart(calls[k])
+		}
+		for _, k := range rest[n:m] {
 			wg.Add(1)
 			go func(k int) {
 				defer wg.Done()
@@ -71,6 +74,7 @@ func (a *Agent) runCalls(ctx context.Context, calls []llm.Block) []llm.Block {
 		for _, k := range rest[n:m] {
 			a.UI.OnToolCall(calls[k].Name, calls[k].Input)
 			a.UI.OnToolResult(calls[k].Name, calls[k].Input, results[k].Content, results[k].IsError)
+			a.callEnd(calls[k], results[k])
 			a.toolStat(calls[k].Name, results[k].IsError)
 		}
 		n = m
@@ -93,14 +97,44 @@ func (a *Agent) readOnly(call llm.Block) bool {
 
 // execute runs one call with the UI notified before and after.
 func (a *Agent) execute(ctx context.Context, call llm.Block) llm.Block {
+	a.callStart(call)
 	t, res, ok := a.prepare(ctx, call)
 	if ok {
 		a.UI.OnToolCall(call.Name, call.Input)
 		res = a.run(ctx, t, call)
 	}
 	a.UI.OnToolResult(call.Name, call.Input, res.Content, res.IsError)
+	a.callEnd(call, res)
 	a.toolStat(call.Name, res.IsError)
 	return res
+}
+
+// CallUI is a UI that follows tool calls by id (an editor through ACP):
+// each is announced before it runs, and before the user may be asked
+// about it, then marked running, then ended with its result. agent is the
+// subagent making the call, "" for the main agent.
+type CallUI interface {
+	OnCallStart(agent, id, name string, input json.RawMessage)
+	OnCallRunning(agent, id string)
+	OnCallEnd(agent, id, name string, input json.RawMessage, output string, isErr bool)
+}
+
+func (a *Agent) callStart(call llm.Block) {
+	if cu, ok := a.UI.(CallUI); ok {
+		cu.OnCallStart(a.Name, call.ID, call.Name, call.Input)
+	}
+}
+
+func (a *Agent) callRunning(call llm.Block) {
+	if cu, ok := a.UI.(CallUI); ok {
+		cu.OnCallRunning(a.Name, call.ID)
+	}
+}
+
+func (a *Agent) callEnd(call llm.Block, res llm.Block) {
+	if cu, ok := a.UI.(CallUI); ok {
+		cu.OnCallEnd(a.Name, call.ID, call.Name, call.Input, res.Content, res.IsError)
+	}
 }
 
 func (a *Agent) toolStat(name string, isErr bool) {
@@ -160,6 +194,8 @@ func (a *Agent) prepare(ctx context.Context, call llm.Block) (tools.Tool, llm.Bl
 }
 
 func (a *Agent) run(ctx context.Context, t tools.Tool, call llm.Block) (res llm.Block) {
+	a.callRunning(call)
+	ctx = tools.WithCallID(ctx, call.ID)
 	res = llm.Block{Type: llm.BlockToolResult, ToolUseID: call.ID}
 	if call.Name == "read" {
 		if note := a.unchangedRead(call); note != "" {

@@ -91,7 +91,7 @@ func (t *readTool) read(ctx context.Context, input json.RawMessage) (string, []l
 		return text, []llm.Block{blk}, nil
 	}
 	var sum [sha256.Size]byte
-	text, err := readFile(p, in.Offset, in.Limit, &sum)
+	text, err := t.env.readFile(ctx, p, in.Offset, in.Limit, &sum)
 	if err == nil {
 		t.env.markSeen(p, sum) // any range counts: edit matches text, not line numbers
 	}
@@ -199,11 +199,19 @@ func readFile(p string, offset, limit int, sum *[sha256.Size]byte) (string, erro
 		return "", err
 	}
 	defer f.Close()
-	h := sha256.New()
-	r := bufio.NewReaderSize(io.TeeReader(f, h), 64<<10)
-	if head, _ := r.Peek(8192); isBinary(head) {
+	return numberLines(p, f, func() int64 {
 		st, _ := f.Stat()
-		return "", fmt.Errorf("%s is a binary file (%d bytes); not displayed", p, st.Size())
+		return st.Size()
+	}, offset, limit, sum)
+}
+
+// numberLines renders lines offset..offset+limit-1 of src (the file p)
+// with their numbers, and hashes all of src into sum.
+func numberLines(p string, src io.Reader, size func() int64, offset, limit int, sum *[sha256.Size]byte) (string, error) {
+	h := sha256.New()
+	r := bufio.NewReaderSize(io.TeeReader(src, h), 64<<10)
+	if head, _ := r.Peek(8192); isBinary(head) {
+		return "", fmt.Errorf("%s is a binary file (%d bytes); not displayed", p, size())
 	}
 	if offset < 1 {
 		offset = 1

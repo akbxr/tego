@@ -3,6 +3,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/akbxr/tego/internal/llm"
@@ -43,6 +45,11 @@ type ReadOnly interface {
 // Cwd. It is shared by the main agent and its subagents.
 type Env struct {
 	Cwd string
+	// Files, when set, reads and writes text files for read, edit and write
+	// (an editor through ACP: its buffers, unsaved changes included).
+	Files TextFiles
+	// Terminal, when set, runs bash commands (an editor's terminal).
+	Terminal Terminal
 
 	mu          sync.Mutex
 	seen        map[string][sha256.Size]byte // abs path -> content hash when a tool last read or wrote it
@@ -55,9 +62,87 @@ type Env struct {
 // prompt with @path.
 func (e *Env) MarkRead(p string) {
 	p = e.abs(p)
-	if sum, err := hashFile(p); err == nil {
+	if sum, err := e.hash(context.Background(), p); err == nil {
 		e.markSeen(p, sum)
 	}
+}
+
+// TextFiles reads and writes whole text files somewhere other than the disk
+// (an editor's buffers). Paths are absolute.
+type TextFiles interface {
+	ReadText(ctx context.Context, path string) (string, error)
+	WriteText(ctx context.Context, path, content string) error
+}
+
+// Terminal runs a shell command somewhere the user watches it (an editor's
+// terminal) and returns its output, as much as was kept, and how it ended.
+type Terminal interface {
+	Run(ctx context.Context, command, cwd string, timeout time.Duration, outputLimit int) (TerminalResult, error)
+}
+
+// TerminalResult is how a Terminal command ended.
+type TerminalResult struct {
+	Output    string
+	Truncated bool // the start of the output was dropped
+	ExitCode  int  // -1 when it ended by a signal
+	Signal    string
+	TimedOut  bool
+}
+
+// readText reads a whole text file, through Files when set.
+func (e *Env) readText(ctx context.Context, p string) ([]byte, error) {
+	if e.Files == nil || isBinaryFile(p) {
+		return os.ReadFile(p)
+	}
+	s, err := e.Files.ReadText(ctx, p)
+	return []byte(s), err
+}
+
+// writeText writes a whole text file, through Files when set (the editor
+// keeps the file's mode).
+func (e *Env) writeText(ctx context.Context, p string, data []byte, mode os.FileMode) error {
+	if e.Files == nil {
+		return os.WriteFile(p, data, mode)
+	}
+	return e.Files.WriteText(ctx, p, string(data))
+}
+
+// hash hashes a file's content as the tools see it (through Files when
+// set: an unsaved buffer differs from the disk).
+func (e *Env) hash(ctx context.Context, p string) ([sha256.Size]byte, error) {
+	if e.Files == nil || isBinaryFile(p) {
+		return hashFile(p)
+	}
+	data, err := e.readText(ctx, p)
+	if err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	return sha256.Sum256(data), nil
+}
+
+// readFile is the package's readFile, through Files when set.
+func (e *Env) readFile(ctx context.Context, p string, offset, limit int, sum *[sha256.Size]byte) (string, error) {
+	if e.Files == nil || isBinaryFile(p) {
+		return readFile(p, offset, limit, sum)
+	}
+	data, err := e.readText(ctx, p)
+	if err != nil {
+		return "", err
+	}
+	return numberLines(p, bytes.NewReader(data), func() int64 { return int64(len(data)) }, offset, limit, sum)
+}
+
+// isBinaryFile reports whether p, on disk, starts like a binary file: such
+// files are never read or written as text through an editor.
+func isBinaryFile(p string) bool {
+	f, err := os.Open(p)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	head := make([]byte, 8192)
+	n, _ := io.ReadFull(f, head)
+	return isBinary(head[:n])
 }
 
 // markSeen records the content hash of p as known to the model.
@@ -105,7 +190,7 @@ func (e *Env) wasSeen(p string) bool {
 // content, which now counts as read so the retry can go through.
 func (e *Env) showFresh(p string, current [sha256.Size]byte, why, verb string) error {
 	var fresh [sha256.Size]byte
-	text, err := readFile(p, 1, 0, &fresh)
+	text, err := e.readFile(context.Background(), p, 1, 0, &fresh)
 	if err != nil { // binary or unreadable: nothing to show, but don't block the retry
 		e.markSeen(p, current)
 		return fmt.Errorf("%s, so nothing was changed. It cannot be shown as text (%v); retry the %s if that is still intended", why, err, verb)

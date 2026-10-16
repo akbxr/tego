@@ -245,6 +245,26 @@ func (s *subUI) log(line string) {
 	})
 }
 
+// A subagent's calls show in an editor (ACP) as the parent's, labelled with
+// the subagent's name: the user may be asked about them.
+func (s *subUI) OnCallStart(_, id, name string, input json.RawMessage) {
+	if cu, ok := s.parent.UI.(CallUI); ok {
+		cu.OnCallStart(s.name, id, name, input)
+	}
+}
+
+func (s *subUI) OnCallRunning(_, id string) {
+	if cu, ok := s.parent.UI.(CallUI); ok {
+		cu.OnCallRunning(s.name, id)
+	}
+}
+
+func (s *subUI) OnCallEnd(_, id, name string, input json.RawMessage, output string, isErr bool) {
+	if cu, ok := s.parent.UI.(CallUI); ok {
+		cu.OnCallEnd(s.name, id, name, input, output, isErr)
+	}
+}
+
 func (s *subUI) OnText(string)                                      {}
 func (s *subUI) OnThinking(string)                                  {}
 func (s *subUI) OnToolStart(string)                                 {}

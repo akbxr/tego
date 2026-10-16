@@ -55,6 +55,14 @@ tego -m openai-codex/gpt-5.6 -t high # model and thinking level
 
 **Skills, commands and MCP.** Skills use the same `SKILL.md` format as Claude Code and are found in the usual `.agents`, `.claude` and `.tego` folders. MCP servers come from `~/.tego/mcp.json` or the project's `.mcp.json` (stdio, HTTP and SSE). `AGENTS.md` and `CLAUDE.md` load automatically.
 
+**In your editor.** `tego acp` speaks the [Agent Client Protocol](https://agentclientprotocol.com), so editors that run ACP agents (Zed, JetBrains, Neovim, Emacs and others) can use tego with your logins and settings. Edits show as diffs in the editor, read and change its open buffers (unsaved changes included), and commands run in its terminals. The editor's mode picker sets the permission mode or plan mode, and its model and thinking pickers work too. After `/` the editor offers tego's commands that make sense there (`/plan`, `/model`, `/compact`, `/usage`, `/stats`, `/mcp` and more), the project's custom commands, and every skill as `/skill:<name>`. Sessions are tego's own, so `tego -r` opens them in the terminal and the editor lists and reloads them. In Zed, add to `settings.json`:
+
+```json
+"agent_servers": {
+  "tego": { "type": "custom", "command": "tego", "args": ["acp"] }
+}
+```
+
 **Usage stats.** Every request is logged to `~/.tego/stats.jsonl` without prompt text. `tego stats` prints a summary, and `tego stats serve` opens a local dashboard with cost, cache use, speed and failures per model, project and tool. Costs are estimates at API list prices from [models.dev](https://github.com/anomalyco/models.dev).
 
 ## Token use

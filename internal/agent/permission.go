@@ -75,6 +75,7 @@ func (p *Permissions) SetMode(mode string) {
 // Approval is a call waiting for the user.
 type Approval struct {
 	Agent   string // the subagent asking, "" for the main agent
+	CallID  string // the tool call's id
 	Tool    string
 	Input   json.RawMessage
 	Summary string // one line: the command, or the file and what changes
@@ -109,7 +110,7 @@ func (a *Agent) approval(t tools.Tool, call llm.Block) *Approval {
 	if h, ok := t.(readOnlyHinter); ok && h.ReadOnlyHint() {
 		return nil
 	}
-	req := &Approval{Agent: a.Name, Tool: call.Name, Input: call.Input, Summary: tools.Summary(call.Name, call.Input)}
+	req := &Approval{Agent: a.Name, CallID: call.ID, Tool: call.Name, Input: call.Input, Summary: tools.Summary(call.Name, call.Input)}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	switch {

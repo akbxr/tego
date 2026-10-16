@@ -46,7 +46,7 @@ func (t *writeTool) Run(ctx context.Context, input json.RawMessage) (string, err
 		if st.IsDir() {
 			return "", fmt.Errorf("%s is a directory", in.Path)
 		}
-		sum, err := hashFile(p)
+		sum, err := t.env.hash(ctx, p)
 		if err != nil {
 			return "", err
 		}
@@ -59,7 +59,7 @@ func (t *writeTool) Run(ctx context.Context, input json.RawMessage) (string, err
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(p, []byte(*in.Content), mode); err != nil {
+	if err := t.env.writeText(ctx, p, []byte(*in.Content), mode); err != nil {
 		return "", err
 	}
 	t.env.markSeen(p, sha256.Sum256([]byte(*in.Content)))
