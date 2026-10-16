@@ -511,7 +511,8 @@ func (a *app) init(spec, thinking string) error {
 		a.ag.Steer = a.takeSteering // messages typed mid-turn steer it
 		a.ag.Approve = a.approve    // without a terminal, calls that need approval are refused
 	}
-	task := &agent.TaskTool{Parent: a.ag, System: agent.SystemPrompt(a.cwd, files, a.skills, agent.SubagentMode), Env: a.env, Concurrency: a.cfg.Subagents}
+	task := &agent.TaskTool{Parent: a.ag, System: agent.SystemPrompt(a.cwd, files, a.skills, agent.SubagentMode), Env: a.env, Concurrency: a.cfg.Subagents,
+		Small: a.small}
 	a.ag.Tools = append(tools.Builtins(a.env), task,
 		&agent.TodoTool{Parent: a.ag},
 		&agent.CheckpointTool{Parent: a.ag},

@@ -275,6 +275,9 @@ func subRow(c palette, s agent.SubagentStatus, live bool) string {
 		mark, color = "✗", c.red
 	}
 	parts := []string{color + mark + " " + c.reset + c.bold + s.Name + c.reset}
+	if s.Model != "" { // on the small model
+		parts[0] += " " + c.dim + modelLabel(s.Model) + c.reset
+	}
 	switch {
 	case s.State == agent.SubQueued:
 		parts = append(parts, c.dim+"queued"+c.reset)

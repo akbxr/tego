@@ -65,6 +65,7 @@ tego tries hard not to resend what the model already has.
 - When the Anthropic prompt cache has expired anyway, tego trims old tool output before the next request instead of paying to cache it again. On Claude 4.5 and newer, the API also clears old tool results once a prompt passes 200k tokens. It clears them in batches, by count of tool calls, so the requests between batches still hit the cache. Replaying four long Opus sessions, the two together cut prompt cost by about 23%. That is an estimate, and it already counts the files the model reads again afterwards.
 - `grep` returns 100 lines per page, clipped at 200 columns, and a cut result ends with match counts per file and an `offset` for the next page.
 - Through OpenRouter, Claude, Gemini and Qwen only cache with a marker, so tego sends one, plus a session id that keeps the conversation on the same provider and its cache.
+- Side work goes to a cheaper model on the same account: session titles, web search, and subagents the model sends off for simple jobs such as finding code or summarising files (it picks `"model": "small"` per task). That is Claude Haiku 5.5 on Anthropic and Gemini 3.5 Flash-Lite on Antigravity. Set `"small_model"` to another model (`provider/model`, or a model of the session's provider) or to `"off"`. Compaction stays on the session's model, which has the history cached.
 - Only when the context still nears the window does tego ask the model for a summary, and the last 20k tokens always stay verbatim.
 - The system prompt holds only what stays fixed for a project. The date and git branch go after your prompt, so a resume on another day keeps the cache.
 
@@ -79,6 +80,8 @@ In my own benchmarks, 3 runs per task, the results depend a lot on the repositor
   "model": "anthropic/claude-sonnet-5-5",
   "thinking": "medium",
   "subagents": 8,
+  "small_model": "anthropic/claude-haiku-5-5",
+  "permissions": "yolo",
   "accounts": "fallback",
   "icons": "unicode",
   "providers": {

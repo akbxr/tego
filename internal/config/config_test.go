@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/akbxr/tego/internal/auth"
+	"github.com/akbxr/tego/internal/llm"
 )
 
 func TestContextWindowFor(t *testing.T) {
@@ -80,5 +81,23 @@ func TestAntigravityProvider(t *testing.T) {
 	_, _, _ = store.Add("google-antigravity", auth.Credential{Type: "oauth", Access: "a", Refresh: "r"})
 	if _, err := c.NewProvider("google-antigravity", store); err == nil {
 		t.Fatal("NewProvider without a project should fail")
+	}
+}
+
+func TestSmallModelSpec(t *testing.T) {
+	c := &Config{Providers: map[string]*llm.ProviderConfig{"proxy": {Kind: "anthropic", BaseURL: "http://x"}}}
+	for _, tc := range []struct{ small, provider, want string }{
+		{"", "anthropic", "anthropic/claude-haiku-5-5"},
+		{"", "google-antigravity", "google-antigravity/gemini-3.5-flash-lite"},
+		{"", "proxy", "proxy/claude-haiku-5-5"}, // a gateway for Anthropic's API
+		{"", "openai-codex", ""},                // no default: the session's model
+		{"off", "anthropic", ""},
+		{"claude-sonnet-5-5", "anthropic", "anthropic/claude-sonnet-5-5"}, // a model of the session's provider
+		{"openrouter/qwen/qwen3-coder", "anthropic", "openrouter/qwen/qwen3-coder"},
+	} {
+		c.SmallModel = tc.small
+		if got := c.SmallModelSpec(tc.provider); got != tc.want {
+			t.Errorf("small_model %q on %s: %q, want %q", tc.small, tc.provider, got, tc.want)
+		}
 	}
 }

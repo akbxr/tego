@@ -24,6 +24,24 @@ type TaskTool struct {
 	System      string // subagent system prompt
 	Env         *tools.Env
 	Concurrency int // max subagents running at once; <= 0 means DefaultSubagentConcurrency
+	// Small is the cheaper model a task can ask for with "model": "small"
+	// (ok false: there is none, and every task runs on the parent's model).
+	Small func() (SmallModel, bool)
+}
+
+// SmallModel is a cheaper model for side work: simple subagents, titles.
+type SmallModel struct {
+	Provider     llm.Provider
+	ProviderName string
+	Model        string
+	Window       int // context window
+}
+
+func (t *TaskTool) small() (SmallModel, bool) {
+	if t.Small == nil {
+		return SmallModel{}, false
+	}
+	return t.Small()
 }
 
 func (t *TaskTool) concurrency() int {
@@ -39,8 +57,21 @@ func (t *TaskTool) Def() llm.Tool {
 		Description: fmt.Sprintf("Run subagents for independent subtasks (broad research, changes in separate areas). Any number of tasks; up to %d run at once, the rest queue. ", t.concurrency()) +
 			"Each starts with an empty context and the read/write/edit/bash/grep/glob (and MCP) tools, and returns its final report. " +
 			"Prompts must be complete and self-contained: goal, relevant files, constraints, expected output. Never give two subagents overlapping files to edit.",
-		Schema: json.RawMessage(`{"type":"object","properties":{"tasks":{"type":"array","minItems":1,"items":{"type":"object","properties":{"name":{"type":"string","description":"short CamelCase label"},"prompt":{"type":"string"}},"required":["name","prompt"]}}},"required":["tasks"]}`),
+		Schema: json.RawMessage(`{"type":"object","properties":{"tasks":{"type":"array","minItems":1,"items":{"type":"object","properties":{"name":{"type":"string","description":"short CamelCase label"},"prompt":{"type":"string"}` +
+			t.modelProperty() + `},"required":["name","prompt"]}}},"required":["tasks"]}`),
 	}
+}
+
+// modelProperty is the tasks' "model" property, when there is a small model.
+func (t *TaskTool) modelProperty() string {
+	s, ok := t.small()
+	if !ok {
+		return ""
+	}
+	desc, _ := json.Marshal("small: " + s.Model + ", faster and much cheaper, for simple, well-defined work: finding files or code, " +
+		"reading and summarising, running checks and reporting. main (default): the session's model, for anything that needs judgment, " +
+		"design or careful edits.")
+	return `,"model":{"type":"string","enum":["main","small"],"description":` + string(desc) + `}`
 }
 
 func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, error) {
@@ -48,6 +79,7 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 		Tasks []struct {
 			Name   string `json:"name"`
 			Prompt string `json:"prompt"`
+			Model  string `json:"model"` // "small" or main ("")
 		} `json:"tasks"`
 	}
 	if err := json.Unmarshal(input, &in); err != nil {
@@ -62,6 +94,7 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 	if len(in.Tasks) > limit && !live {
 		p.UI.OnInfo(fmt.Sprintf("  %d subagents, %d at a time; the rest wait in queue", len(in.Tasks), limit))
 	}
+	small, hasSmall := t.small()
 	states := make([]*SubagentStatus, len(in.Tasks))
 	for i, task := range in.Tasks {
 		name := task.Name
@@ -69,6 +102,9 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 			name = fmt.Sprintf("task%d", i+1)
 		}
 		states[i] = &SubagentStatus{Name: name, Prompt: task.Prompt, State: SubQueued, Window: p.ContextWindow}
+		if task.Model == "small" && hasSmall {
+			states[i].Model, states[i].Window = small.Model, small.Window
+		}
 	}
 	p.subMu.Lock()
 	p.subs = states
@@ -97,6 +133,10 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 				ContextWindow: p.ContextWindow, AutoCompact: true, MaxTurns: 150, Subagent: true, ToolStat: p.ToolStat,
 				CacheWritePremium: p.CacheWritePremium, Env: p.Env, Plan: p.Plan,
 				Perms: p.Perms, Approve: p.Approve, Name: name,
+			}
+			if st.Model != "" {
+				sub.Provider, sub.ProviderName, sub.Model, sub.ContextWindow = small.Provider, small.ProviderName, small.Model, small.Window
+				sub.Fast = false // fast mode is Opus only
 			}
 			sub.UI = &subUI{name: name, parent: p, st: st, sub: sub, live: live}
 			p.setSub(st, func(s *SubagentStatus) { s.State, s.Started = SubRunning, time.Now() })
@@ -141,6 +181,7 @@ const (
 // call, for the UI.
 type SubagentStatus struct {
 	Name, Prompt   string
+	Model          string // set when it runs on the small model
 	State          string // SubQueued, SubRunning, SubDone, SubFailed
 	Err            string
 	Started, Ended time.Time

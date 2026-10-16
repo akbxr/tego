@@ -30,22 +30,16 @@ func (a *app) maybeTitle(prompt string) {
 		prompt = first // a resumed or forked session: name it after how it began
 	}
 	a.titlingFor = sess
-	p, model := a.ag.Provider, a.titleModel()
+	p, model := a.ag.Provider, a.ag.Model // with thinking off
+	if s, ok := a.small(); ok {
+		p, model = s.Provider, s.Model
+	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
 		t, err := agent.GenerateTitle(ctx, p, model, prompt)
 		a.titleDone <- titleResult{sess, t, err}
 	}()
-}
-
-// titleModel is a small, fast model where the provider has one; otherwise
-// the session's model (with thinking off).
-func (a *app) titleModel() string {
-	if a.cfg.Kind(a.ag.ProviderName) == "anthropic" {
-		return "claude-haiku-4-5"
-	}
-	return a.ag.Model
 }
 
 func (a *app) finishTitle(r titleResult) {

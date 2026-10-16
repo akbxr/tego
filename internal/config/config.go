@@ -27,6 +27,7 @@ type Config struct {
 	Fast          bool                           `json:"fast,omitempty"`         // fast mode on models that have it (/fast)
 	Permissions   string                         `json:"permissions,omitempty"`  // yolo (default) | edits | ask: which tool calls wait for approval
 	WebModel      string                         `json:"web_model,omitempty"`    // model for native web_search (default: provider-specific)
+	SmallModel    string                         `json:"small_model,omitempty"`  // cheaper model for side work: titles, web search, subagents given "small" (provider/model, a model of the session's provider, or "off"; default per provider)
 	Subagents     int                            `json:"subagents,omitempty"`    // subagents running at once (default 8); more tasks queue
 	MCPTools      string                         `json:"mcp_tools,omitempty"`    // "auto" (default: deferred behind tool_search above 10 tools), "lazy", "eager"
 	Accounts      string                         `json:"accounts,omitempty"`     // with several logins per provider: "fallback" (default: switch on limits) or "round-robin"
@@ -79,6 +80,34 @@ var defaultModels = map[string]string{
 
 // DefaultModelFor is the fallback model id for a provider ("" if none).
 func DefaultModelFor(provider string) string { return defaultModels[provider] }
+
+// defaultSmallModels are the cheaper models for side work of the providers
+// that have one (on the same account, so a subscription covers them).
+var defaultSmallModels = map[string]string{
+	"anthropic":          "claude-haiku-5-5",
+	"google-antigravity": "gemini-3.5-flash-lite",
+}
+
+// SmallModelSpec is the provider/model spec of the cheaper model for side
+// work in a session on provider, "" for none (the session's model does it).
+func (c *Config) SmallModelSpec(provider string) string {
+	switch m := c.SmallModel; {
+	case m == "off":
+		return ""
+	case m == "":
+		if d := defaultSmallModels[provider]; d != "" {
+			return provider + "/" + d
+		}
+		if c.Kind(provider) == "anthropic" { // a proxy or gateway for Anthropic's API
+			return provider + "/" + defaultSmallModels["anthropic"]
+		}
+		return ""
+	case strings.Contains(m, "/"):
+		return m
+	default:
+		return provider + "/" + m // a model of the session's provider
+	}
+}
 
 func Dir() string {
 	if d := os.Getenv("TEGO_HOME"); d != "" {
