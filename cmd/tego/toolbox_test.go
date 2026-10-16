@@ -206,3 +206,29 @@ func TestBashBoxKeepsItsFrameWithControlBytes(t *testing.T) {
 		t.Fatalf("rows %q", rows)
 	}
 }
+
+// A tab or escape in the command itself: runewidth counts a tab as 0 cells,
+// the terminal as up to 8, so the title wrapped and the live box, redrawn in
+// place, left a copy of it on screen every frame.
+func TestBashTitleWithTabsFitsTheWidth(t *testing.T) {
+	const w = 60
+	command := "sed -i '' 's/^\t\"fmt\"$/\t\"fmt\"\\n\t\"os\"/' internal/llm/fast.go \x1b[31m&& go build -o /tmp/tego-probe ./cmd/tego"
+	u, buf := boxUI(w)
+	in, _ := json.Marshal(map[string]string{"command": command})
+	u.OnToolCall("bash", in)
+	label, _, _ := u.runningBash()
+	// boxUI has no colours: any tab or escape left came from the command.
+	for _, l := range u.runningBox(label, 3*time.Second, nil, w) {
+		if strings.ContainsAny(l, "\t\x1b") {
+			t.Fatalf("live row keeps a tab or escape: %q", l)
+		}
+		if cw := runewidth.StringWidth(l); cw > w {
+			t.Fatalf("live row is %d cells, terminal %d: %q", cw, w, l)
+		}
+	}
+	u.OnToolResult("bash", in, "ok", false)
+	checkFrame(t, buf.String(), w)
+	if strings.ContainsAny(buf.String(), "\t\x1b") {
+		t.Fatalf("finished box keeps a tab or escape: %q", buf.String())
+	}
+}

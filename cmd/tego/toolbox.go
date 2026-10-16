@@ -345,6 +345,10 @@ func (u *termUI) rowClip(b *strings.Builder, styled string, width int, border st
 
 func (u *termUI) boxTop(tool, subject, mark, border string) string {
 	w := max(u.width(), 14)
+	// A tab in a command is 0 cells to runewidth but up to 8 on screen: the
+	// title would wrap, and a live box redrawn in place would leave a copy of
+	// it behind on every frame.
+	subject = termLine(subject)
 	title := " " + tool + ": " + subject + " "
 	if subject == "" {
 		title = " " + tool + " "
