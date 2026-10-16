@@ -145,8 +145,12 @@ func TestFastModeOffWhenRefused(t *testing.T) {
 	defer srv.Close()
 	p := &anthropicProvider{name: "anthropic", base: srv.URL, key: "k"}
 	msg, err := p.Stream(context.Background(), fastRequest("claude-opus-5-5"), nil)
-	if err != nil || !strings.Contains(msg.FastNote, "for this session") {
+	// The note quotes the API's message, not its JSON.
+	if err != nil || msg.FastNote != "fast mode unavailable (Fast mode is not enabled for this organization): standard speed for this session" {
 		t.Fatalf("err %v, note %q", err, msg.FastNote)
+	}
+	if got := shortReason("upstream  connect\nerror"); got != "upstream connect error" {
+		t.Fatalf("plain body: %q", got)
 	}
 	if p.fastFor(fastRequest("claude-opus-5-5")) {
 		t.Fatal("still asks for fast mode after a refusal")

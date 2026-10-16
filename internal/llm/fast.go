@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -99,10 +100,21 @@ func (p *anthropicProvider) fastRejected(err error) (string, bool) {
 	return "", false
 }
 
+// shortReason is the message of an API error body (the whole body if it
+// has none), on one line and at most 240 bytes.
 func shortReason(body string) string {
-	s := strings.Join(strings.Fields(body), " ")
-	if len(s) > 120 {
-		s = s[:117] + "..."
+	var e struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	s := body
+	if json.Unmarshal([]byte(body), &e) == nil && e.Error.Message != "" {
+		s = e.Error.Message
+	}
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > 240 {
+		s = s[:237] + "..."
 	}
 	return s
 }
