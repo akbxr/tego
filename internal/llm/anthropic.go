@@ -396,7 +396,7 @@ var keepAllThinking = aContextEdit{Type: "clear_thinking_20251015", Keep: "all"}
 // clearToolUses is the server-side clearing edit for policy c.
 func clearToolUses(c *ClearPolicy, oauth bool) aContextEdit {
 	e := aContextEdit{Type: "clear_tool_uses_20250919",
-		Trigger: &aTokenCount{Type: "input_tokens", Value: c.Trigger},
+		Trigger: &aTokenCount{Type: "tool_uses", Value: c.TriggerToolUses},
 		Keep:    &aTokenCount{Type: "tool_uses", Value: c.Keep}}
 	if c.ClearAtLeast > 0 {
 		e.ClearAtLeast = &aTokenCount{Type: "input_tokens", Value: c.ClearAtLeast}

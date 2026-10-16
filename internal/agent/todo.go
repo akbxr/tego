@@ -209,6 +209,7 @@ func (a *Agent) SetHistory(msgs []llm.Message) {
 	a.Messages = msgs
 	defer func() { a.LastCtx = a.EstimateContext() }() // resumed/branched history: show real usage, not 0
 	a.cp, a.pendingRewind, a.elideFloor, a.cleared, a.clearMark = checkpointState{}, nil, 0, 0, 0
+	a.restoreClearTrigger()
 	a.ctxRewrite, a.ctxRewriteAt = 0, 0
 	a.lastReply = a.Session.LeafTime() // a resumed session's cache may have expired
 	a.activateFromHistory(msgs)

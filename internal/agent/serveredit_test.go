@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/akbxr/tego/internal/llm"
 	"github.com/akbxr/tego/internal/tools"
@@ -97,18 +98,54 @@ func TestOtherProvidersActivateSearchedTools(t *testing.T) {
 	}
 }
 
+// toolTurns is a history of n turns that each call tool name.
+func toolTurns(n int, name string) []llm.Message {
+	msgs := []llm.Message{{Role: llm.RoleUser, Blocks: []llm.Block{text("go")}}}
+	for i := range n {
+		id := fmt.Sprintf("c%d", i)
+		msgs = append(msgs,
+			llm.Message{Role: llm.RoleAssistant, Blocks: []llm.Block{{Type: llm.BlockToolUse, ID: id, Name: name, Input: []byte(`{}`)}}},
+			llm.Message{Role: llm.RoleUser, Blocks: []llm.Block{{Type: llm.BlockToolResult, ToolUseID: id, Content: "x"}}})
+	}
+	return msgs
+}
+
 func TestClearPolicy(t *testing.T) {
-	a := &Agent{AutoCompact: true, ContextWindow: 1_000_000}
+	a := &Agent{AutoCompact: true, ContextWindow: 1_000_000, Messages: toolTurns(40, "bash")}
+	a.Messages = append(a.Messages, toolTurns(5, "todo")[1:]...) // excluded: not counted
+	a.LastCtx = 150_000
+	if p := a.clearPolicy(); p != nil {
+		t.Fatalf("policy below the token threshold: %+v", p)
+	}
+	a.LastCtx = 210_000
 	p := a.clearPolicy()
-	want := &llm.ClearPolicy{Trigger: 200_000, ClearAtLeast: 80_000, Keep: 6,
+	want := &llm.ClearPolicy{TriggerToolUses: 37, ClearAtLeast: 80_000, Keep: 6,
 		Exclude: []string{"checkpoint", "rewind", "task", "todo", "tool_search"}}
 	if !reflect.DeepEqual(p, want) {
 		t.Fatalf("policy %+v", p)
 	}
-	// A small window: below the elision threshold, clearing half as much.
-	a.ContextWindow = 64_000
-	if p = a.clearPolicy(); p.Trigger != a.CompactAt()*elideSoftRatio/100 || p.ClearAtLeast != p.Trigger/2 {
-		t.Fatalf("small window policy %+v (compact at %d)", p, a.CompactAt())
+	// Once set, the trigger stays while the cache is warm.
+	a.lastReply = time.Now()
+	a.Messages = append(a.Messages, toolTurns(30, "bash")[1:]...)
+	a.LastCtx = 400_000
+	if p = a.clearPolicy(); p.TriggerToolUses != 37 {
+		t.Fatalf("warm cache: trigger moved to %d", p.TriggerToolUses)
+	}
+	// The cache has expired: set afresh.
+	a.lastReply = time.Now().Add(-2 * time.Hour)
+	if p = a.clearPolicy(); p.TriggerToolUses != 67 {
+		t.Fatalf("cold cache: trigger %d", p.TriggerToolUses)
+	}
+	// A small window: the token threshold is the elision one, clearing half as much.
+	b := &Agent{AutoCompact: true, ContextWindow: 64_000, Messages: toolTurns(40, "bash")}
+	b.LastCtx = b.CompactAt()*elideSoftRatio/100 + 1
+	if p = b.clearPolicy(); p == nil || p.ClearAtLeast != b.CompactAt()*elideSoftRatio/100/2 {
+		t.Fatalf("small window policy %+v (compact at %d)", p, b.CompactAt())
+	}
+	// Too few tool uses to be worth a pass.
+	c := &Agent{AutoCompact: true, ContextWindow: 1_000_000, Messages: toolTurns(clearMinUses+clearBelow-1, "bash"), LastCtx: 300_000}
+	if p = c.clearPolicy(); p != nil {
+		t.Fatalf("policy with few tool uses %+v", p)
 	}
 	a.AutoCompact = false
 	if a.clearPolicy() != nil {
@@ -176,13 +213,17 @@ func TestDroppedThinkingIsRemovedOnce(t *testing.T) {
 
 func TestRequestCarriesClearPolicy(t *testing.T) {
 	prov := &policyRecorder{}
-	a := &Agent{Provider: prov, UI: nopUI{}, AutoCompact: true, ContextWindow: 200_000}
+	a := &Agent{Provider: prov, UI: nopUI{}, AutoCompact: true, ContextWindow: 1_000_000, Messages: toolTurns(40, "bash")}
+	a.Messages[len(a.Messages)-2].Usage = &llm.Usage{CacheRead: 300_000}
 	if err := a.Run(context.Background(), "hi"); err != nil {
 		t.Fatal(err)
 	}
-	// 200k window: compaction at 170k, so the trigger is the elision threshold.
-	if prov.got == nil || prov.got.Trigger != a.CompactAt()*elideSoftRatio/100 || prov.got.ClearAtLeast != prov.got.Trigger/2 {
+	if prov.got == nil || prov.got.TriggerToolUses != 37 {
 		t.Fatalf("policy %+v", prov.got)
+	}
+	// The reply records the trigger, for a resumed session.
+	if last := a.Messages[len(a.Messages)-1]; last.ClearTrigger != 37 {
+		t.Fatalf("reply carries trigger %d", last.ClearTrigger)
 	}
 }
 

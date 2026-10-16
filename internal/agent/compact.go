@@ -259,6 +259,7 @@ func (a *Agent) Compact(ctx context.Context, focus string) error {
 	a.Messages = next
 	// Indices into the old history are meaningless now.
 	a.cp, a.pendingRewind, a.elideFloor, a.cleared, a.clearMark = checkpointState{}, nil, 0, 0, 0
+	a.clearUses = 0
 	a.ctxRewrite, a.ctxRewriteAt = 0, 0
 	a.LastCtx = a.EstimateContext()
 	if err := a.Session.Compacted(next); err != nil {

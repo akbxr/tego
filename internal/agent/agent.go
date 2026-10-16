@@ -89,6 +89,7 @@ type Agent struct {
 	// response reports real usage. 0 = none.
 	ctxRewrite, ctxRewriteAt int
 	cleared                  int // tool results the provider reported cleared (server-side editing)
+	clearUses                int // tool_uses trigger of server-side clearing, 0 = not yet (serveredit.go)
 	// cutCall is the id of the tool call the output token limit cut off in
 	// the batch being run ("" if none): it is answered without running.
 	cutCall string
@@ -317,6 +318,9 @@ func (a *Agent) loop(ctx context.Context) error {
 			ClearToolResults: a.clearPolicy(), Fast: a.Fast,
 		}
 		msg, err := a.Provider.Stream(ctx, req, a.onEvent)
+		if err == nil && req.ClearToolResults != nil {
+			msg.ClearTrigger = req.ClearToolResults.TriggerToolUses
+		}
 		if err != nil {
 			if ctx.Err() != nil {
 				a.recordAborted(msg)

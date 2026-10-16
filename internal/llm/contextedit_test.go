@@ -95,7 +95,7 @@ func TestDeferredToolsFallBack(t *testing.T) {
 }
 
 func TestClearToolUsesEdit(t *testing.T) {
-	policy := &ClearPolicy{Trigger: 100_000, ClearAtLeast: 40_000, Keep: 6, Exclude: []string{"task", "tool_search"}}
+	policy := &ClearPolicy{TriggerToolUses: 120, ClearAtLeast: 40_000, Keep: 6, Exclude: []string{"task", "tool_search"}}
 	p := &anthropicProvider{name: "anthropic", base: "x", oauth: staticToken("tok")}
 	w := body(t, p, &Request{Model: "claude-opus-5-5", Thinking: ThinkingHigh, Tools: []Tool{{Name: "read"}}, Messages: searchHistory(), ClearToolResults: policy})
 	if w.ContextManagement == nil || len(w.ContextManagement.Edits) != 2 {
@@ -103,7 +103,7 @@ func TestClearToolUsesEdit(t *testing.T) {
 	}
 	got, _ := json.Marshal(w.ContextManagement.Edits)
 	want := `[{"keep":"all","type":"clear_thinking_20251015"},` +
-		`{"clear_at_least":{"type":"input_tokens","value":40000},"exclude_tools":["_task","_tool_search"],"keep":{"type":"tool_uses","value":6},"trigger":{"type":"input_tokens","value":100000},"type":"clear_tool_uses_20250919"}]`
+		`{"clear_at_least":{"type":"input_tokens","value":40000},"exclude_tools":["_task","_tool_search"],"keep":{"type":"tool_uses","value":6},"trigger":{"type":"tool_uses","value":120},"type":"clear_tool_uses_20250919"}]`
 	if string(got) != want {
 		t.Fatalf("edits\n got %s\nwant %s", got, want)
 	}

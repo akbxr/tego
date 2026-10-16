@@ -69,6 +69,10 @@ type Message struct {
 	ClearedToolUses int `json:"cleared_tool_uses,omitempty"`
 	ClearedTokens   int `json:"cleared_tokens,omitempty"`
 	ThinkingDropped int `json:"thinking_dropped,omitempty"`
+	// ClearTrigger is the ClearPolicy.TriggerToolUses the request was sent
+	// with, so a resumed session sends the same one (any change moves what
+	// the server clears, and so rewrites the prompt cache).
+	ClearTrigger int `json:"clear_trigger,omitempty"`
 	// DroppedThinking locates the dropped blocks in Request.Messages, so
 	// the caller can remove them from its history: otherwise they are sent,
 	// and dropped, again on every request.
@@ -200,15 +204,16 @@ type Request struct {
 	ClearToolResults *ClearPolicy
 }
 
-// ClearPolicy is server-side clearing of old tool results: once the prompt
-// exceeds Trigger tokens, the oldest tool results are replaced by a
-// placeholder, at least ClearAtLeast tokens at a time (a clearing pass
-// rewrites the prompt cache from the first cleared result on, so small
-// passes cost more than they save), keeping the last Keep tool uses and the
-// results of the Exclude tools.
+// ClearPolicy is server-side clearing of old tool results. Reading the
+// history from the start, each time more than TriggerToolUses tool uses
+// have not been cleared, the results of all but the last Keep of them are
+// replaced by a placeholder, if that frees at least ClearAtLeast tokens.
+// The results of the Exclude tools are left alone. With the same policy,
+// what is cleared does not change as the conversation grows until the
+// trigger is passed again (measured), so the prompt cache keeps hitting.
 type ClearPolicy struct {
-	Trigger, ClearAtLeast, Keep int
-	Exclude                     []string
+	TriggerToolUses, ClearAtLeast, Keep int
+	Exclude                             []string
 }
 
 // ContextFeatures is implemented by providers with server-side context
