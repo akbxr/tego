@@ -165,12 +165,13 @@ func TestContinueFromToolCallKeepsResults(t *testing.T) {
 	if id, _ := s.ContinueFrom(path[3]); id != path[3].ID {
 		t.Fatalf("plain answer should continue from itself, got %q", id)
 	}
-	// A tool call whose results were never written cannot be continued from.
+	// A tool call whose results were never written (tego stopped while it
+	// ran) continues from itself: the agent answers it as interrupted.
 	_, _ = s.Checkout(path[0].ID)
 	_ = s.Append(llm.Message{Role: llm.RoleAssistant, Blocks: []llm.Block{{Type: llm.BlockToolUse, ID: "c2", Name: "bash"}}})
 	dangling := s.ActivePath()[1]
-	if _, err := s.ContinueFrom(dangling); err == nil {
-		t.Fatal("expected an error for a tool call without results")
+	if id, err := s.ContinueFrom(dangling); err != nil || id != dangling.ID {
+		t.Fatalf("tool call without results: %q %v", id, err)
 	}
 }
 

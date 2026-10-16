@@ -207,6 +207,8 @@ func (a *Agent) TodoState() ([]Todo, int) {
 // checkpoint and restoring the latest todo list found in the history.
 func (a *Agent) SetHistory(msgs []llm.Message) {
 	a.Messages = msgs
+	a.noteInterrupted() // calls tego stopped during get a result, or the provider refuses the history
+	msgs = a.Messages
 	defer func() { a.LastCtx = a.EstimateContext() }() // resumed/branched history: show real usage, not 0
 	a.cp, a.pendingRewind, a.elideFloor, a.cleared, a.clearMark = checkpointState{}, nil, 0, 0, 0
 	a.restoreClearTrigger()

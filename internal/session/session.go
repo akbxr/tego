@@ -343,7 +343,9 @@ func (s *Session) ActivePath() []*Node {
 
 // ContinueFrom is the node to check out to continue right after n. For an
 // assistant message with tool calls that is its tool-results child (on the
-// active path if possible), so no call is left without a result.
+// active path if possible), so no call is left without a result; when it
+// has none (tego stopped while the calls ran), n itself, and the agent marks
+// them interrupted.
 func (s *Session) ContinueFrom(n *Node) (string, error) {
 	m := n.Message
 	if m == nil || m.Role != llm.RoleAssistant {
@@ -370,7 +372,7 @@ func (s *Session) ContinueFrom(n *Node) (string, error) {
 		}
 	}
 	if pick == nil {
-		return "", errors.New("that turn's tool calls have no results; pick an earlier point")
+		return n.ID, nil
 	}
 	return pick.ID, nil
 }
