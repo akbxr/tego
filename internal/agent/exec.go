@@ -28,24 +28,37 @@ const (
 // runCalls executes one model turn's tool calls and returns their results
 // in call order. Consecutive read-only calls (read, grep, glob, web search,
 // tool_search) run concurrently; anything that may change state runs alone,
-// in order. The UI sees every call and its result in order.
+// in order. The UI sees every call and its result in the order they run;
+// the results come back in call order.
+//
+// Todo calls run before the others: a list update sent with other calls
+// describes the work they start (the todo tool asks for exactly that), so
+// the list must show while they run, not after a long command or subagents.
 func (a *Agent) runCalls(ctx context.Context, calls []llm.Block) []llm.Block {
 	results := make([]llm.Block, len(calls))
-	for i := 0; i < len(calls); {
-		j := i + 1
-		if a.readOnly(calls[i]) {
-			for j < len(calls) && a.readOnly(calls[j]) {
-				j++
+	var rest []int // the calls left after the todo calls, in order
+	for i, c := range calls {
+		if c.Name == "todo" {
+			results[i] = a.execute(ctx, c)
+		} else {
+			rest = append(rest, i)
+		}
+	}
+	for n := 0; n < len(rest); {
+		m := n + 1
+		if a.readOnly(calls[rest[n]]) {
+			for m < len(rest) && a.readOnly(calls[rest[m]]) {
+				m++
 			}
 		}
-		if j-i == 1 {
-			results[i] = a.execute(ctx, calls[i])
-			i = j
+		if m-n == 1 {
+			results[rest[n]] = a.execute(ctx, calls[rest[n]])
+			n = m
 			continue
 		}
 		var wg sync.WaitGroup
 		sem := make(chan struct{}, maxParallelReads)
-		for k := i; k < j; k++ {
+		for _, k := range rest[n:m] {
 			wg.Add(1)
 			go func(k int) {
 				defer wg.Done()
@@ -55,12 +68,12 @@ func (a *Agent) runCalls(ctx context.Context, calls []llm.Block) []llm.Block {
 			}(k)
 		}
 		wg.Wait()
-		for k := i; k < j; k++ {
+		for _, k := range rest[n:m] {
 			a.UI.OnToolCall(calls[k].Name, calls[k].Input)
 			a.UI.OnToolResult(calls[k].Name, calls[k].Input, results[k].Content, results[k].IsError)
 			a.toolStat(calls[k].Name, results[k].IsError)
 		}
-		i = j
+		n = m
 	}
 	return results
 }
