@@ -132,7 +132,7 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 				System: t.System, Tools: tools.Builtins(t.Env), Dynamic: p.Dynamic, LazyThreshold: p.LazyThreshold, SessionID: p.SessionID + "-" + name,
 				ContextWindow: p.ContextWindow, AutoCompact: true, MaxTurns: 150, Subagent: true, ToolStat: p.ToolStat,
 				CacheWritePremium: p.CacheWritePremium, Env: p.Env, Plan: p.Plan,
-				Perms: p.Perms, Approve: p.Approve, Name: name,
+				Perms: p.Perms, Approve: p.Approve, Name: name, declined: p.declined,
 			}
 			if st.Model != "" {
 				sub.Provider, sub.ProviderName, sub.Model, sub.ContextWindow = small.Provider, small.ProviderName, small.Model, small.Window

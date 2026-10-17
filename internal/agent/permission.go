@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/akbxr/tego/internal/llm"
 	"github.com/akbxr/tego/internal/tools"
@@ -164,6 +165,15 @@ func allCovered(prefixes []string, allowed map[string]bool) bool {
 // Declined starts the result of a call the user declined.
 const Declined = "The user declined"
 
+func (a *Agent) declineTurn() {
+	if a.declined == nil {
+		a.declined = new(atomic.Bool)
+	}
+	a.declined.Store(true)
+}
+
+func (a *Agent) turnDeclined() bool { return a.declined != nil && a.declined.Load() }
+
 // approvalMu makes the approvals of an agent and its subagents one at a time.
 var approvalMu sync.Mutex
 
@@ -195,7 +205,10 @@ func (a *Agent) permissionRefusal(ctx context.Context, t tools.Tool, call llm.Bl
 		if f := strings.TrimSpace(d.Feedback); f != "" {
 			return msg + " They said: " + f
 		}
-		return msg + " Don't try the same thing another way; ask the user how to proceed if it isn't clear."
+		// A plain no stops the turn, as in Claude Code: the model would
+		// otherwise try the same thing another way.
+		a.declineTurn()
+		return msg + " They stopped the turn there. Wait for them to say how to go on, and don't try the same thing another way unless they agree."
 	}
 	if d.Always && req.rule != nil {
 		a.Perms.mu.Lock()

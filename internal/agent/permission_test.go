@@ -113,6 +113,60 @@ func TestDeclinedCallDoesNotRun(t *testing.T) {
 	}
 }
 
+// A plain no stops the turn: the calls after it don't run and the model is
+// not asked again (runWith fails on an unused reply).
+func TestPlainDeclineStopsTheTurn(t *testing.T) {
+	ap := &approver{answer: func(Approval) Decision { return Decision{} }}
+	a, dir, _ := permAgent(t, PermAsk, ap)
+	p := filepath.Join(dir, "a.go")
+	runWith(t, a,
+		assistant(call("e1", "edit", jsonOf(map[string]any{"path": p, "old_string": "package a", "new_string": "package b"})),
+			call("b1", "bash", jsonOf(map[string]any{"command": "touch c.go"}))),
+	)
+	if len(ap.asked) != 1 {
+		t.Fatalf("asked %q, want only the first call", ap.summaries())
+	}
+	if res, _ := resultFor(a.Messages, "e1"); !strings.Contains(res.Content, "stopped the turn") {
+		t.Fatalf("declined call's result %q", res.Content)
+	}
+	if res, _ := resultFor(a.Messages, "b1"); !res.IsError || !strings.Contains(res.Content, "declined an earlier call") {
+		t.Fatalf("next call's result %q", res.Content)
+	}
+	if b, _ := os.ReadFile(p); string(b) != "package a\n" {
+		t.Fatalf("declined edit changed the file: %q", b)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "c.go")); err == nil {
+		t.Fatal("the call after the declined one ran")
+	}
+
+	// The next prompt starts afresh.
+	ap.answer = func(Approval) Decision { return Decision{Allow: true} }
+	runWith(t, a,
+		assistant(call("b2", "bash", jsonOf(map[string]any{"command": "touch c.go"}))),
+		assistant(text("done")),
+	)
+	if _, err := os.Stat(filepath.Join(dir, "c.go")); err != nil {
+		t.Fatal("after a new prompt, an approved call did not run")
+	}
+}
+
+// A subagent's call declined stops the subagent and the parent's turn too.
+func TestDeclineInASubagentStopsTheParent(t *testing.T) {
+	ap := &approver{answer: func(q Approval) Decision { return Decision{Allow: q.Tool != "bash"} }}
+	a, dir, _ := permAgent(t, PermAsk, ap)
+	a.Tools = append(a.Tools, &TaskTool{Parent: a, Env: &tools.Env{Cwd: dir}, Concurrency: 1})
+	runWith(t, a,
+		assistant(call("t1", "task", jsonOf(map[string]any{"tasks": []map[string]string{{"name": "s", "prompt": "make a file"}}}))),
+		assistant(call("b1", "bash", jsonOf(map[string]any{"command": "touch s.go"}))), // the subagent's
+	)
+	if len(ap.asked) != 1 || ap.asked[0].Agent != "s" {
+		t.Fatalf("asked %+v", ap.asked)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "s.go")); err == nil {
+		t.Fatal("the declined command ran")
+	}
+}
+
 // "Don't ask again" covers the same commands (by name and subcommand), not
 // a line that also runs something else.
 func TestAlwaysAllowRules(t *testing.T) {

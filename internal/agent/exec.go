@@ -166,6 +166,10 @@ func (a *Agent) prepare(ctx context.Context, call llm.Block) (tools.Tool, llm.Bl
 		res.Content = "aborted by user"
 		return nil, res, false
 	}
+	if a.turnDeclined() {
+		res.Content = fmt.Sprintf("This %s call did not run: the user declined an earlier call and stopped the turn.", call.Name)
+		return nil, res, false
+	}
 	if call.ID != "" && call.ID == a.cutCall {
 		res.Content = fmt.Sprintf("Your response hit the output token limit while you were writing this %s call, so its arguments "+
 			"may be cut short and it did not run. Send it again in smaller pieces: split large content over several calls "+

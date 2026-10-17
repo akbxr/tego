@@ -64,6 +64,9 @@ type Agent struct {
 	Perms   *Permissions
 	Approve Approver
 	Name    string // a subagent's name, for the user asked about its calls
+	// declined is set when the user declines a call without saying what to
+	// do instead: the turn stops, its subagents included (they share it).
+	declined *atomic.Bool
 	// Steer, when set, returns the messages the user sent while the agent
 	// was working (each as the blocks of one user message). It is polled
 	// after each tool round and when the model would stop, so a message
@@ -279,6 +282,9 @@ func (a *Agent) loop(ctx context.Context) error {
 	_, rev := a.TodoState()
 	a.stop = stopState{todoRev: rev}
 	overflowRetried := false
+	if !a.Subagent || a.declined == nil { // a subagent keeps its parent's
+		a.declined = new(atomic.Bool)
+	}
 	if a.Provider == nil {
 		return ErrNoModel
 	}
@@ -400,6 +406,12 @@ func (a *Agent) loop(ctx context.Context) error {
 		a.applyRewind()
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if a.turnDeclined() {
+			if !a.Subagent {
+				a.UI.OnInfo("stopped: you declined a call. Say how to go on.")
+			}
+			return nil
 		}
 		a.takeSteering()
 	}

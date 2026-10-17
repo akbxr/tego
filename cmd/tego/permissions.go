@@ -19,7 +19,8 @@ var permissionHelp = map[string]string{
 
 // approve asks the user about a call the permission mode makes wait
 // (agent.Approver): the call's box with what it would do, then a picker.
-// Esc declines. Calls of the agent and its subagents come one at a time.
+// Esc, or No without a note, declines and stops the turn. Calls of the
+// agent and its subagents come one at a time.
 func (a *app) approve(ctx context.Context, req agent.Approval) (agent.Decision, error) {
 	a.ui.showApproval(req, tools.Preview(a.env, req.Tool, req.Input))
 	defer a.ui.hideApproval()
@@ -31,7 +32,7 @@ func (a *app) approve(ctx context.Context, req agent.Approval) (agent.Decision, 
 		items = append(items, lineedit.PickItem{Label: "Yes, and don't ask again", Detail: "for " + req.Rule + " in this session"})
 	}
 	no := len(items)
-	items = append(items, lineedit.PickItem{Label: "No", Detail: "and tell the agent what to do instead"})
+	items = append(items, lineedit.PickItem{Label: "No", Detail: "stop here, or tell the agent what to do instead"})
 	title := "Allow this " + req.Tool + " call?"
 	if req.Agent != "" {
 		title = "Subagent " + req.Agent + ": allow this " + req.Tool + " call?"
@@ -46,7 +47,7 @@ func (a *app) approve(ctx context.Context, req agent.Approval) (agent.Decision, 
 		var fb string
 		_, _ = a.pickWhenFree(ctx, func() (int, error) {
 			var err error
-			fb, err = a.tui.Ask("What should the agent do instead? (Enter to just decline)", "")
+			fb, err = a.tui.Ask("What should the agent do instead? (Enter to stop here)", "")
 			return 0, err
 		})
 		return agent.Decision{Feedback: fb}, nil
