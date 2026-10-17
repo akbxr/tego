@@ -196,3 +196,29 @@ func TestImplicitCacheProviders(t *testing.T) {
 		}
 	}
 }
+
+// One-off requests (a compaction's transcript, a title) do not put their
+// messages in the cache: nothing reads them again.
+func TestOneOffRequestsDoNotCacheTheirMessages(t *testing.T) {
+	p := &anthropicProvider{name: "anthropic", base: "x", key: "k"}
+	msgs := []Message{{Role: RoleUser, Blocks: []Block{{Type: BlockText, Text: strings.Repeat("transcript ", 500)}}}}
+	for class, want := range map[string]bool{ClassMain: true, ClassSubagent: true, ClassCompaction: false, ClassAuxiliary: false} {
+		raw, err := p.buildBody(&Request{Model: "claude-opus-5-5", System: "s", Messages: msgs, Class: class}, "2.1.280", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var w struct {
+			Messages []struct {
+				Content []struct {
+					CacheControl *struct{} `json:"cache_control"`
+				} `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal(raw, &w); err != nil {
+			t.Fatal(err)
+		}
+		if got := w.Messages[0].Content[0].CacheControl != nil; got != want {
+			t.Errorf("%s: message cached=%v, want %v", class, got, want)
+		}
+	}
+}

@@ -473,7 +473,14 @@ func (p *anthropicProvider) buildBodySpeed(req *Request, version string, t *ccTu
 
 	tools, deferred := p.anthropicTools(req, oauth, cc)
 	r.Tools = tools
-	r.Messages = anthropicMessages(req.Messages, oauth, cc, deferred, nil)
+	msgCC := cc
+	if req.Class == ClassCompaction || req.Class == ClassAuxiliary {
+		// Sent once: caching their messages (a compaction's whole transcript)
+		// costs 1.25-2x input for a write nothing reads (measured: a 161k
+		// transcript went to the cache).
+		msgCC = nil
+	}
+	r.Messages = anthropicMessages(req.Messages, oauth, msgCC, deferred, nil)
 
 	r.Thinking, r.OutputConfig = anthropicThinking(req.Model, req.Thinking)
 	r.MaxTokens = anthropicMaxTokens(req.Model, req.MaxTokens, r.Thinking)
