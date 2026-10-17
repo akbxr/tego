@@ -67,6 +67,22 @@ chmod +x "$DIR/tego"
 
 say "Installed $("$DIR/tego" --version) to $DIR/tego"
 case ":$PATH:" in
-  *":$DIR:"*) ;;
-  *) say "Add $DIR to your PATH, for example: echo 'export PATH=\"$DIR:\$PATH\"' >> ~/.zshrc" ;;
+  *":$DIR:"*) exit 0 ;;
 esac
+# A piped script cannot change the PATH of the shell that ran it: say how,
+# for the user's own shell.
+case "${SHELL:-}" in
+  */zsh) rc="~/.zshrc" ;;
+  */bash) rc="~/.bashrc" ;;
+  */fish)
+    say ""
+    say "$DIR is not in your PATH. Add it with:"
+    say "  fish_add_path $DIR"
+    exit 0
+    ;;
+  *) rc="~/.profile" ;;
+esac
+say ""
+say "$DIR is not in your PATH. Add it, then open a new shell or run the export line here:"
+say "  echo 'export PATH=\"$DIR:\$PATH\"' >> $rc"
+say "  export PATH=\"$DIR:\$PATH\""
