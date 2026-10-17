@@ -58,7 +58,7 @@ var elideKeep = map[string]bool{"task": true, "rewind": true, "todo": true, "che
 // old tool results itself (clearPolicy), client-side elision is only the
 // late backstop: rewriting the history also invalidates thinking. Where the
 // cache is implicit (Gemini, OpenAI) it is off: like pi and omp, tego leaves
-// the cached history alone there and lets compaction bound it.
+// the cached history alone there until compaction is due (elideBeforeCompact).
 func (a *Agent) ElideAt() int {
 	at := a.CompactAt() * elideSoftRatio / 100
 	if a.Provider != nil && llm.HasImplicitCache(a.Provider, a.Model) {
@@ -85,6 +85,21 @@ func (a *Agent) elideGap() int {
 
 func (a *Agent) writePremium() bool {
 	return a.CacheWritePremium != nil && a.CacheWritePremium(a.ProviderName, a.Model)
+}
+
+// elideBeforeCompact runs where the cache is implicit (see ElideAt), once
+// the context has reached the compaction threshold: compaction would
+// rebuild the cache anyway, so dropping old tool output first costs nothing
+// extra. It only does so when that brings the context back down to the soft
+// threshold, which leaves room to work before the next rebuild; then no
+// summary is needed and nothing the model wrote is lost (the staged design
+// of Fan et al.). It reports the blocks changed and the tokens saved.
+func (a *Agent) elideBeforeCompact() (changed, saved int) {
+	if a.Provider == nil || !llm.HasImplicitCache(a.Provider, a.Model) || !a.needsCompact() {
+		return 0, 0
+	}
+	target := a.CompactAt() * elideSoftRatio / 100
+	return a.elide(a.LastCtx - target)
 }
 
 func (a *Agent) needsElide() bool {

@@ -308,6 +308,13 @@ func (a *Agent) loop(ctx context.Context) error {
 					before*100/a.ContextWindow, n, float64(before)/1000, float64(a.LastCtx)/1000))
 			}
 		}
+		if before := a.LastCtx; a.ContextWindow > 0 {
+			if n, _ := a.elideBeforeCompact(); n > 0 {
+				a.LastCtx = a.EstimateContext()
+				a.UI.OnInfo(fmt.Sprintf("context at %d%%: elided %d old tool block(s) instead of compacting (~%.1fk → ~%.1fk tokens)",
+					before*100/a.ContextWindow, n, float64(before)/1000, float64(a.LastCtx)/1000))
+			}
+		}
 		if a.needsCompact() {
 			a.UI.OnInfo(fmt.Sprintf("context at %d%% (compacts above %d%%), compacting…", a.LastCtx*100/a.ContextWindow, a.CompactAt()*100/a.ContextWindow))
 			if err := a.Compact(ctx, ""); err != nil {
