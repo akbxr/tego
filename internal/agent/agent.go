@@ -80,6 +80,7 @@ type Agent struct {
 	AutoCompact    bool
 	CompactPercent int // auto-compact above this % of the window; 0 = default (window - max(15%, 16k))
 	KeepRecent     int // tokens kept verbatim when compacting; 0 = 20k
+	IdleCompactAt  int // after a break the cache did not survive, compact above this many tokens (idle.go); 0 = never
 	MaxTurns       int // 0 = unlimited
 	UI             UI
 
@@ -295,6 +296,8 @@ func (a *Agent) loop(ctx context.Context) error {
 		a.LastCtx = a.EstimateContext()
 		// The cache expired: shrinking the history now is free.
 		a.coldElide()
+		// Still long after that: a summary costs less than caching it all again.
+		a.idleCompact(ctx)
 		// Stage 1: drop bulky old tool output (free); stage 2, only if the
 		// context is still too large: LLM summarisation.
 		if a.needsElide() {

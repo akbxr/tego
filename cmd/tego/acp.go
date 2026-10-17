@@ -295,6 +295,7 @@ func (s *acpServer) open(cwd string, servers []acp.MCPServer, id string) (*acpSe
 		AutoCompact:       cfg.AutoCompactEnabled(),
 		CompactPercent:    cfg.CompactAt,
 		KeepRecent:        cfg.KeepRecent,
+		IdleCompactAt:     cfg.IdleCompactAt(),
 		UI:                sess,
 		SessionID:         uuid4(),
 		LongCache:         true, // an editor session pauses between prompts like the terminal's

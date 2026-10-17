@@ -38,6 +38,8 @@ type Config struct {
 	AutoCompact   *bool                          `json:"auto_compact,omitempty"`
 	CompactAt     int                            `json:"compact_at_percent,omitempty"`  // auto-compact above this % of the window (default: window - max(15%, 16k))
 	KeepRecent    int                            `json:"compact_keep_tokens,omitempty"` // recent tokens kept verbatim when compacting (default 20000)
+	IdleCompact   *bool                          `json:"idle_compact,omitempty"`        // after a break the prompt cache did not survive, compact a long context rather than cache it all again (default on)
+	IdleTokens    int                            `json:"idle_compact_tokens,omitempty"` // how long: above this many tokens (default 200000)
 	Providers     map[string]*llm.ProviderConfig `json:"providers,omitempty"`
 	// Prices override or add API prices ($ per million tokens) for tego
 	// stats, keyed by model id or "provider/model".
@@ -149,6 +151,22 @@ func (c *Config) Save() error {
 }
 
 func (c *Config) AutoCompactEnabled() bool { return c.AutoCompact == nil || *c.AutoCompact }
+
+// DefaultIdleCompactTokens is the context size above which a return from a
+// break compacts (as Claude Code's idle compaction).
+const DefaultIdleCompactTokens = 200_000
+
+// IdleCompactAt is the context size above which a return from a break the
+// prompt cache did not survive compacts; 0 = never.
+func (c *Config) IdleCompactAt() int {
+	if c.IdleCompact != nil && !*c.IdleCompact {
+		return 0
+	}
+	if c.IdleTokens > 0 {
+		return c.IdleTokens
+	}
+	return DefaultIdleCompactTokens
+}
 
 // ProviderNames lists presets plus user-defined providers.
 func (c *Config) ProviderNames() []string {

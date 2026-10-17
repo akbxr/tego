@@ -84,6 +84,23 @@ func TestAntigravityProvider(t *testing.T) {
 	}
 }
 
+func TestIdleCompactAt(t *testing.T) {
+	off, on := false, true
+	for _, c := range []struct {
+		cfg  Config
+		want int
+	}{
+		{Config{}, DefaultIdleCompactTokens},
+		{Config{IdleCompact: &on}, DefaultIdleCompactTokens},
+		{Config{IdleTokens: 150_000}, 150_000},
+		{Config{IdleCompact: &off, IdleTokens: 150_000}, 0},
+	} {
+		if got := c.cfg.IdleCompactAt(); got != c.want {
+			t.Errorf("%+v: %d, want %d", c.cfg, got, c.want)
+		}
+	}
+}
+
 func TestSmallModelSpec(t *testing.T) {
 	c := &Config{Providers: map[string]*llm.ProviderConfig{"proxy": {Kind: "anthropic", BaseURL: "http://x"}}}
 	for _, tc := range []struct{ small, provider, want string }{

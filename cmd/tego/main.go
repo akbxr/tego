@@ -499,6 +499,7 @@ func (a *app) init(spec, thinking string) error {
 		AutoCompact:    a.cfg.AutoCompactEnabled(),
 		CompactPercent: a.cfg.CompactAt,
 		KeepRecent:     a.cfg.KeepRecent,
+		IdleCompactAt:  a.cfg.IdleCompactAt(),
 		UI:             a.ui,
 		SessionID:      uuid4(),
 		// Interactive sessions pause between prompts: keep the prompt cache
