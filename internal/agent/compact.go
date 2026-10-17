@@ -110,7 +110,7 @@ func (a *Agent) keepCut() int {
 const summaryPrompt = `You are compacting a coding-agent conversation so the work can continue in a fresh context window. The agent will see only your summary and the most recent messages. Write a dense, factual handoff of the transcript below with exactly these sections (write "none" for an empty one):
 
 ## User goals and instructions
-What the user wants, and every explicit instruction, constraint or preference, quoted verbatim when the wording matters.
+What the user wants now, and every explicit instruction, constraint or preference that still holds. The user's messages are appended word for word after your summary, so do not copy them out: say what they add up to, and which earlier requests or instructions were later changed, withdrawn or already answered.
 
 ## Completed
 Work done so far and the key decisions, each with its reason.
@@ -228,6 +228,9 @@ func (a *Agent) Compact(ctx context.Context, focus string) error {
 			summary += fmt.Sprintf(" and %d earlier", n)
 		}
 	}
+	summary += renderSkills(usedSkills(a.Messages))
+	// Only the summarised messages: the kept tail has the rest verbatim.
+	summary += summarisedPrompts(head).render()
 	// The todo calls are summarised away with the head: carry the exact list
 	// over so the model and the UI keep agreeing (and a resume restores it).
 	if todos := a.Todos(); len(todos) > 0 {
