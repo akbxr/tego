@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/akbxr/tego/internal/llm"
@@ -37,6 +38,10 @@ const (
 	// thinking after the cut, so it too must save something worthwhile.
 	coldMinSave = 5_000
 )
+
+// spilledRE finds the file in which bash kept the whole of a cut output
+// (internal/tools/bash.go).
+var spilledRE = regexp.MustCompile(`are in (\S+) \(read it with offset/limit\)`)
 
 // elideKeep lists tools whose results stay verbatim: subagent reports and
 // rewind reports are distilled results that cannot be re-created by
@@ -175,7 +180,13 @@ func elideBlock(b llm.Block, names map[string]string) (llm.Block, bool) {
 		if len(b.Images) > 0 {
 			stub += fmt.Sprintf(", %d image(s)", len(b.Images))
 		}
-		b.Content = stub + ". Old tool output is dropped to save context; run the tool again if you need it.]"
+		if m := spilledRE.FindStringSubmatch(b.Content); m != nil {
+			// bash saved the whole output: point there rather than at a rerun.
+			b.Content = stub + ". Old tool output is dropped to save context; read " + m[1] +
+				" with offset/limit if you need it (it is kept for a day; after that, run the command again).]"
+		} else {
+			b.Content = stub + ". Old tool output is dropped to save context; run the tool again if you need it.]"
+		}
 		b.Images = nil
 		return b, true
 	case llm.BlockToolUse:

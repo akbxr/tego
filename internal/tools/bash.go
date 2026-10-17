@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -24,6 +25,16 @@ const (
 	outTailLines       = 300
 	outHeadBytes       = 10 << 10
 	outTailBytes       = 20 << 10
+	// spillMaxAge is how long the files that keep long outputs whole stay.
+	spillMaxAge = 24 * time.Hour
+)
+
+var (
+	// spillDir holds the full output of commands whose result was cut, so
+	// the model can read the middle instead of running the command again.
+	spillDir = filepath.Join(os.TempDir(), "tego-output")
+	// spillMax bounds one such file.
+	spillMax int64 = 64 << 20
 )
 
 type bashTool struct{ env *Env }
@@ -32,7 +43,7 @@ func (t *bashTool) Def() llm.Tool {
 	return llm.Tool{
 		Name: "bash",
 		Description: "Run a shell command with bash -c in the working directory; returns combined stdout+stderr " +
-			"(long output is truncated in the middle). No stdin: avoid interactive commands. Default timeout 120s, max 600s. " +
+			"(long output is truncated in the middle, and the result names a file with all of it to read). No stdin: avoid interactive commands. Default timeout 120s, max 600s. " +
 			"For something that keeps running (a dev server, a watcher, a long build) set background: true: it returns at once with an id " +
 			"for bash_output, and the process keeps running until it ends, you kill it, or tego exits. Don't end commands with & yourself. " +
 			"To view a file use the read tool, not cat/head/sed.",
@@ -134,7 +145,8 @@ func runShell(ctx context.Context, dir, command string, timeout time.Duration) (
 	// Background children that keep the output pipe open must not block us
 	// forever once the shell itself has exited.
 	cmd.WaitDelay = 2 * time.Second
-	out := &capWriter{}
+	out := &capWriter{spill: true}
+	defer out.close()
 	var w io.Writer = out
 	if fn := progressFrom(ctx); fn != nil {
 		w = io.MultiWriter(out, progressWriter(fn)) // shown live while it runs
@@ -178,7 +190,9 @@ func runShell(ctx context.Context, dir, command string, timeout time.Duration) (
 }
 
 // capWriter keeps the first outHeadLines/outHeadBytes and the last
-// outTailBytes of a stream, counting everything else.
+// outTailBytes of a stream, counting everything else. With spill set, a
+// stream that outgrows the head is also written whole to a file in
+// spillDir, which String names when it cut the middle.
 type capWriter struct {
 	mu        sync.Mutex
 	head      []byte
@@ -188,6 +202,74 @@ type capWriter struct {
 	total     int64 // bytes written
 	lines     int   // newlines written
 	tailFrom  int64 // stream offset of tail[0]
+
+	spill     bool
+	file      *os.File
+	fileN     int64
+	fileFull  bool // reached spillMax
+	fileError bool // could not be written: no file to name
+	named     bool // String named the file: keep it
+}
+
+// toFile writes p to the spill file, opening it with the head first.
+func (w *capWriter) toFile(p []byte) {
+	if !w.spill || w.fileError || w.fileFull {
+		return
+	}
+	if w.file == nil {
+		f, err := newSpillFile()
+		if err != nil {
+			w.fileError = true
+			return
+		}
+		w.file = f
+		w.toFile(w.head)
+	}
+	if room := spillMax - w.fileN; int64(len(p)) > room {
+		p, w.fileFull = p[:room], true
+	}
+	n, err := w.file.Write(p)
+	w.fileN += int64(n)
+	if err != nil {
+		w.fileError = true
+	}
+}
+
+// newSpillFile creates a file in spillDir, clearing out old ones first.
+func newSpillFile() (*os.File, error) {
+	if err := os.MkdirAll(spillDir, 0o700); err != nil {
+		return nil, err
+	}
+	if old, err := os.ReadDir(spillDir); err == nil {
+		for _, e := range old {
+			if info, err := e.Info(); err == nil && time.Since(info.ModTime()) > spillMaxAge {
+				os.Remove(filepath.Join(spillDir, e.Name()))
+			}
+		}
+	}
+	return os.CreateTemp(spillDir, "bash-*.log")
+}
+
+func sizeText(n int64) string {
+	if n >= 1<<20 {
+		return fmt.Sprintf("%d MB", n>>20)
+	}
+	return fmt.Sprintf("%d KB", n>>10)
+}
+
+// close finishes the spill file, and removes it when nothing was cut and
+// String did not name it.
+func (w *capWriter) close() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.file == nil {
+		return
+	}
+	w.file.Close()
+	if !w.named {
+		os.Remove(w.file.Name())
+	}
+	w.file = nil
 }
 
 func (w *capWriter) Write(p []byte) (int, error) {
@@ -220,6 +302,7 @@ func (w *capWriter) Write(p []byte) (int, error) {
 		}
 	}
 	if len(p) > 0 {
+		w.toFile(p)
 		if len(w.tail) == 0 {
 			w.tailFrom = w.total
 		}
@@ -272,9 +355,18 @@ func (w *capWriter) String() string {
 		totalLines++
 	}
 	omitted := totalLines - headLines - tailLines
-	marker := "\n... output truncated ...\n"
+	cut := "output truncated"
 	if omitted > 0 {
-		marker = fmt.Sprintf("\n... %d lines omitted ...\n", omitted)
+		cut = fmt.Sprintf("%d lines omitted", omitted)
 	}
+	if w.file != nil && !w.fileError {
+		w.named = true
+		if w.fileFull {
+			cut += fmt.Sprintf("; the first %s of the output are in %s (read it with offset/limit)", sizeText(spillMax), w.file.Name())
+		} else {
+			cut += fmt.Sprintf("; all %d lines are in %s (read it with offset/limit)", totalLines, w.file.Name())
+		}
+	}
+	marker := "\n... " + cut + " ...\n"
 	return strings.ToValidUTF8(strings.TrimRight(head, "\n")+marker+strings.TrimRight(string(tail), "\n"), "\uFFFD")
 }

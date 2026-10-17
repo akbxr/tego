@@ -131,3 +131,16 @@ func TestElideFallsBackToSummaryWhenNotEnough(t *testing.T) {
 		}
 	}
 }
+
+func TestElidedBashOutputPointsAtItsSavedFile(t *testing.T) {
+	names := map[string]string{"b1": "bash", "b2": "bash"}
+	saved := strings.Repeat("line\n", 500) + "... 9000 lines omitted; all 9800 lines are in /tmp/tego-output/bash-123.log (read it with offset/limit) ...\n" + strings.Repeat("end\n", 300)
+	got, ok := elideBlock(llm.Block{Type: llm.BlockToolResult, ToolUseID: "b1", Content: saved}, names)
+	if !ok || !strings.Contains(got.Content, "read /tmp/tego-output/bash-123.log with offset/limit") {
+		t.Fatalf("stub: %q", got.Content)
+	}
+	got, ok = elideBlock(llm.Block{Type: llm.BlockToolResult, ToolUseID: "b2", Content: strings.Repeat("x\n", 3000)}, names)
+	if !ok || !strings.Contains(got.Content, "run the tool again") {
+		t.Fatalf("stub without a file: %q", got.Content)
+	}
+}
