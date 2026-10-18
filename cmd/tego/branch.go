@@ -32,6 +32,83 @@ func promptText(m *llm.Message) string {
 	return strings.Join(parts, "\n")
 }
 
+// summaryOnly is the context-summary block of m, which compaction may put
+// in front of the first kept prompt, as a message of its own.
+func summaryOnly(m llm.Message) (llm.Message, bool) {
+	if m.Role != llm.RoleUser {
+		return llm.Message{}, false
+	}
+	for _, b := range m.Blocks {
+		if b.Type == llm.BlockText && strings.HasPrefix(strings.TrimSpace(b.Text), "<context-summary>") {
+			return llm.Message{Role: llm.RoleUser, Blocks: []llm.Block{b}}, true
+		}
+	}
+	return llm.Message{}, false
+}
+
+// historyBefore is msgs up to the prompt at i, keeping the summary that
+// compaction may have merged into that prompt.
+func historyBefore(msgs []llm.Message, i int) []llm.Message {
+	out := append([]llm.Message(nil), msgs[:i]...)
+	if s, ok := summaryOnly(msgs[i]); ok {
+		out = append(out, s)
+	}
+	return out
+}
+
+// replPoint is a point to rewind to inside a compaction's replacement
+// history: its summary, or a prompt or answer it kept verbatim.
+type replPoint struct {
+	prompt string // a prompt: it goes back into the editor
+	answer string
+	calls  int
+	keep   []llm.Message // the history to continue from
+	whole  bool          // keep is the whole replacement
+}
+
+// replacementPoints lists where one can continue from inside a compaction:
+// its summary, then each prompt and answer it kept. A prompt is never left
+// at the end of the history unanswered: picking it keeps what came before
+// (the summary included) and puts it in the editor.
+func replacementPoints(repl []llm.Message) []replPoint {
+	var out []replPoint
+	if len(repl) > 0 && promptText(&repl[0]) == "" && assistantText(&repl[0]) == "" {
+		// A summary of its own; one merged into the first prompt comes with it.
+		out = append(out, replPoint{keep: append([]llm.Message(nil), repl[0]), whole: len(repl) == 1})
+	}
+	for i := range repl {
+		m := &repl[i]
+		if p := promptText(m); p != "" {
+			out = append(out, replPoint{prompt: p, keep: historyBefore(repl, i)})
+			continue
+		}
+		t := assistantText(m)
+		if t == "" {
+			continue
+		}
+		end := i + 1
+		c := toolCalls(m)
+		if c > 0 && end < len(repl) && repl[end].Role == llm.RoleUser && promptText(&repl[end]) == "" {
+			end++ // its tool results, so no call is left without one
+		}
+		out = append(out, replPoint{answer: t, calls: c, keep: append([]llm.Message(nil), repl[:end]...), whole: end == len(repl)})
+	}
+	return out
+}
+
+// checkoutInside continues from a point inside compaction node n: what it
+// keeps is recorded as a new compaction below n, so the old path stays.
+func checkoutInside(s *session.Session, n *session.Node, p replPoint) ([]llm.Message, error) {
+	hist, err := s.Checkout(n.ID)
+	if err != nil || p.whole {
+		return hist, err
+	}
+	if err := s.Compacted(p.keep); err != nil {
+		return nil, err
+	}
+	return s.History(s.Leaf()), nil
+}
+
 func assistantText(m *llm.Message) string {
 	if m == nil || m.Role != llm.RoleAssistant {
 		return ""
@@ -110,6 +187,16 @@ func (a *app) treeCommand() {
 // starts a new branch); for anything else it continues right after it.
 func (a *app) jumpTo(n *session.Node, prompt string) {
 	s := a.ag.Session
+	if n.Replace != nil {
+		// The compaction as a whole (/tree): continue after it, unless it ends
+		// with the prompt it was made for, which goes back into the editor.
+		p := replPoint{keep: n.Replace, whole: true}
+		if pts := replacementPoints(n.Replace); len(pts) > 0 && pts[len(pts)-1].prompt != "" && promptText(&n.Replace[len(n.Replace)-1]) != "" {
+			p = pts[len(pts)-1]
+		}
+		a.jumpInside(n, p)
+		return
+	}
 	target := n.Parent
 	if prompt == "" {
 		var err error
@@ -123,6 +210,22 @@ func (a *app) jumpTo(n *session.Node, prompt string) {
 		a.ui.Errorf("%v", err)
 		return
 	}
+	a.landAt(hist, prompt)
+}
+
+// jumpInside continues from a point inside compaction node n.
+func (a *app) jumpInside(n *session.Node, p replPoint) {
+	hist, err := checkoutInside(a.ag.Session, n, p)
+	if err != nil {
+		a.ui.Errorf("%v", err)
+		return
+	}
+	a.landAt(hist, p.prompt)
+}
+
+// landAt makes hist the conversation after a rewind, with prompt (if any)
+// back in the editor.
+func (a *app) landAt(hist []llm.Message, prompt string) {
 	a.ag.SetHistory(hist)
 	a.redrawConversation()
 	if prompt != "" {
@@ -145,6 +248,7 @@ func (a *app) rewindCommand() {
 	type point struct {
 		node   *session.Node
 		prompt string
+		inside *replPoint // a point inside compaction node
 	}
 	var items []lineedit.PickItem
 	var points []point
@@ -152,8 +256,26 @@ func (a *app) rewindCommand() {
 	for _, n := range s.ActivePath() {
 		switch {
 		case n.Replace != nil:
-			items = append(items, lineedit.PickItem{Label: "⇊ (compacted history)", Detail: ago(n.Time)})
-			points = append(points, point{node: n})
+			// What the compaction kept verbatim can be rewound to as well.
+			for _, p := range replacementPoints(n.Replace) {
+				var label, detail string
+				switch {
+				case p.prompt != "":
+					turn++
+					label = "❯ " + session.Oneline(p.prompt, 100)
+					detail = fmt.Sprintf("turn %d · compacted", turn)
+				case p.answer != "":
+					label = "  ◆ " + session.Oneline(p.answer, 96)
+					if p.calls > 0 {
+						label += fmt.Sprintf("  (+%d tool calls)", p.calls)
+					}
+					detail = "compacted"
+				default:
+					label, detail = "⇊ summary of the earlier conversation", ago(n.Time)
+				}
+				items = append(items, lineedit.PickItem{Label: label, Detail: detail})
+				points = append(points, point{node: n, inside: &p})
+			}
 		case promptText(n.Message) != "":
 			turn++
 			p := promptText(n.Message)
@@ -177,6 +299,10 @@ func (a *app) rewindCommand() {
 		if !errors.Is(err, lineedit.ErrCanceled) {
 			a.ui.Errorf("%v", err)
 		}
+		return
+	}
+	if p := points[idx]; p.inside != nil {
+		a.jumpInside(p.node, *p.inside)
 		return
 	}
 	a.jumpTo(points[idx].node, points[idx].prompt)
@@ -216,7 +342,7 @@ func (a *app) forkCommand() {
 	}
 	i := at[idx]
 	prompt := promptText(&a.ag.Messages[i])
-	hist := append([]llm.Message(nil), a.ag.Messages[:i]...)
+	hist := historyBefore(a.ag.Messages, i)
 	if err := a.switchToCopy(hist); err != nil {
 		a.ui.Errorf("%v", err)
 		return
