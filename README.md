@@ -94,6 +94,10 @@ In my benchmarks, 3 runs per task, tego cost 44% less than oh-my-pi with Sonnet 
   "thinking": "medium",
   "subagents": 8,
   "small_model": "anthropic/claude-haiku-5-5",
+  "subagent_models": {
+    "gpt": { "model": "openai-codex/gpt-5.6-terra", "use": "code review and debugging" },
+    "gemini": "google-antigravity/gemini-3.8-pro"
+  },
   "permissions": "yolo",
   "accounts": "fallback",
   "icons": "unicode",
@@ -105,6 +109,8 @@ In my benchmarks, 3 runs per task, tego cost 44% less than oh-my-pi with Sonnet 
   }
 }
 ```
+
+`subagent_models` names more models for subagents, from other subscriptions too. The session's model picks one per task from its name and `use`, or you can ask for one ("review it with gpt"). `thinking` sets one's thinking level. Only models you are logged in for are offered, and a subagent whose model fails to start runs on the session's model and says so.
 
 `/model` saves the model and thinking level here. Thinking goes from `off` to `max`, and on a model without the level you picked, tego uses the highest it has. `/fast` or `--fast` turns on Claude's fast mode for Opus 4.8 and newer. It gives up to 2.5 times the output speed at twice the price, and a subscription pays for it from usage credits only. If fast mode is rate limited, tego carries on at standard speed. API keys can also come from the environment, such as `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY`. Logins are stored in `~/.tego/auth.json` with mode 0600.
 

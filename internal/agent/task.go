@@ -27,6 +27,20 @@ type TaskTool struct {
 	// Small is the cheaper model a task can ask for with "model": "small"
 	// (ok false: there is none, and every task runs on the parent's model).
 	Small func() (SmallModel, bool)
+	// Models are the named models a task can ask for besides those two
+	// ("model": "gpt"), from other subscriptions too; nil: none.
+	Models func() []SubagentModel
+}
+
+// SubagentModel is a named model subagents can run on (config
+// subagent_models).
+type SubagentModel struct {
+	Name     string
+	Spec     string // provider/model
+	Use      string // what it is good for, for the session's model
+	Thinking string // its thinking level; "": the session's
+	// Resolve builds or reuses its provider when a task asks for it.
+	Resolve func() (SmallModel, error)
 }
 
 // SmallModel is a cheaper model for side work: simple subagents, titles.
@@ -62,16 +76,87 @@ func (t *TaskTool) Def() llm.Tool {
 	}
 }
 
-// modelProperty is the tasks' "model" property, when there is a small model.
+func (t *TaskTool) models() []SubagentModel {
+	if t.Models == nil {
+		return nil
+	}
+	return t.Models()
+}
+
+// modelProperty is the tasks' "model" property, when there is a model
+// besides the session's: the small one, named ones.
 func (t *TaskTool) modelProperty() string {
-	s, ok := t.small()
-	if !ok {
+	s, hasSmall := t.small()
+	named := t.models()
+	if !hasSmall && len(named) == 0 {
 		return ""
 	}
-	desc, _ := json.Marshal("small: " + s.Model + ", faster and much cheaper, for simple, well-defined work: finding files or code, " +
-		"reading and summarising, running checks and reporting. main (default): the session's model, for anything that needs judgment, " +
-		"design or careful edits.")
-	return `,"model":{"type":"string","enum":["main","small"],"description":` + string(desc) + `}`
+	enum := []string{"main"}
+	var desc strings.Builder
+	if hasSmall {
+		enum = append(enum, "small")
+		desc.WriteString("small: " + s.Model + ", faster and much cheaper, for simple, well-defined work: finding files or code, " +
+			"reading and summarising, running checks and reporting. ")
+	}
+	desc.WriteString("main (default): the session's model, for anything that needs judgment, design or careful edits.")
+	for _, m := range named {
+		enum = append(enum, m.Name)
+		use := m.Use
+		if use == "" {
+			use = "when the user asks for it"
+		}
+		fmt.Fprintf(&desc, " %s: %s, %s.", m.Name, m.Spec, strings.TrimRight(use, ". "))
+	}
+	enumJSON, _ := json.Marshal(enum)
+	descJSON, _ := json.Marshal(desc.String())
+	return `,"model":{"type":"string","enum":` + string(enumJSON) + `,"description":` + string(descJSON) + `}`
+}
+
+// taskModel is the model one task runs on; zero Provider: the session's.
+type taskModel struct {
+	SmallModel
+	thinking string
+	note     string // why it runs on the session's model instead of the one asked for
+}
+
+// pickModels resolves the models the tasks asked for, each once.
+func (t *TaskTool) pickModels(asked []string) []taskModel {
+	small, hasSmall := t.small()
+	var named map[string]SubagentModel
+	resolved := map[string]taskModel{}
+	out := make([]taskModel, len(asked))
+	for i, name := range asked {
+		if name == "" || name == "main" {
+			continue
+		}
+		if name == "small" {
+			if hasSmall {
+				out[i] = taskModel{SmallModel: small}
+			}
+			continue
+		}
+		if m, ok := resolved[name]; ok {
+			out[i] = m
+			continue
+		}
+		if named == nil {
+			named = map[string]SubagentModel{}
+			for _, m := range t.models() {
+				named[m.Name] = m
+			}
+		}
+		var tm taskModel
+		if m, ok := named[name]; !ok || m.Resolve == nil {
+			tm.note = fmt.Sprintf("model %q is not configured", name)
+		} else if sm, err := m.Resolve(); err != nil {
+			tm.note = fmt.Sprintf("model %s (%s) is unavailable: %v", name, m.Spec, err)
+		} else {
+			tm = taskModel{SmallModel: sm, thinking: m.Thinking}
+		}
+		resolved[name] = tm
+		out[i] = tm
+	}
+	return out
 }
 
 func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, error) {
@@ -79,7 +164,7 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 		Tasks []struct {
 			Name   string `json:"name"`
 			Prompt string `json:"prompt"`
-			Model  string `json:"model"` // "small" or main ("")
+			Model  string `json:"model"` // "small", a named model, or main ("")
 		} `json:"tasks"`
 	}
 	if err := json.Unmarshal(input, &in); err != nil {
@@ -94,7 +179,11 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 	if len(in.Tasks) > limit && !live {
 		p.UI.OnInfo(fmt.Sprintf("  %d subagents, %d at a time; the rest wait in queue", len(in.Tasks), limit))
 	}
-	small, hasSmall := t.small()
+	asked := make([]string, len(in.Tasks))
+	for i, task := range in.Tasks {
+		asked[i] = task.Model
+	}
+	models := t.pickModels(asked)
 	states := make([]*SubagentStatus, len(in.Tasks))
 	for i, task := range in.Tasks {
 		name := task.Name
@@ -102,8 +191,10 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 			name = fmt.Sprintf("task%d", i+1)
 		}
 		states[i] = &SubagentStatus{Name: name, Prompt: task.Prompt, State: SubQueued, Window: p.ContextWindow}
-		if task.Model == "small" && hasSmall {
-			states[i].Model, states[i].Window = small.Model, small.Window
+		if m := models[i]; m.Provider != nil {
+			states[i].Model, states[i].Window = m.Model, m.Window
+		} else if m.note != "" {
+			p.UI.OnInfo(fmt.Sprintf("  [%s] %s; it runs on %s", name, m.note, p.Model))
 		}
 	}
 	p.subMu.Lock()
@@ -134,9 +225,12 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 				CacheWritePremium: p.CacheWritePremium, Env: p.Env, Plan: p.Plan,
 				Perms: p.Perms, Approve: p.Approve, Name: name, declined: p.declined,
 			}
-			if st.Model != "" {
-				sub.Provider, sub.ProviderName, sub.Model, sub.ContextWindow = small.Provider, small.ProviderName, small.Model, small.Window
-				sub.Fast = false // fast mode is Opus only
+			if m := models[i]; m.Provider != nil {
+				sub.Provider, sub.ProviderName, sub.Model, sub.ContextWindow = m.Provider, m.ProviderName, m.Model, m.Window
+				sub.Fast = false // fast mode is the session model's
+				if m.thinking != "" {
+					sub.Thinking = m.thinking
+				}
 			}
 			sub.UI = &subUI{name: name, parent: p, st: st, sub: sub, live: live}
 			p.setSub(st, func(s *SubagentStatus) { s.State, s.Started = SubRunning, time.Now() })
@@ -162,6 +256,9 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 			if !live {
 				p.UI.OnInfo(fmt.Sprintf("  ⇠ [%s] %s", name, status))
 			}
+			if n := models[i].note; n != "" {
+				status += "; on the session's model: " + n
+			}
 			reports[i] = fmt.Sprintf("## %s (%s)\n%s", name, status, report)
 		}()
 	}
@@ -181,7 +278,7 @@ const (
 // call, for the UI.
 type SubagentStatus struct {
 	Name, Prompt   string
-	Model          string // set when it runs on the small model
+	Model          string // set when it runs on another model than the session's
 	State          string // SubQueued, SubRunning, SubDone, SubFailed
 	Err            string
 	Started, Ended time.Time

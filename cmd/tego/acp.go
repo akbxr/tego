@@ -306,7 +306,7 @@ func (s *acpServer) open(cwd string, servers []acp.MCPServer, id string) (*acpSe
 	ag.Approve = sess.approve
 	ap := &app{cfg: cfg, store: s.store, cwd: cwd, ag: ag}
 	task := &agent.TaskTool{Parent: ag, System: agent.SystemPrompt(cwd, files, skills, agent.SubagentMode), Env: env,
-		Concurrency: cfg.Subagents, Small: ap.small}
+		Concurrency: cfg.Subagents, Small: ap.small, Models: ap.subagentModels}
 	ag.Tools = append(tools.Builtins(env), task,
 		&agent.TodoTool{Parent: ag},
 		&agent.CheckpointTool{Parent: ag},

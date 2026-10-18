@@ -484,6 +484,7 @@ type app struct {
 	cfg         *config.Config
 	store       *auth.Store
 	cwd         string
+	subModels   subModelCache  // subagent_models a task can ask for
 	restart     *restartError  // set by /resume to continue in another project
 	worktree    *worktree.Tree // -w: the worktree this session works in
 	undo        *undo.Store    // file snapshots before each prompt (interactive only)
@@ -574,7 +575,7 @@ func (a *app) init(spec, thinking string) error {
 		a.ag.Approve = a.approve    // without a terminal, calls that need approval are refused
 	}
 	task := &agent.TaskTool{Parent: a.ag, System: agent.SystemPrompt(a.cwd, files, a.skills, agent.SubagentMode), Env: a.env, Concurrency: a.cfg.Subagents,
-		Small: a.small}
+		Small: a.small, Models: a.subagentModels}
 	a.ag.Tools = append(tools.Builtins(a.env), task,
 		&agent.TodoTool{Parent: a.ag},
 		&agent.CheckpointTool{Parent: a.ag},

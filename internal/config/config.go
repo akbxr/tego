@@ -41,6 +41,7 @@ type Config struct {
 	KeepRecent    int                            `json:"compact_keep_tokens,omitempty"` // recent tokens kept verbatim when compacting (default 20000)
 	IdleCompact   *bool                          `json:"idle_compact,omitempty"`        // after a break the prompt cache did not survive, compact a long context rather than cache it all again (default on)
 	IdleTokens    int                            `json:"idle_compact_tokens,omitempty"` // how long: above this many tokens (default 200000)
+	SubModels     map[string]SubagentModel       `json:"subagent_models,omitempty"`
 	Providers     map[string]*llm.ProviderConfig `json:"providers,omitempty"`
 	// Prices override or add API prices ($ per million tokens) for tego
 	// stats, keyed by model id or "provider/model".
@@ -134,6 +135,9 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if err := json.Unmarshal(data, c); err != nil {
+		return nil, fmt.Errorf("config.json: %w", err)
+	}
+	if err := c.validateSubagentModels(); err != nil {
 		return nil, fmt.Errorf("config.json: %w", err)
 	}
 	return c, nil
