@@ -52,6 +52,8 @@ tego -m openai-codex/gpt-5.6 -t high # model and thinking level
 
 **Sessions you can branch.** Sessions are append-only trees in `~/.tego/sessions/`. Press Esc twice to rewind to an earlier prompt and edit it, `/tree` to switch branches, `/fork` to start a new session from any point.
 
+**Worktrees.** `tego -w [name]` works in a git worktree of its own, on branch `tego/<name>`, so several sessions can change one repository at once. Worktrees go in `~/.tego/worktrees/`, outside the repository, so its build and test tools don't pick them up. Ignored files listed in `.worktreeinclude`, such as `.env`, are copied in. Dependencies are not, so run your install step there. On exit, a worktree with nothing in it is removed. One with work in it stays unless you remove it. `tego -w <name>` and `tego -r` go back to it, and `tego worktree` lists, removes (`rm`) or prunes them.
+
 **Skills, commands and MCP.** Skills use Claude Code's `SKILL.md` format and load from the usual `.agents`, `.claude` and `.tego` folders. MCP servers come from `~/.tego/mcp.json` or the project's `.mcp.json`, over stdio, HTTP or SSE. `AGENTS.md` and `CLAUDE.md` load automatically.
 
 **In your editor.** `tego acp` speaks the [Agent Client Protocol](https://agentclientprotocol.com), so Zed, JetBrains, Neovim, Emacs and other ACP editors can run tego with your logins and settings. Edits show as diffs, tools read the editor's open buffers including unsaved changes, and commands run in its terminals. The editor's mode, model and thinking pickers work, and `/` offers tego's commands, your custom commands and every skill. Sessions are shared, so `tego -r` opens them in the terminal too. In Zed, add to `settings.json`:
@@ -125,7 +127,7 @@ Type `/` for the full list. `@` attaches a file, `!cmd` runs a shell command you
 
 ## What tego leaves out
 
-A full-screen UI, LSP integration, browser control, MCP OAuth and git worktrees. Some may come later. If you need one, open an issue with your use case.
+A full-screen UI, LSP integration, browser control and MCP OAuth. Some may come later. If you need one, open an issue with your use case.
 
 ## Contributing
 

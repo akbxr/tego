@@ -29,6 +29,7 @@ import (
 	"github.com/akbxr/tego/internal/tools"
 	"github.com/akbxr/tego/internal/undo"
 	"github.com/akbxr/tego/internal/web"
+	"github.com/akbxr/tego/internal/worktree"
 )
 
 // version is set by the release build (-ldflags "-X main.version=0.2.0").
@@ -83,6 +84,7 @@ Usage:
   tego stats [-r 7d] [-j]         usage statistics in the terminal (-j: JSON)
   tego stats serve                usage dashboard in the browser
   tego update [--check]           install the latest release
+  tego worktree [rm <name>|prune] the git worktrees tego made for this repository
 
 Flags:
   -m, --model provider/model      e.g. anthropic/claude-sonnet-4-5, openai-codex/gpt-5, ollama/qwen3
@@ -91,6 +93,7 @@ Flags:
   -t, --thinking off|low|medium|high|xhigh|max
   -c, --continue                  continue the most recent session in this directory
   -r, --resume <id>               resume a session by id prefix (no id: list)
+  -w, --worktree [name]           work in a git worktree of its own, on branch tego/<name> (made if new)
   -p, --print                     non-interactive
       --no-session                don't persist the session
   -v, --version
@@ -104,6 +107,8 @@ type options struct {
 	print, cont, noSession  bool
 	fast                    bool
 	listResume              bool
+	worktree                bool   // -w: work in a worktree
+	worktreeName            string // its name ("": a new one)
 	prompt                  []string
 }
 
@@ -135,6 +140,11 @@ func parseArgs(args []string) (*options, error) {
 				o.resume, err = val()
 			} else {
 				o.listResume = true
+			}
+		case "-w", "--worktree":
+			o.worktree = true
+			if strings.Contains(a, "=") || i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				o.worktreeName, err = val()
 			}
 		case "-c", "--continue":
 			o.cont = true
@@ -210,6 +220,8 @@ func run() error {
 			return cmdACP(cfg, store, os.Stdin, os.Stdout)
 		case "update":
 			return cmdUpdate(cfg.Dir, args[1:])
+		case "worktree", "worktrees":
+			return cmdWorktree(cfg.Dir, args[1:])
 		case "usage":
 			start := time.Now()
 			all := fetchUsage(context.Background(), cfg, store)
@@ -226,15 +238,44 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	var notes []string // said once the UI is up
+	var wt *worktree.Tree
+	if o.worktree {
+		if o.resume != "" || o.listResume {
+			return errors.New("-w and -r don't go together: a session resumes in its own folder, worktree included")
+		}
+		var created bool
+		if wt, created, err = worktree.Open(cfg.Dir, cwd, o.worktreeName); err != nil {
+			if wt == nil {
+				return err
+			}
+			notes = append(notes, err.Error())
+		}
+		if err := os.Chdir(wt.Path); err != nil {
+			return err
+		}
+		cwd = wt.Path
+		_ = os.Setenv("PWD", cwd)
+		verb := "working in worktree"
+		if created {
+			verb = "made worktree"
+		}
+		notes = append(notes, fmt.Sprintf("%s %s, on branch %s", verb, shortHome(wt.Path), wt.Branch))
+	}
 	if o.resume != "" {
 		// A session from another project runs in that project's folder.
 		if path, err := session.Find(cfg.Dir, cwd, o.resume); err == nil {
 			if dir := sessionDir(path); dir != "" && !sameDir(dir, cwd) {
-				if err := os.Chdir(dir); err != nil {
-					return fmt.Errorf("session folder %s: %w", dir, err)
+				if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+					// A worktree removed since, say: resume it here.
+					notes = append(notes, fmt.Sprintf("the session's folder %s no longer exists, so it resumes here", shortHome(dir)))
+				} else {
+					if err := os.Chdir(dir); err != nil {
+						return fmt.Errorf("session folder %s: %w", dir, err)
+					}
+					cwd = dir
+					_ = os.Setenv("PWD", dir)
 				}
-				cwd = dir
-				_ = os.Setenv("PWD", dir)
 			}
 			o.resume = path
 		}
@@ -275,7 +316,7 @@ func run() error {
 		return fmt.Errorf("invalid permission mode %q (yolo, edits or ask)", perms)
 	}
 	app := &app{cfg: cfg, store: store, cwd: cwd, noSession: o.noSession, interactive: !o.print, out: os.Stdout, icons: icons(cfg.Icons),
-		fast: o.fast || cfg.Fast, perms: perms}
+		fast: o.fast || cfg.Fast, perms: perms, worktree: wt}
 	if app.interactive {
 		app.undo = undo.Open(cfg.Dir, cwd)
 	}
@@ -287,6 +328,10 @@ func run() error {
 		pal := colorPalette()
 		app.skillRecent = loadSkillRecency(filepath.Join(cfg.Dir, "history"))
 		app.status = newStatusBar(pal, cwd, app.icons)
+		if wt != nil {
+			// The repository, not the long path under ~/.tego; the branch follows.
+			app.status.cwd = shortHome(wt.Repo) + " (worktree " + wt.Name + ")"
+		}
 		app.status.agents = app.runningAgents
 		app.status.plan = app.plan.Load
 		app.status.shells = func() int {
@@ -329,6 +374,10 @@ func run() error {
 	recordStats(cfg, cwd, app.ag, app.ui)
 	app.footerAgent.Store(app.ag) // the footer's panels may read it from now on
 	app.footerEnv.Store(app.env)
+	// Deferred before the rest, so it runs after them: the session is closed
+	// and the background shells stopped before the worktree may go, and the
+	// terminal is still there to ask.
+	defer app.finishWorktree()
 	defer app.closeSession()
 	app.startMCP()
 	defer app.mcp.Close()
@@ -348,9 +397,16 @@ func run() error {
 		if noModel != nil {
 			app.ui.OnInfo("No model available yet: run /login to sign in (Claude, ChatGPT, Google Antigravity) or store an API key, then /model.")
 		}
+		for _, n := range notes {
+			app.ui.Dim("%s", n)
+		}
 		app.refreshStatus()
 		app.refreshGit()
 		app.refreshFiles()
+	} else {
+		for _, n := range notes {
+			fmt.Fprintln(os.Stderr, "tego:", n)
+		}
 	}
 	resume := func(ref string) error {
 		if app.interactive {
@@ -428,8 +484,9 @@ type app struct {
 	cfg         *config.Config
 	store       *auth.Store
 	cwd         string
-	restart     *restartError // set by /resume to continue in another project
-	undo        *undo.Store   // file snapshots before each prompt (interactive only)
+	restart     *restartError  // set by /resume to continue in another project
+	worktree    *worktree.Tree // -w: the worktree this session works in
+	undo        *undo.Store    // file snapshots before each prompt (interactive only)
 	ui          *termUI
 	ag          *agent.Agent
 	env         *tools.Env
