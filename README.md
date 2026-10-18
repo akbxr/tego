@@ -78,6 +78,7 @@ tego tries hard not to resend what the model already has.
 - `grep` returns 100 lines per page, cut at 200 columns, with match counts per file and an `offset` for the next page.
 - Through OpenRouter, Claude, Gemini and Qwen cache only with a marker. tego sends one, plus a session id that keeps you on the same provider and its cache.
 - The system prompt holds only what stays fixed for a project. The date and git branch go after your prompt, so resuming on another day keeps the cache.
+- Requests over 32 KB go gzipped to Anthropic, Codex and Antigravity. The tokens are the same, but the upload, repeated on every tool round, is about half the size. If a server refuses it, tego sends that request again uncompressed and stops compressing for it. `"gzip_requests": false` turns this off.
 
 In my benchmarks, 3 runs per task, tego cost 44% less than oh-my-pi with Sonnet 5.5 on small Python and Go tasks. The gap depends a lot on the repository.
 

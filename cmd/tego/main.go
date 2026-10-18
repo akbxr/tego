@@ -186,6 +186,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	llm.SetGzipRequests(cfg.GzipEnabled())
 	store, err := auth.Open(filepath.Join(cfg.Dir, "auth.json"))
 	if err != nil {
 		return err

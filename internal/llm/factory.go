@@ -330,8 +330,32 @@ func retryDelay(err error, try int) (time.Duration, bool) {
 }
 
 // postJSON sends body to url and returns the response if it is 2xx; other
-// statuses are converted to *APIError.
+// statuses are converted to *APIError. A large body goes compressed to the
+// hosts known to take that (gzipbody.go).
 func postJSON(ctx context.Context, provider, endpoint string, body []byte, header http.Header) (*http.Response, error) {
+	if gz := gzipFor(endpoint, body); gz != nil {
+		h := header.Clone()
+		if h == nil {
+			h = http.Header{}
+		}
+		h.Set("Content-Encoding", "gzip")
+		resp, err := post(ctx, provider, endpoint, gz, h)
+		var ae *APIError
+		if !errors.As(err, &ae) || !gzipRefused(ae.Status) {
+			return resp, err
+		}
+		// Perhaps the compression it refused: try once plain, and if that
+		// goes through, keep to plain for this host.
+		resp, err = post(ctx, provider, endpoint, body, header)
+		if err == nil {
+			noGzip(endpoint)
+		}
+		return resp, err
+	}
+	return post(ctx, provider, endpoint, body, header)
+}
+
+func post(ctx context.Context, provider, endpoint string, body []byte, header http.Header) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
