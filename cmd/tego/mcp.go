@@ -6,8 +6,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/akbxr/tego/internal/config"
 	"github.com/akbxr/tego/internal/mcp"
 )
+
+// mcpOptions are the MCP manager's options from the config: local servers
+// run only while used unless mcp_idle is "off".
+func mcpOptions(cfg *config.Config) mcp.Options {
+	return mcp.Options{IdleAfter: cfg.MCPIdleAfter(), CacheDir: filepath.Join(cfg.Dir, "mcp-cache")}
+}
 
 // startMCP connects configured MCP servers in the background; their tools
 // join the agent's tool list as they come up.
@@ -16,7 +23,7 @@ func (a *app) startMCP() {
 	if err != nil {
 		a.ui.Errorf("mcp config: %v", err)
 	}
-	a.mcp = mcp.Start(cfgs, a.cwd, filepath.Join(a.cfg.Dir, "logs"))
+	a.mcp = mcp.StartWith(cfgs, a.cwd, filepath.Join(a.cfg.Dir, "logs"), mcpOptions(a.cfg))
 	a.ag.Dynamic = a.mcp.Tools
 	switch a.cfg.MCPTools {
 	case "eager":
@@ -78,8 +85,11 @@ func (a *app) mcpCommand() {
 			color = c.yellow
 		}
 		line := fmt.Sprintf("  %s●%s %-20s %s%-10s%s %-6s", color, c.reset, s.Name, color, s.State, c.reset, s.Transport)
-		if s.State == "connected" {
+		if s.State == mcp.StateConnected || s.State == mcp.StateIdle {
 			line += fmt.Sprintf(" %d tools", s.Tools)
+		}
+		if s.State == mcp.StateIdle && s.Err == "" {
+			line += c.dim + "  not running; starts at its next call" + c.reset
 		}
 		if s.Err != "" {
 			line += "  " + c.dim + strings.ReplaceAll(s.Err, "\n", " ") + c.reset

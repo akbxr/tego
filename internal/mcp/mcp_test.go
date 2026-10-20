@@ -23,6 +23,12 @@ import (
 func TestMain(m *testing.M) {
 	switch os.Getenv("TEGO_MCP_FAKE") {
 	case "1":
+		if p := os.Getenv("TEGO_MCP_STARTS"); p != "" { // counts the starts
+			if f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+				fmt.Fprintln(f, os.Getpid())
+				f.Close()
+			}
+		}
 		fakeServer()
 		os.Exit(0)
 	case "exit":

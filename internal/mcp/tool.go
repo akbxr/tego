@@ -43,10 +43,11 @@ func (t *mcpTool) Run(ctx context.Context, input json.RawMessage) (string, error
 }
 
 func (t *mcpTool) RunImages(ctx context.Context, input json.RawMessage) (string, []llm.Block, error) {
-	c, err := t.s.currentConn()
+	c, err := t.s.acquire() // starts it if it is idle
 	if err != nil {
 		return "", nil, err
 	}
+	defer t.s.release()
 	if len(input) == 0 || string(input) == "null" {
 		input = json.RawMessage("{}")
 	}

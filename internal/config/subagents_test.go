@@ -6,7 +6,16 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestMCPIdleAfter(t *testing.T) {
+	for v, want := range map[string]time.Duration{"": DefaultMCPIdle, "off": 0, "0": 0, "90s": 90 * time.Second, "soon": DefaultMCPIdle, "-5m": DefaultMCPIdle} {
+		if got := (&Config{MCPIdle: v}).MCPIdleAfter(); got != want {
+			t.Errorf("mcp_idle %q: %v, want %v", v, got, want)
+		}
+	}
+}
 
 func TestSubagentModelsLoad(t *testing.T) {
 	dir := t.TempDir()

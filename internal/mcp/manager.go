@@ -45,6 +45,8 @@ type Manager struct {
 	snap        atomic.Pointer[[]tools.Tool]
 	rebuildMu   sync.Mutex
 	closeOnce   sync.Once
+	idleAfter   time.Duration // Options.IdleAfter
+	cacheDir    string
 }
 
 type toolInfo struct {
@@ -60,6 +62,8 @@ type server struct {
 	refreshing atomic.Bool
 	dirty      atomic.Bool // tools/list_changed seen since the last fetch
 
+	wakeMu sync.Mutex // one start of an idle server at a time
+
 	mu        sync.Mutex
 	state     string
 	err       string
@@ -67,24 +71,46 @@ type server struct {
 	closed    bool
 	conn      *conn
 	list      []toolInfo
+	inflight  int       // calls running
+	lastUsed  time.Time // when the latest call ended, or it started
 }
 
 // Start connects to all enabled servers concurrently in the background and
 // returns immediately. stdio servers run in cwd (or their own cwd) and log
 // stderr to <logDir>/mcp-<name>.log.
 func Start(cfgs []ServerConfig, cwd, logDir string) *Manager {
+	return StartWith(cfgs, cwd, logDir, Options{})
+}
+
+// StartWith is Start with options: with IdleAfter, local servers whose
+// tools are cached start at their first call and stop when left idle.
+func StartWith(cfgs []ServerConfig, cwd, logDir string, o Options) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
-	m := &Manager{cwd: cwd, logDir: logDir, ctx: ctx, cancel: cancel, done: make(chan struct{})}
+	m := &Manager{cwd: cwd, logDir: logDir, ctx: ctx, cancel: cancel, done: make(chan struct{}), idleAfter: o.IdleAfter, cacheDir: o.CacheDir}
 	m.snap.Store(&[]tools.Tool{})
 	m.servers = make([]*server, len(cfgs))
+	now := time.Now()
+	anyIdle := false
 	for i, cfg := range cfgs {
-		m.servers[i] = &server{m: m, cfg: cfg, transport: cfg.Type, state: StateConnecting}
+		s := &server{m: m, cfg: cfg, transport: cfg.Type, state: StateConnecting}
+		m.servers[i] = s
 		if cfg.Disabled {
-			m.servers[i].state = StateDisabled
+			s.state = StateDisabled
+		} else if s.onDemand() {
+			if list, ok := s.loadCache(now); ok {
+				s.state, s.list = StateIdle, list
+				anyIdle = true
+			}
 		}
 	}
+	if anyIdle {
+		m.rebuild()
+	}
+	if m.idleAfter > 0 {
+		go m.reapIdle()
+	}
 	for _, s := range m.servers {
-		if s.state == StateDisabled {
+		if s.state != StateConnecting {
 			continue
 		}
 		m.wg.Add(1)
@@ -150,7 +176,7 @@ func (m *Manager) Close() {
 			s.mu.Lock()
 			c := s.conn
 			s.closed, s.conn, s.list = true, nil, nil
-			if s.state == StateConnected || s.state == StateConnecting {
+			if s.state == StateConnected || s.state == StateConnecting || s.state == StateIdle {
 				s.state = StateClosed
 			}
 			s.mu.Unlock()
@@ -220,8 +246,9 @@ func (s *server) connect(ctx context.Context) {
 		}
 		return
 	}
-	s.state, s.conn, s.list = StateConnected, c, list
+	s.state, s.conn, s.list, s.lastUsed = StateConnected, c, list, time.Now()
 	s.mu.Unlock()
+	s.saveCache(list)
 	s.m.rebuild()
 	if s.dirty.Load() {
 		s.refresh()
@@ -352,6 +379,7 @@ func (s *server) refetch() {
 	}
 	s.list = list
 	s.mu.Unlock()
+	s.saveCache(list)
 	s.m.rebuild()
 }
 
@@ -359,6 +387,12 @@ func (s *server) refetch() {
 func (s *server) lost(c *conn, err error) {
 	s.mu.Lock()
 	if s.conn != c {
+		s.mu.Unlock()
+		return
+	}
+	if s.onDemand() && !s.closed {
+		// Started again at the next call, its tools listed meanwhile.
+		s.state, s.err, s.conn = StateIdle, "exited: "+err.Error(), nil
 		s.mu.Unlock()
 		return
 	}
@@ -373,10 +407,7 @@ func (s *server) currentConn() (*conn, error) {
 	if s.conn != nil {
 		return s.conn, nil
 	}
-	if s.err != "" {
-		return nil, fmt.Errorf("mcp server %q is %s: %s", s.cfg.Name, s.state, s.err)
-	}
-	return nil, fmt.Errorf("mcp server %q is %s", s.cfg.Name, s.state)
+	return nil, s.stateErr()
 }
 
 // serve answers server->client requests.

@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/akbxr/tego/internal/auth"
 	"github.com/akbxr/tego/internal/llm"
@@ -30,6 +31,7 @@ type Config struct {
 	SmallModel    string                         `json:"small_model,omitempty"`   // cheaper model for side work: titles, web search, subagents given "small" (provider/model, a model of the session's provider, or "off"; default per provider)
 	Subagents     int                            `json:"subagents,omitempty"`     // subagents running at once (default 8); more tasks queue
 	MCPTools      string                         `json:"mcp_tools,omitempty"`     // "auto" (default: deferred behind tool_search above 10 tools), "lazy", "eager"
+	MCPIdle       string                         `json:"mcp_idle,omitempty"`      // local MCP servers stop after this long unused and start at their next call (default "10m"; "off": run all session)
 	Accounts      string                         `json:"accounts,omitempty"`      // with several logins per provider: "fallback" (default: switch on limits) or "round-robin"
 	Icons         string                         `json:"icons,omitempty"`         // status-line icons: "nerd" (Nerd Font glyphs) or "unicode" (default)
 	Notify        string                         `json:"notify,omitempty"`        // "off" disables the notification (sound) when a turn finishes
@@ -163,6 +165,23 @@ func (c *Config) GzipEnabled() bool { return c.Gzip == nil || *c.Gzip }
 // DefaultIdleCompactTokens is the context size above which a return from a
 // break compacts (as Claude Code's idle compaction).
 const DefaultIdleCompactTokens = 200_000
+
+// DefaultMCPIdle is how long a local MCP server may sit unused before it
+// is stopped.
+const DefaultMCPIdle = 10 * time.Minute
+
+// MCPIdleAfter is mcp_idle: 0 when off, DefaultMCPIdle when unset or
+// not a duration.
+func (c *Config) MCPIdleAfter() time.Duration {
+	switch c.MCPIdle {
+	case "off", "never", "0":
+		return 0
+	}
+	if d, err := time.ParseDuration(c.MCPIdle); err == nil && d > 0 {
+		return d
+	}
+	return DefaultMCPIdle
+}
 
 // IdleCompactAt is the context size above which a return from a break the
 // prompt cache did not survive compacts; 0 = never.

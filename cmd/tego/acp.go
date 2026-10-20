@@ -351,7 +351,7 @@ func (s *acpServer) open(cwd string, servers []acp.MCPServer, id string) (*acpSe
 	if err != nil {
 		cfgs = nil
 	}
-	sess.mcp = mcp.Start(mergeMCP(cfgs, servers), cwd, filepath.Join(cfg.Dir, "logs"))
+	sess.mcp = mcp.StartWith(mergeMCP(cfgs, servers), cwd, filepath.Join(cfg.Dir, "logs"), mcpOptions(cfg))
 	ag.Dynamic = sess.mcp.Tools
 	switch cfg.MCPTools {
 	case "eager":

@@ -23,7 +23,11 @@ type ServerConfig struct {
 	URL      string
 	Headers  map[string]string
 	Disabled bool
-	Source   string // config file it came from
+	// KeepAlive keeps a stdio server running for the whole session: not
+	// started on demand, never stopped when idle (one holding state, such
+	// as a logged-in browser).
+	KeepAlive bool
+	Source    string // config file it came from
 }
 
 type rawServer struct {
@@ -36,6 +40,7 @@ type rawServer struct {
 	Headers  map[string]string `json:"headers"`
 	Disabled *bool             `json:"disabled"`
 	Enabled  *bool             `json:"enabled"`
+	Keep     bool              `json:"keepAlive"`
 }
 
 type rawFile struct {
@@ -118,12 +123,13 @@ func loadFile(path string) ([]ServerConfig, error) {
 			return nil, fmt.Errorf("mcp config %s: server %q: %w", path, name, err)
 		}
 		c := ServerConfig{
-			Name:    name,
-			Type:    normalizeType(r.Type, r.Command, r.URL),
-			Command: expandEnv(r.Command),
-			Cwd:     r.Cwd,
-			URL:     expandEnv(r.URL),
-			Source:  path,
+			Name:      name,
+			Type:      normalizeType(r.Type, r.Command, r.URL),
+			Command:   expandEnv(r.Command),
+			Cwd:       r.Cwd,
+			URL:       expandEnv(r.URL),
+			Source:    path,
+			KeepAlive: r.Keep,
 		}
 		if r.Disabled != nil && *r.Disabled || r.Enabled != nil && !*r.Enabled {
 			c.Disabled = true
