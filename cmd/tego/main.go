@@ -324,6 +324,7 @@ func run() error {
 	// Loaded before the TUI starts: its autocomplete reads them from another goroutine.
 	app.skills = agent.LoadSkills(cfg.Dir, cwd)
 	app.commands = agent.LoadCommands(cfg.Dir, cwd)
+	app.agentDefs = agent.LoadAgents(cfg.Dir, cwd)
 	if app.interactive {
 		pal := colorPalette()
 		app.skillRecent = loadSkillRecency(filepath.Join(cfg.Dir, "history"))
@@ -492,7 +493,8 @@ type app struct {
 	ag          *agent.Agent
 	env         *tools.Env
 	skills      []agent.Skill
-	skillRecent *skillRecency // nil outside the TUI
+	agentDefs   []agent.AgentDef // agents/*.md
+	skillRecent *skillRecency    // nil outside the TUI
 	commands    map[string]agent.Command
 	noSession   bool
 	interactive bool
@@ -575,7 +577,7 @@ func (a *app) init(spec, thinking string) error {
 		a.ag.Approve = a.approve    // without a terminal, calls that need approval are refused
 	}
 	task := &agent.TaskTool{Parent: a.ag, System: agent.SystemPrompt(a.cwd, files, a.skills, agent.SubagentMode), Env: a.env, Concurrency: a.cfg.Subagents,
-		Small: a.small, Models: a.subagentModels}
+		Small: a.small, Models: a.subagentModels, Agents: a.agents, ResolveModel: a.resolveModel, Isolate: isolator(a.cfg.Dir, a.cwd)}
 	a.ag.Tools = append(tools.Builtins(a.env), task,
 		&agent.TodoTool{Parent: a.ag},
 		&agent.CheckpointTool{Parent: a.ag},

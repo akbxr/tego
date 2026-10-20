@@ -275,6 +275,9 @@ func subRow(c palette, s agent.SubagentStatus, live bool) string {
 		mark, color = "✗", c.red
 	}
 	parts := []string{color + mark + " " + c.reset + c.bold + s.Name + c.reset}
+	if s.Agent != "" && s.Agent != s.Name {
+		parts[0] += " " + c.dim + "(" + s.Agent + ")" + c.reset
+	}
 	if s.Model != "" { // on another model than the session's
 		parts[0] += " " + c.dim + modelLabel(s.Model) + c.reset
 	}
@@ -502,7 +505,7 @@ func stripSGR(s string) string {
 func (a *app) agentsCommand() {
 	subs := a.ag.Subagents()
 	if len(subs) == 0 {
-		a.ui.Dim("(no subagents yet)")
+		a.listAgentDefs()
 		return
 	}
 	c := a.ui.c

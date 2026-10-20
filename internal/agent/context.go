@@ -243,6 +243,14 @@ func splitFrontmatter(s string) (map[string]string, string) {
 				parts = append(parts, strings.TrimSpace(lines[i]))
 			}
 			v = strings.TrimSpace(strings.Join(parts, " "))
+		} else if v == "" {
+			// A YAML list ("tools:" then "  - Read" lines): its items, comma-separated.
+			var items []string
+			for i+1 < len(lines) && strings.HasPrefix(strings.TrimSpace(lines[i+1]), "- ") {
+				i++
+				items = append(items, strings.Trim(strings.TrimSpace(strings.TrimSpace(lines[i])[2:]), `"'`))
+			}
+			v = strings.Join(items, ", ")
 		}
 		fm[k] = strings.Trim(v, `"'`)
 	}

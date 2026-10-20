@@ -28,7 +28,7 @@ var builtinCommands = []struct{ name, icon, help string }{
 	{"plan", "⏸", "Plan mode: investigate and propose, change nothing until you approve (Shift+Tab toggles)"},
 	{"permissions", "⛉", "Which tool calls wait for your approval: /permissions [yolo|edits|ask]"},
 	{"tree", "⑂", "Navigate the session tree (switch branches)"},
-	{"agents", "⧉", "Show what a subagent of the latest task did (also ←← on an empty editor)"},
+	{"agents", "⧉", "Show what a subagent of the latest task did (also ←← on an empty editor); /agents defined lists agents/*.md"},
 	{"fork", "⑂", "New session from before a chosen prompt"},
 	{"clone", "⧉", "Duplicate the current session into a new one"},
 	{"compact", "⇊", "Summarise history to free context: /compact [focus]"},
@@ -669,7 +669,11 @@ func (a *app) command(line string, done chan<- error) bool {
 	case "branch", "rewind":
 		a.rewindCommand()
 	case "agents":
-		a.agentsCommand()
+		if strings.TrimSpace(args) == "defined" {
+			a.listAgentDefs()
+		} else {
+			a.agentsCommand()
+		}
 	case "tree":
 		a.treeCommand()
 	case "fork":

@@ -30,6 +30,18 @@ type TaskTool struct {
 	// Models are the named models a task can ask for besides those two
 	// ("model": "gpt"), from other subscriptions too; nil: none.
 	Models func() []SubagentModel
+	// Agents are the defined agents a task can run as ("agent": "reviewer");
+	// nil: none.
+	Agents func() []AgentDef
+	// ResolveModel resolves a model an agent definition names that is not
+	// main, small or a named model: an alias (opus, sonnet, haiku) or
+	// provider/model. Zero Provider and nil error: the session's model.
+	ResolveModel func(spec string) (SmallModel, error)
+	// Isolate gives a task ("isolation": "worktree") a git worktree of its
+	// own: the folder to work in, a note on it for the subagent, and finish,
+	// which removes the worktree if nothing is in it and says what became of
+	// it. nil: tasks can't ask for one.
+	Isolate func(task string) (dir, note string, finish func() string, err error)
 }
 
 // SubagentModel is a named model subagents can run on (config
@@ -72,8 +84,52 @@ func (t *TaskTool) Def() llm.Tool {
 			"Each starts with an empty context and the read/write/edit/bash/grep/glob (and MCP) tools, and returns its final report. " +
 			"Prompts must be complete and self-contained: goal, relevant files, constraints, expected output. Never give two subagents overlapping files to edit.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"tasks":{"type":"array","minItems":1,"items":{"type":"object","properties":{"name":{"type":"string","description":"short CamelCase label"},"prompt":{"type":"string"}` +
-			t.modelProperty() + `},"required":["name","prompt"]}}},"required":["tasks"]}`),
+			t.agentProperty() + t.modelProperty() + t.isolationProperty() + `},"required":["name","prompt"]}}},"required":["tasks"]}`),
 	}
+}
+
+// isolationProperty is the tasks' "isolation" property, when worktrees
+// can be made.
+func (t *TaskTool) isolationProperty() string {
+	if t.Isolate == nil {
+		return ""
+	}
+	return `,"isolation":{"type":"string","enum":["worktree"],"description":"worktree: the subagent works in a git worktree of its own, ` +
+		`made from the last commit (uncommitted changes are not in it), and commits there. Lets subagents edit the same files in parallel. ` +
+		`The report says the branch to merge; a worktree with no changes is removed."}`
+}
+
+func (t *TaskTool) agents() []AgentDef {
+	if t.Agents == nil {
+		return nil
+	}
+	return t.Agents()
+}
+
+// agentDescMax caps an agent's description in the schema: Claude Code's
+// often carry long examples.
+const agentDescMax = 300
+
+// agentProperty is the tasks' "agent" property, when agents are defined.
+func (t *TaskTool) agentProperty() string {
+	defs := t.agents()
+	if len(defs) == 0 {
+		return ""
+	}
+	enum := make([]string, len(defs))
+	var desc strings.Builder
+	desc.WriteString("Run the task as one of these defined agents, with its own instructions, tools and model, when the task fits its description. Omit for a general subagent.")
+	for i, d := range defs {
+		enum[i] = d.Name
+		s := d.Description
+		if r := []rune(s); len(r) > agentDescMax {
+			s = string(r[:agentDescMax]) + "…"
+		}
+		fmt.Fprintf(&desc, "\n- %s: %s", d.Name, s)
+	}
+	enumJSON, _ := json.Marshal(enum)
+	descJSON, _ := json.Marshal(desc.String())
+	return `,"agent":{"type":"string","enum":` + string(enumJSON) + `,"description":` + string(descJSON) + `}`
 }
 
 func (t *TaskTool) models() []SubagentModel {
@@ -146,7 +202,14 @@ func (t *TaskTool) pickModels(asked []string) []taskModel {
 			}
 		}
 		var tm taskModel
-		if m, ok := named[name]; !ok || m.Resolve == nil {
+		if m, ok := named[name]; !ok && t.ResolveModel != nil {
+			// An agent's model: an alias or provider/model.
+			if sm, err := t.ResolveModel(name); err != nil {
+				tm.note = fmt.Sprintf("model %s is unavailable: %v", name, err)
+			} else {
+				tm = taskModel{SmallModel: sm}
+			}
+		} else if !ok || m.Resolve == nil {
 			tm.note = fmt.Sprintf("model %q is not configured", name)
 		} else if sm, err := m.Resolve(); err != nil {
 			tm.note = fmt.Sprintf("model %s (%s) is unavailable: %v", name, m.Spec, err)
@@ -165,6 +228,9 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 			Name   string `json:"name"`
 			Prompt string `json:"prompt"`
 			Model  string `json:"model"` // "small", a named model, or main ("")
+			Agent  string `json:"agent"` // a defined agent, or "" for a general subagent
+			// Isolation "worktree": in a worktree of its own.
+			Isolation string `json:"isolation"`
 		} `json:"tasks"`
 	}
 	if err := json.Unmarshal(input, &in); err != nil {
@@ -172,6 +238,30 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 	}
 	if len(in.Tasks) == 0 {
 		return "", errors.New("tasks is empty")
+	}
+	defs := make([]*AgentDef, len(in.Tasks))
+	anyAgent := false
+	for _, task := range in.Tasks {
+		anyAgent = anyAgent || task.Agent != ""
+	}
+	if anyAgent {
+		byName := map[string]*AgentDef{}
+		all := t.agents()
+		names := make([]string, len(all))
+		for i := range all {
+			byName[all[i].Name], names[i] = &all[i], all[i].Name
+		}
+		for i, task := range in.Tasks {
+			if task.Agent == "" {
+				continue
+			}
+			if defs[i] = byName[task.Agent]; defs[i] == nil {
+				if len(names) == 0 {
+					return "", fmt.Errorf("no agent %q: no agents are defined; omit agent", task.Agent)
+				}
+				return "", fmt.Errorf("no agent %q; defined: %s", task.Agent, strings.Join(names, ", "))
+			}
+		}
 	}
 	p := t.Parent
 	limit := t.concurrency()
@@ -182,6 +272,9 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 	asked := make([]string, len(in.Tasks))
 	for i, task := range in.Tasks {
 		asked[i] = task.Model
+		if d := defs[i]; asked[i] == "" && d != nil && !strings.EqualFold(d.Model, "inherit") {
+			asked[i] = d.Model // the task's own choice wins over the agent's
+		}
 	}
 	models := t.pickModels(asked)
 	states := make([]*SubagentStatus, len(in.Tasks))
@@ -191,6 +284,9 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 			name = fmt.Sprintf("task%d", i+1)
 		}
 		states[i] = &SubagentStatus{Name: name, Prompt: task.Prompt, State: SubQueued, Window: p.ContextWindow}
+		if defs[i] != nil {
+			states[i].Agent = defs[i].Name
+		}
 		if m := models[i]; m.Provider != nil {
 			states[i].Model, states[i].Window = m.Model, m.Window
 		} else if m.note != "" {
@@ -232,6 +328,27 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 					sub.Thinking = m.thinking
 				}
 			}
+			var finish func() string
+			if task.Isolation == "worktree" || defs[i] != nil && defs[i].Worktree {
+				if t.Isolate == nil {
+					p.setSub(st, func(s *SubagentStatus) { s.State, s.Err = SubFailed, "no worktrees here" })
+					reports[i] = fmt.Sprintf("## %s (failed: it can't have a worktree here: not a git repository, or worktrees are off)", name)
+					return
+				}
+				dir, note, fin, err := t.Isolate(name)
+				if err != nil {
+					p.setSub(st, func(s *SubagentStatus) { s.State, s.Err = SubFailed, err.Error() })
+					reports[i] = fmt.Sprintf("## %s (failed: no worktree for it: %v)", name, err)
+					return
+				}
+				// Its own tools, on the worktree on disk (not an editor's buffers).
+				sub.Tools = tools.Builtins(&tools.Env{Cwd: dir})
+				sub.System += "\n\n# Worktree\n" + note
+				finish = fin
+			}
+			if d := defs[i]; d != nil {
+				d.apply(sub)
+			}
 			sub.UI = &subUI{name: name, parent: p, st: st, sub: sub, live: live}
 			p.setSub(st, func(s *SubagentStatus) { s.State, s.Started = SubRunning, time.Now() })
 			if !live {
@@ -259,6 +376,9 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 			if n := models[i].note; n != "" {
 				status += "; on the session's model: " + n
 			}
+			if finish != nil {
+				report += "\n\n[worktree: " + finish() + "]"
+			}
 			reports[i] = fmt.Sprintf("## %s (%s)\n%s", name, status, report)
 		}()
 	}
@@ -278,6 +398,7 @@ const (
 // call, for the UI.
 type SubagentStatus struct {
 	Name, Prompt   string
+	Agent          string // the defined agent it runs as, if any
 	Model          string // set when it runs on another model than the session's
 	State          string // SubQueued, SubRunning, SubDone, SubFailed
 	Err            string
