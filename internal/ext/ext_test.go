@@ -277,6 +277,111 @@ func TestDocsExamples(t *testing.T) {
 	}
 }
 
+func needGo(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("needs go")
+	}
+}
+
+// A Go extension (the docs' example) is built once, runs, and is built
+// again when it changes; a broken one says what go build said.
+func TestGoExtension(t *testing.T) {
+	needGo(t)
+	home, cwd := t.TempDir(), t.TempDir()
+	src := filepath.Join(home, "extensions", "guard.go")
+	write(t, src, codeBlock(t, "go"))
+	h := &fakeHost{}
+	m := Start(Discover(home, cwd), Options{Home: home, Cwd: cwd, Host: h})
+	m.Wait(3 * time.Minute)
+	st := m.Status()
+	if len(st) != 1 || st[0].State != StateRunning || !slices.Equal(st[0].Tools, []string{"now"}) || !slices.Equal(st[0].Commands, []string{"review"}) {
+		t.Fatalf("status %+v", st)
+	}
+	ctx := context.Background()
+	if _, why := m.BeforeTool(ctx, "", "bash", json.RawMessage(`{"command":"rm -rf build"}`)); why != "guard: the user said no" {
+		t.Errorf("rm -rf: %q", why)
+	}
+	if out, err := m.Tools(nil)[0].Run(ctx, json.RawMessage(`{"zone":"UTC"}`)); err != nil || !strings.HasSuffix(out, "UTC") {
+		t.Errorf("now: %q %v", out, err)
+	}
+	if _, err := m.Tools(nil)[0].Run(ctx, json.RawMessage(`{"zone":"Nowhere/City"}`)); err == nil {
+		t.Error("bad zone: no error")
+	}
+	m.Close()
+	bins, _ := filepath.Glob(filepath.Join(home, "cache", "ext-bin", "guard-*"))
+	if len(bins) != 1 {
+		t.Fatalf("binaries %v", bins)
+	}
+
+	// Unchanged: the same binary, no build.
+	before, _ := os.Stat(bins[0])
+	m = Start(Discover(home, cwd), Options{Home: home, Cwd: cwd, Host: h})
+	m.Wait(time.Minute)
+	m.Close()
+	if after, err := os.Stat(bins[0]); err != nil || !after.ModTime().Equal(before.ModTime()) {
+		t.Fatal("rebuilt without a change")
+	}
+
+	// Changed: built again, the old binary gone. Broken: go build's error.
+	write(t, src, strings.Replace(codeBlock(t, "go"), `"guard"`, `"guard2"`, 1))
+	m = Start(Discover(home, cwd), Options{Home: home, Cwd: cwd, Host: h})
+	m.Wait(3 * time.Minute)
+	m.Close()
+	if bins2, _ := filepath.Glob(filepath.Join(home, "cache", "ext-bin", "guard-*")); len(bins2) != 1 || bins2[0] == bins[0] {
+		t.Fatalf("after a change: %v", bins2)
+	}
+	write(t, src, "package main\n\nfunc main() { undefined() }\n")
+	m = Start(Discover(home, cwd), Options{Home: home, Cwd: cwd, Host: h})
+	m.Wait(3 * time.Minute)
+	defer m.Close()
+	if st := m.Status(); st[0].State != StateFailed || !strings.Contains(st[0].Err, "go build:") || !strings.Contains(st[0].Err, "undefined") {
+		t.Fatalf("broken: %+v", st)
+	}
+}
+
+// A folder with its own go.mod is built as it is.
+func TestGoModuleExtension(t *testing.T) {
+	needGo(t)
+	home, cwd := t.TempDir(), t.TempDir()
+	dir := filepath.Join(home, "extensions", "raw")
+	write(t, filepath.Join(dir, "go.mod"), "module example.com/raw\n\ngo 1.22\n")
+	write(t, filepath.Join(dir, "main.go"), `package main
+
+import (
+	"bufio"
+	"encoding/json"
+	"os"
+)
+
+// The protocol by hand: only initialize and shutdown.
+func main() {
+	sc := bufio.NewScanner(os.Stdin)
+	for sc.Scan() {
+		var m map[string]any
+		json.Unmarshal(sc.Bytes(), &m)
+		if m["method"] == "initialize" {
+			b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": m["id"], "result": map[string]any{
+				"name": "raw", "commands": []map[string]string{{"name": "raw", "description": "by hand"}}}})
+			os.Stdout.Write(append(b, '\n'))
+		}
+		if m["method"] == "shutdown" {
+			return
+		}
+	}
+}
+`)
+	m := Start(Discover(home, cwd), Options{Home: home, Cwd: cwd, Host: &fakeHost{}})
+	defer m.Close()
+	m.Wait(3 * time.Minute)
+	if st := m.Status(); len(st) != 1 || st[0].State != StateRunning || !slices.Equal(st[0].Commands, []string{"raw"}) {
+		t.Fatalf("status %+v", st)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "go.sum")); err == nil {
+		t.Error("the build wrote into the extension's folder")
+	}
+}
+
 // An extension that dies stops answering, and its hooks are skipped.
 func TestExtensionExits(t *testing.T) {
 	needJS(t)

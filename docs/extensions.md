@@ -23,9 +23,10 @@ A project's extension runs code from whoever wrote the repository, so tego asks 
 Each entry is one of these:
 
 - a `.ts`, `.mts`, `.js` or `.mjs` file, run with bun if it is installed, else node (22.6 or newer for TypeScript)
+- a `.go` file, built by tego with your go toolchain (see [Go](#go))
 - a `.py` file, run with python3
 - an executable file
-- a folder with `index.ts`, `index.js`, `index.mjs` or `main.py`
+- a folder with `index.ts`, `index.js`, `index.mjs`, `main.py` or `main.go`
 
 Names starting with `.` or `_` are skipped. An extension's stderr goes to `~/.tego/logs/ext-<name>.log`. `/extensions` lists them with their state, tools, commands and errors.
 
@@ -84,6 +85,61 @@ export default function (tego) {
 | `session_end` | `{}` | |
 
 Handlers run in order: those of one extension, then the next extension's. Each sees what the ones before it changed. A `block` stops the rest. Tool names are tego's: `read`, `write`, `edit`, `bash`, `grep`, `glob`, `web_search`, `task`, `mcp__<server>__<tool>`, and the extensions' own.
+
+## Go
+
+The package `github.com/akbxr/tego/extension` does the protocol, with only the standard library:
+
+```go
+// ~/.tego/extensions/guard.go
+package main
+
+import (
+	"encoding/json"
+	"strings"
+	"time"
+
+	"github.com/akbxr/tego/extension"
+)
+
+func main() {
+	x := extension.New("guard")
+
+	x.On(extension.ToolCall, func(e extension.Event, ctx *extension.Ctx) extension.Result {
+		if e.Tool == "bash" && strings.Contains(e.String("command"), "rm -rf") && !ctx.Confirm("Run rm -rf?", e.String("command")) {
+			return extension.Block("the user said no")
+		}
+		return extension.Pass()
+	})
+
+	x.Tool("now", "The current time in a time zone",
+		map[string]any{"type": "object", "properties": map[string]any{"zone": map[string]string{"type": "string"}}},
+		func(input json.RawMessage, ctx *extension.Ctx) (string, error) {
+			var in struct{ Zone string }
+			if err := json.Unmarshal(input, &in); err != nil {
+				return "", err
+			}
+			loc, err := time.LoadLocation(in.Zone)
+			if err != nil {
+				return "", err
+			}
+			return time.Now().In(loc).Format(time.RFC1123), nil
+		})
+
+	x.Command("review", "Review the staged changes", func(args string, ctx *extension.Ctx) error {
+		ctx.SendMessage("Review the staged changes (git diff --cached). " + args)
+		return nil
+	})
+
+	x.Run()
+}
+```
+
+tego builds the extension with `go build` when it starts the extension for the first time, and again when its source changes. The program is kept in `~/.tego/cache/ext-bin/`.
+
+A `.go` file, or a folder of them without a `go.mod`, gets the `extension` package from the tego that runs it, so the build needs no download. A folder with its own `go.mod` is built as it is. Require `github.com/akbxr/tego` there to use more packages. A program you built yourself can go in the folder too.
+
+Once `Run` starts, `fmt.Println` writes to the log, not to the protocol. A Go extension idles at a few MB of memory, against about 40 for node and 10 for bun.
 
 ## Other languages: the protocol
 

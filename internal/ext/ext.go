@@ -56,13 +56,13 @@ func (c Candidate) Name() string {
 	return base
 }
 
-var scriptExts = []string{".ts", ".mts", ".js", ".mjs", ".py"}
+var scriptExts = []string{".ts", ".mts", ".js", ".mjs", ".py", ".go"}
 
 // entry is the file that runs for path: itself if it is a script or an
 // executable, a folder's index.ts/.js/.mjs or main.py; "" if none.
 func entry(path string, fi os.FileInfo) string {
 	if fi.IsDir() {
-		for _, n := range []string{"index.ts", "index.mts", "index.js", "index.mjs", "main.py"} {
+		for _, n := range []string{"index.ts", "index.mts", "index.js", "index.mjs", "main.py", "main.go"} {
 			if st, err := os.Stat(filepath.Join(path, n)); err == nil && !st.IsDir() {
 				return filepath.Join(path, n)
 			}
@@ -70,7 +70,7 @@ func entry(path string, fi os.FileInfo) string {
 		return ""
 	}
 	name := fi.Name()
-	if strings.HasSuffix(name, ".d.ts") {
+	if strings.HasSuffix(name, ".d.ts") || strings.HasSuffix(name, "_test.go") {
 		return ""
 	}
 	for _, e := range scriptExts {
@@ -189,6 +189,12 @@ func command(home string, c Candidate) (*exec.Cmd, error) {
 			return nil, errors.New("needs bun or node to run " + ext + " extensions")
 		}
 		return exec.Command(node, host, c.Entry), nil
+	case ".go":
+		bin, err := buildGo(home, c)
+		if err != nil {
+			return nil, err
+		}
+		return exec.Command(bin), nil
 	case ".py":
 		py, err := exec.LookPath("python3")
 		if err != nil {
