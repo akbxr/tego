@@ -58,6 +58,8 @@ tego -m openai-codex/gpt-5.6 -t high # model and thinking level
 
 **Agents.** Subagents can be defined in Claude Code's format, as `agents/<name>.md` in the same folders: `name`, `description`, `tools`, `disallowedTools`, `model`, `effort`, `maxTurns` and `isolation` in the frontmatter, and the instructions as the body. The session's model picks one per task from its description. `model` takes Claude's aliases (`opus`, `sonnet`, `haiku`), `inherit`, `small`, a `subagent_models` name or any `provider/model`. Tools tego has no equivalent for, such as `WebFetch`, are ignored. `/agents defined` lists them.
 
+**Extensions.** An extension can block or change tool calls, change their output and your prompts, add tools and slash commands, and ask you things. It is a TypeScript, JavaScript or Python file, or any executable, in `~/.tego/extensions/` or the project's `.tego/extensions/`. A project's extensions only run once you trust them. TypeScript runs under bun or node with an API like pi's, and tego adds no dependency for it. See [docs/extensions.md](docs/extensions.md).
+
 **In your editor.** `tego acp` speaks the [Agent Client Protocol](https://agentclientprotocol.com), so Zed, JetBrains, Neovim, Emacs and other ACP editors can run tego with your logins and settings. Edits show as diffs, tools read the editor's open buffers including unsaved changes, and commands run in its terminals. The editor's mode, model and thinking pickers work, and `/` offers tego's commands, your custom commands and every skill. Sessions are shared, so `tego -r` opens them in the terminal too. In Zed, add to `settings.json`:
 
 ```json

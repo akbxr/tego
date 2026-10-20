@@ -28,6 +28,7 @@ var builtinCommands = []struct{ name, icon, help string }{
 	{"plan", "⏸", "Plan mode: investigate and propose, change nothing until you approve (Shift+Tab toggles)"},
 	{"permissions", "⛉", "Which tool calls wait for your approval: /permissions [yolo|edits|ask]"},
 	{"tree", "⑂", "Navigate the session tree (switch branches)"},
+	{"extensions", "◆", "Extensions: what runs, with its tools and commands; /extensions trust runs the project's"},
 	{"agents", "⧉", "Show what a subagent of the latest task did (also ←← on an empty editor); /agents defined lists agents/*.md"},
 	{"fork", "⑂", "New session from before a chosen prompt"},
 	{"clone", "⧉", "Duplicate the current session into a new one"},
@@ -162,6 +163,12 @@ func (a *app) repl(initial string) error {
 			a.finishLogin(res)
 		case r := <-a.titleDone:
 			a.finishTitle(r)
+		case line := <-a.extMsgs: // an extension's sendMessage
+			if a.cancel != nil {
+				a.addPending(line, false) // after the running turn
+			} else {
+				a.startPrompt(line, done)
+			}
 		case <-resized:
 			resized = nil
 			if a.cancel != nil {
@@ -512,6 +519,13 @@ func (a *app) suggest(line string) []lineedit.Suggestion {
 	for _, n := range names {
 		all = append(all, lineedit.Suggestion{Value: "/" + n, Label: n, Description: a.commands[n].Description, Icon: "▪", Final: true})
 	}
+	for _, c := range a.ext.Commands() {
+		desc := c.Description
+		if desc == "" {
+			desc = "from extension " + c.Ext
+		}
+		all = append(all, lineedit.Suggestion{Value: "/" + c.Name, Label: c.Name, Description: desc, Icon: "◆", Final: true})
+	}
 	if query == "" {
 		return all
 	}
@@ -668,6 +682,8 @@ func (a *app) command(line string, done chan<- error) bool {
 		a.mcpCommand()
 	case "branch", "rewind":
 		a.rewindCommand()
+	case "extensions", "ext":
+		a.extensionsCommand(strings.TrimSpace(args))
 	case "agents":
 		if strings.TrimSpace(args) == "defined" {
 			a.listAgentDefs()
@@ -690,6 +706,10 @@ func (a *app) command(line string, done chan<- error) bool {
 	default:
 		if sk, ok := strings.CutPrefix(name, "skill:"); ok {
 			a.runSkill(sk, args, line, done)
+			return false
+		}
+		if a.ext.HasCommand(name) {
+			a.startJob(done, func(ctx context.Context) error { return a.ext.RunCommand(ctx, name, args) })
 			return false
 		}
 		if c, ok := a.commands[name]; ok {

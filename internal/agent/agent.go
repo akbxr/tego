@@ -39,6 +39,7 @@ type Agent struct {
 	System           string
 	Tools            []tools.Tool
 	Dynamic          func() []tools.Tool // extra tools that may change between requests (MCP); goroutine-safe
+	Hooks            ToolHooks           // see every tool call before and after (extensions); nil: none
 	// LazyThreshold: when there are more Dynamic tools than this, they are
 	// deferred behind tool_search instead of sent with every request.
 	// 0 = always defer, negative = never.

@@ -100,8 +100,13 @@ func (a *Agent) execute(ctx context.Context, call llm.Block) llm.Block {
 	a.callStart(call)
 	t, res, ok := a.prepare(ctx, call)
 	if ok {
+		if call, res, ok = a.hookBefore(ctx, call); !ok {
+			a.UI.OnToolCall(call.Name, call.Input) // blocked: show what was
+		}
+	}
+	if ok {
 		a.UI.OnToolCall(call.Name, call.Input)
-		res = a.run(ctx, t, call)
+		res = a.hookAfter(ctx, call, a.run(ctx, t, call))
 	}
 	a.UI.OnToolResult(call.Name, call.Input, res.Content, res.IsError)
 	a.callEnd(call, res)
@@ -153,7 +158,46 @@ type ProgressUI interface {
 func (a *Agent) runOne(ctx context.Context, call llm.Block) llm.Block {
 	t, res, ok := a.prepare(ctx, call)
 	if ok {
-		res = a.run(ctx, t, call)
+		call, res, ok = a.hookBefore(ctx, call)
+	}
+	if ok {
+		res = a.hookAfter(ctx, call, a.run(ctx, t, call))
+	}
+	return res
+}
+
+// ToolHooks see every tool call before and after it runs (extensions),
+// subagents' included. agent is "" for the session's agent, else the
+// subagent's name.
+type ToolHooks interface {
+	// BeforeTool may block the call (a reason) or change its input (nil:
+	// unchanged).
+	BeforeTool(ctx context.Context, agent, tool string, input json.RawMessage) (json.RawMessage, string)
+	// AfterTool may change its output (changed true).
+	AfterTool(ctx context.Context, agent, tool string, input json.RawMessage, output string, isErr bool) (string, bool)
+}
+
+func (a *Agent) hookBefore(ctx context.Context, call llm.Block) (llm.Block, llm.Block, bool) {
+	if a.Hooks == nil {
+		return call, llm.Block{}, true
+	}
+	in, why := a.Hooks.BeforeTool(ctx, a.Name, call.Name, call.Input)
+	if why != "" {
+		return call, llm.Block{Type: llm.BlockToolResult, ToolUseID: call.ID, IsError: true,
+			Content: fmt.Sprintf("This %s call was blocked by an extension (%s); it did not run.", call.Name, why)}, false
+	}
+	if in != nil {
+		call.Input = in
+	}
+	return call, llm.Block{}, true
+}
+
+func (a *Agent) hookAfter(ctx context.Context, call, res llm.Block) llm.Block {
+	if a.Hooks == nil {
+		return res
+	}
+	if out, changed := a.Hooks.AfterTool(ctx, a.Name, call.Name, call.Input, res.Content, res.IsError); changed {
+		res.Content = out
 	}
 	return res
 }

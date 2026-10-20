@@ -22,6 +22,7 @@ import (
 	"github.com/akbxr/tego/internal/agent"
 	"github.com/akbxr/tego/internal/auth"
 	"github.com/akbxr/tego/internal/config"
+	"github.com/akbxr/tego/internal/ext"
 	"github.com/akbxr/tego/internal/lineedit"
 	"github.com/akbxr/tego/internal/llm"
 	"github.com/akbxr/tego/internal/mcp"
@@ -382,6 +383,10 @@ func run() error {
 	defer app.closeSession()
 	app.startMCP()
 	defer app.mcp.Close()
+	if n := app.startExtensions(); n != "" {
+		notes = append(notes, n)
+	}
+	defer app.ext.Close()
 	// Background shells (dev servers, watchers) live as long as tego.
 	defer func() {
 		if n := app.env.KillShells(); n > 0 && app.interactive {
@@ -520,6 +525,8 @@ type app struct {
 
 	mcp       *mcp.Manager
 	mcpWaited bool
+	ext       *ext.Manager // nil: no extensions
+	extMsgs   chan string  // prompts extensions send (sendMessage), taken by the REPL
 
 	files fileIndex // project paths for the @ picker
 
@@ -658,9 +665,21 @@ func (a *app) closeSession() {
 // through the agent.
 func (a *app) runTurn(ctx context.Context, prompt string) error {
 	a.waitMCP()
+	if a.ext != nil {
+		a.waitExtensions()
+		p, handled := a.ext.Input(ctx, prompt)
+		if handled {
+			return nil // an extension took it
+		}
+		prompt = p
+	}
 	a.snapshotFiles(ctx, prompt)
 	blocks := a.userBlocks(prompt)
-	return a.ag.Run(ctx, blocks[0].Text, blocks[1:]...)
+	err := a.ag.Run(ctx, blocks[0].Text, blocks[1:]...)
+	if a.ext != nil {
+		a.ext.Emit(ext.EventTurnEnd, map[string]any{"text": a.ag.LastText()})
+	}
+	return err
 }
 
 // userBlocks turns a typed prompt into the blocks of a user message: the
