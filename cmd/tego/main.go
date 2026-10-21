@@ -568,17 +568,18 @@ func (a *app) init(spec, thinking string) error {
 		mode = agent.Headless // -p: nobody can answer a question
 	}
 	a.ag = &agent.Agent{
-		System:         agent.SystemPrompt(a.cwd, files, a.skills, mode),
-		Env:            func() string { return agent.EnvNote(a.cwd) },
-		Notices:        a.env.ShellNotices,
-		Thinking:       thinking,
-		Fast:           a.fast,
-		AutoCompact:    a.cfg.AutoCompactEnabled(),
-		CompactPercent: a.cfg.CompactAt,
-		KeepRecent:     a.cfg.KeepRecent,
-		IdleCompactAt:  a.cfg.IdleCompactAt(),
-		UI:             a.ui,
-		SessionID:      uuid4(),
+		System:          agent.SystemPrompt(a.cwd, files, a.skills, mode),
+		Env:             func() string { return agent.EnvNote(a.cwd) },
+		Notices:         a.env.ShellNotices,
+		Thinking:        thinking,
+		Fast:            a.fast,
+		AutoCompact:     a.cfg.AutoCompactEnabled(),
+		MaxOutputTokens: a.cfg.MaxOutput,
+		CompactPercent:  a.cfg.CompactAt,
+		KeepRecent:      a.cfg.KeepRecent,
+		IdleCompactAt:   a.cfg.IdleCompactAt(),
+		UI:              a.ui,
+		SessionID:       uuid4(),
 		// Interactive sessions pause between prompts: keep the prompt cache
 		// for an hour. One-shot -p runs and subagents keep the cheaper 5 min.
 		LongCache: a.interactive,

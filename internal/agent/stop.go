@@ -19,6 +19,7 @@ type stopState struct {
 	todoRev        int      // todo revision when the prompt started
 	todoReminded   bool
 	verifyReminded bool
+	cutResumes     int // times the prompt went on after the output limit (resumeCut)
 }
 
 // docExts are files whose edits need no build or test run.

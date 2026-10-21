@@ -299,10 +299,15 @@ type Event struct {
 	ToolID   string
 }
 
+// StopContextFull: the response ended because the context window filled
+// up, not at its own output limit.
+const StopContextFull = "context_full"
+
 // Provider streams one assistant turn. onEvent is called synchronously for
 // deltas; the returned Message is the complete assistant message (Role
 // assistant, Provider/Model/Usage/StopReason populated). StopReason is
-// normalised to one of: "end_turn", "tool_use", "max_tokens", "error", "aborted".
+// normalised to one of: "end_turn", "tool_use", "max_tokens", "error", "aborted",
+// or StopContextFull.
 type Provider interface {
 	Name() string
 	Stream(ctx context.Context, req *Request, onEvent func(Event)) (*Message, error)

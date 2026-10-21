@@ -38,6 +38,7 @@ type Config struct {
 	UpdateCheck   string                         `json:"update_check,omitempty"`  // "off" stops the daily check for a newer release
 	Gzip          *bool                          `json:"gzip_requests,omitempty"` // compress large request bodies to the hosts known to take that (default on)
 	ContextWindow int                            `json:"context_window,omitempty"`
+	MaxOutput     int                            `json:"max_output_tokens,omitempty"` // a response's limit, thinking included (default by model; at most the model's)
 	AutoCompact   *bool                          `json:"auto_compact,omitempty"`
 	CompactAt     int                            `json:"compact_at_percent,omitempty"`  // auto-compact above this % of the window (default: window - max(15%, 16k))
 	KeepRecent    int                            `json:"compact_keep_tokens,omitempty"` // recent tokens kept verbatim when compacting (default 20000)

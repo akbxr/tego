@@ -483,12 +483,7 @@ func (p *anthropicProvider) buildBodySpeed(req *Request, version string, t *ccTu
 	r.Messages = anthropicMessages(req.Messages, oauth, msgCC, deferred, nil)
 
 	r.Thinking, r.OutputConfig = anthropicThinking(req.Model, req.Thinking)
-	r.MaxTokens = anthropicMaxTokens(req.Model, req.MaxTokens, r.Thinking)
-	if r.OutputConfig != nil && req.MaxTokens <= 0 && ThinkingRank(r.OutputConfig.Effort) >= ThinkingRank(ThinkingXHigh) {
-		// At xhigh and max the docs suggest at least 64k: thinking and the
-		// answer share the limit, and a long think would cut the answer off.
-		r.MaxTokens = max(r.MaxTokens, 64000)
-	}
+	r.MaxTokens = anthropicMaxTokens(req.Model, req.MaxTokens, req.Thinking, r.Thinking)
 	if r.Thinking != nil && anthropicBindsThinking(req.Model) {
 		r.Thinking.BlockBinding = dropMismatchedThinking
 	}
@@ -723,23 +718,61 @@ func anthropicThinking(model, level string) (*aThinking, *aOutputConfig) {
 	return t, &aOutputConfig{Effort: anthropicEffort(model, level)}
 }
 
-func anthropicMaxTokens(model string, requested int, thinking *aThinking) int {
+// anthropicOutputCap is the most output model can write in one response
+// (the models overview), or 0 when it isn't known.
+func anthropicOutputCap(model string) int {
+	m := strings.ToLower(model)
+	switch {
+	case strings.HasPrefix(m, "claude-3-5"):
+		return 8192
+	case strings.HasPrefix(m, "claude-3-") && !strings.HasPrefix(m, "claude-3-7"):
+		return 4096
+	case strings.Contains(m, "fable") || strings.Contains(m, "mythos"),
+		claudeGenAtLeast(m, 5, 0),
+		strings.Contains(m, "opus") && claudeGenAtLeast(m, 4, 6):
+		return 128000
+	case strings.Contains(m, "opus-4") && !claudeGenAtLeast(m, 4, 5):
+		return 32000 // Opus 4 and 4.1
+	case strings.HasPrefix(m, "claude-"):
+		return 64000 // 3.7, and the other 4.x models
+	}
+	return 0
+}
+
+// anthropicMaxTokens is a request's max_tokens: requested (the config's
+// max_output_tokens) when set, or a default by model and thinking level.
+// Thinking and the answer share it, so it leaves room for both: a long
+// think that used it up would end the response before any answer or tool
+// call. A response is billed by what it writes, not by its limit.
+func anthropicMaxTokens(model string, requested int, level string, thinking *aThinking) int {
+	limit := anthropicOutputCap(model)
+	deep := ThinkingRank(level) >= ThinkingRank(ThinkingXHigh)
 	mt := requested
 	if mt <= 0 {
-		m := strings.ToLower(model)
 		switch {
-		case strings.HasPrefix(m, "claude-3-5"):
-			mt = 8192
-		case strings.HasPrefix(m, "claude-3-") && !strings.HasPrefix(m, "claude-3-7"):
-			mt = 4096
-		case thinking == nil && strings.Contains(m, "haiku"):
+		case limit == 0: // not a Claude model we know: the old defaults
+			mt = 32000
+			if deep {
+				mt = 64000
+			}
+		case limit >= 128000:
+			mt = 64000
+			if deep {
+				mt = limit
+			}
+		case thinking == nil && strings.Contains(strings.ToLower(model), "haiku"):
 			mt = 16000
+		case deep:
+			mt = 64000 // the docs: at least 64k at xhigh and max
 		default:
 			mt = 32000
 		}
 	}
 	if thinking != nil && thinking.BudgetTokens > 0 && mt <= thinking.BudgetTokens {
 		mt = thinking.BudgetTokens + 4096
+	}
+	if limit > 0 {
+		mt = min(mt, limit)
 	}
 	return mt
 }
@@ -844,8 +877,10 @@ func anthropicStopReason(s string) string {
 	switch s {
 	case "tool_use":
 		return "tool_use"
-	case "max_tokens", "model_context_window_exceeded":
+	case "max_tokens":
 		return "max_tokens"
+	case "model_context_window_exceeded":
+		return StopContextFull
 	}
 	return "end_turn"
 }

@@ -194,7 +194,7 @@ func TestAnthropicOAuthBody(t *testing.T) {
 	if r.Tools[0]["name"] != "_read" || r.Tools[0]["cache_control"] == nil {
 		t.Fatalf("tools wrong: %v", r.Tools)
 	}
-	if r.Thinking["type"] != "adaptive" || r.OutputConfig["effort"] != "high" || r.MaxTokens != 32000 {
+	if r.Thinking["type"] != "adaptive" || r.OutputConfig["effort"] != "high" || r.MaxTokens != 64000 {
 		t.Fatalf("thinking wrong: %v %v %d", r.Thinking, r.OutputConfig, r.MaxTokens)
 	}
 }
@@ -234,8 +234,51 @@ func TestAnthropicThinkingSelection(t *testing.T) {
 	if th, oc := anthropicThinking("claude-opus-4-6", ThinkingOff); th != nil || oc != nil {
 		t.Error("off should omit thinking")
 	}
-	if n := anthropicMaxTokens("claude-haiku-4-5", 0, nil); n != 16000 {
+	if n := anthropicMaxTokens("claude-haiku-4-5", 0, ThinkingOff, nil); n != 16000 {
 		t.Errorf("haiku max tokens = %d", n)
+	}
+}
+
+// max_tokens leaves room to think and answer, within what the model can
+// write; the config's max_output_tokens wins, capped the same way.
+func TestAnthropicMaxTokens(t *testing.T) {
+	adaptive := &aThinking{Type: "adaptive"}
+	for _, c := range []struct {
+		model     string
+		requested int
+		level     string
+		thinking  *aThinking
+		want      int
+	}{
+		{"claude-opus-5-5", 0, ThinkingHigh, adaptive, 64000},
+		{"claude-opus-5-5", 0, ThinkingMedium, adaptive, 64000},
+		{"claude-opus-5-5", 0, ThinkingXHigh, adaptive, 128000},
+		{"claude-opus-5-5", 0, ThinkingMax, adaptive, 128000},
+		{"claude-sonnet-5-5", 0, ThinkingOff, nil, 64000},
+		{"claude-haiku-5-5", 0, ThinkingOff, nil, 64000},
+		{"claude-fable-5-1", 0, ThinkingHigh, adaptive, 64000},
+		{"claude-opus-4-6", 0, ThinkingMax, adaptive, 128000},
+		{"claude-sonnet-4-6", 0, ThinkingHigh, adaptive, 32000},
+		{"claude-sonnet-4-6", 0, ThinkingMax, adaptive, 64000},
+		{"claude-opus-4-1", 0, ThinkingMax, nil, 32000},
+		{"claude-3-5-sonnet-latest", 0, ThinkingOff, nil, 8192},
+		{"glm-5", 0, ThinkingHigh, nil, 32000}, // unknown: the old defaults
+		{"glm-5", 0, ThinkingMax, nil, 64000},
+		{"glm-5", 200000, ThinkingHigh, nil, 200000},
+		// The config's value, within the model's limit.
+		{"claude-opus-5-5", 20000, ThinkingMax, adaptive, 20000},
+		{"claude-opus-5-5", 500000, ThinkingHigh, adaptive, 128000},
+		{"claude-sonnet-4-5", 100000, ThinkingHigh, nil, 64000},
+		// A thinking budget always leaves room for the answer.
+		{"claude-sonnet-4-5", 0, ThinkingMax, &aThinking{Type: "enabled", BudgetTokens: 48000}, 64000},
+		{"claude-sonnet-4-5", 10000, ThinkingHigh, &aThinking{Type: "enabled", BudgetTokens: 24000}, 28096},
+	} {
+		if got := anthropicMaxTokens(c.model, c.requested, c.level, c.thinking); got != c.want {
+			t.Errorf("%s requested %d at %s: %d, want %d", c.model, c.requested, c.level, got, c.want)
+		}
+	}
+	if anthropicStopReason("model_context_window_exceeded") != StopContextFull || anthropicStopReason("max_tokens") != "max_tokens" {
+		t.Error("stop reasons")
 	}
 }
 
@@ -266,7 +309,7 @@ func TestUpperEffortLevels(t *testing.T) {
 		t.Errorf("legacy max: %+v %+v", th, oc)
 	}
 	// xhigh and max get room to think (the docs: start at 64k).
-	for level, want := range map[string]int{ThinkingMax: 64000, ThinkingXHigh: 64000, ThinkingHigh: 32000} {
+	for level, want := range map[string]int{ThinkingMax: 128000, ThinkingXHigh: 128000, ThinkingHigh: 64000} {
 		p := &anthropicProvider{name: "anthropic", base: "x"}
 		body, err := p.buildBody(&Request{Model: "claude-opus-5-5", Thinking: level,
 			Messages: []Message{{Role: RoleUser, Blocks: []Block{{Type: BlockText, Text: "hi"}}}}}, "", nil)

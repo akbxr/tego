@@ -33,6 +33,9 @@ type Agent struct {
 	ProviderName string
 	Model        string
 	Thinking     string
+	// MaxOutputTokens caps each response (llm.Request.MaxTokens); 0: the
+	// provider's default for the model.
+	MaxOutputTokens int
 	// Fast asks for fast mode on models that have it (llm.Request.Fast).
 	// FastActive says whether the last response actually ran fast.
 	Fast, FastActive bool
@@ -338,7 +341,7 @@ func (a *Agent) loop(ctx context.Context) error {
 		req := &llm.Request{
 			Model: a.Model, System: a.System, Messages: a.Messages, Tools: a.toolDefs(),
 			Thinking: a.Thinking, SessionID: a.SessionID, LongCache: a.LongCache, Class: class,
-			ClearToolResults: a.clearPolicy(), Fast: a.Fast,
+			ClearToolResults: a.clearPolicy(), Fast: a.Fast, MaxTokens: a.MaxOutputTokens,
 		}
 		msg, err := a.Provider.Stream(ctx, req, a.onEvent)
 		if err == nil && req.ClearToolResults != nil {
@@ -383,7 +386,26 @@ func (a *Agent) loop(ctx context.Context) error {
 				continue
 			}
 			if msg.StopReason == "max_tokens" {
-				a.UI.OnInfo("response hit the output token limit; say \"continue\" to resume")
+				if a.resumeCut(msg) {
+					continue
+				}
+				a.UI.OnInfo("response hit the output token limit again; say \"continue\" to resume")
+				return nil
+			}
+			if msg.StopReason == llm.StopContextFull {
+				// Not the response's own limit: the window has no room left.
+				if !overflowRetried && len(a.Messages) >= 2 {
+					overflowRetried = true
+					a.UI.OnInfo("the context window filled up mid-response; compacting and continuing…")
+					if cerr := a.Compact(ctx, ""); cerr == nil {
+						a.remind("Your last response was cut off because the context window filled up; the history is now summarised. " +
+							"Go on with the task from where it stopped.")
+						continue
+					} else if ctx.Err() != nil {
+						return ctx.Err()
+					}
+				}
+				a.UI.OnInfo("the context window is full; /compact to summarise the history, or /new")
 				return nil
 			}
 			if a.stopNudge() {
@@ -392,7 +414,11 @@ func (a *Agent) loop(ctx context.Context) error {
 			return nil
 		}
 		if a.cutCall = cutOffCall(msg); a.cutCall != "" {
-			a.UI.OnInfo("response hit the output token limit while writing a tool call; that call was not run")
+			if msg.StopReason == llm.StopContextFull {
+				a.UI.OnInfo("the context window filled up while a tool call was written; that call was not run")
+			} else {
+				a.UI.OnInfo("response hit the output token limit while writing a tool call; that call was not run")
+			}
 		}
 		results := a.runCalls(ctx, calls)
 		a.cutCall = ""
@@ -454,13 +480,45 @@ func sanitizeCalls(m *llm.Message) []llm.Block {
 // short yet still parse (Gemini sends them as whole objects), so running
 // it could, say, write half a file. Calls before it are complete.
 func cutOffCall(m *llm.Message) string {
-	if m.StopReason != "max_tokens" || len(m.Blocks) == 0 {
+	if m.StopReason != "max_tokens" && m.StopReason != llm.StopContextFull || len(m.Blocks) == 0 {
 		return ""
 	}
 	if last := m.Blocks[len(m.Blocks)-1]; last.Type == llm.BlockToolUse {
 		return last.ID
 	}
 	return ""
+}
+
+// cutResumes is how many times one prompt goes on by itself after a
+// response hit the output limit; then the user decides.
+const cutResumes = 2
+
+// resumeCut goes on after a response that hit the output token limit
+// without a tool call, as the user would by saying "continue"; up to
+// cutResumes times a prompt.
+func (a *Agent) resumeCut(m *llm.Message) bool {
+	if a.stop.cutResumes >= cutResumes {
+		return false
+	}
+	a.stop.cutResumes++
+	wrote := false
+	for _, b := range m.Blocks {
+		if b.Type == llm.BlockText && strings.TrimSpace(b.Text) != "" {
+			wrote = true
+		}
+	}
+	if wrote {
+		a.UI.OnInfo("response hit the output token limit; continuing…")
+		a.remind("Your last response hit the output token limit and was cut off. Go on directly from where it stopped: " +
+			"no apology, no recap. Put long content in files with tools, in pieces, rather than in one answer.")
+		return true
+	}
+	// The whole limit went on thinking: nothing was written or run.
+	a.UI.OnInfo("response hit the output token limit while still thinking; continuing…")
+	a.remind("Your last response spent the whole output token limit thinking, so nothing was written or run. " +
+		"Don't plan everything in advance or draft code in your head: act now. " +
+		"Take the first concrete step with a tool call (write the first file, run the first command), then go on step by step.")
+	return true
 }
 
 // recordAborted keeps visible text from an interrupted response so the

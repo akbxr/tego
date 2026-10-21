@@ -292,6 +292,7 @@ func (s *acpServer) open(cwd string, servers []acp.MCPServer, id string) (*acpSe
 		Notices:           env.ShellNotices,
 		Thinking:          firstNonEmpty(cfg.Thinking, llm.ThinkingMedium),
 		Fast:              cfg.Fast,
+		MaxOutputTokens:   cfg.MaxOutput,
 		AutoCompact:       cfg.AutoCompactEnabled(),
 		CompactPercent:    cfg.CompactAt,
 		KeepRecent:        cfg.KeepRecent,
