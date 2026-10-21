@@ -50,7 +50,7 @@ func (a *app) panel(width int) []string {
 	c := a.status.c
 	todos, rev := ag.TodoState()
 	out := todoPanel(c, todos, a.todoThisTurn(a.status.snapshot().busy, rev))
-	out = append(out, agentsPanel(c, ag.Subagents(), width, a.cwd)...)
+	out = append(out, agentsPanel(c, append(ag.Subagents(), a.runningBackground()...), width, a.cwd)...)
 	out = append(out, a.pendingPanel(c, width)...)
 	live := a.ui.writingBox(width) // an edit or write being written
 	if cmd, since, tail := a.ui.runningBash(); cmd != "" {
@@ -275,6 +275,9 @@ func subRow(c palette, s agent.SubagentStatus, live bool) string {
 		mark, color = "✗", c.red
 	}
 	parts := []string{color + mark + " " + c.reset + c.bold + s.Name + c.reset}
+	if s.ID != "" { // in the background
+		parts[0] += " " + c.cyan + "⇢" + s.ID + c.reset
+	}
 	if s.Agent != "" && s.Agent != s.Name {
 		parts[0] += " " + c.dim + "(" + s.Agent + ")" + c.reset
 	}
@@ -316,7 +319,7 @@ func (a *app) runningAgents() int {
 	if ag == nil {
 		return 0
 	}
-	n := 0
+	n := len(a.runningBackground())
 	for _, s := range ag.Subagents() {
 		if s.State == agent.SubRunning || s.State == agent.SubQueued {
 			n++
@@ -467,6 +470,8 @@ func (u *termUI) taskBox(input json.RawMessage, output string, isErr bool) strin
 	}
 	mark := ""
 	switch {
+	case !isErr && strings.HasPrefix(output, "Started in the background"):
+		mark = "⇢ in the background · /tasks"
 	case failed > 0:
 		mark = fmt.Sprintf("✗ %d failed", failed)
 	case isErr:
@@ -500,10 +505,11 @@ func stripSGR(s string) string {
 
 // ---- subagent viewer ----
 
-// agentsCommand lets the user pick a subagent of the latest task call and
-// prints what it did: its prompt, tool calls and latest answer.
+// agentsCommand lets the user pick a subagent of the latest task call, or
+// a background one, and prints what it did: its prompt, tool calls and
+// latest answer.
 func (a *app) agentsCommand() {
-	subs := a.ag.Subagents()
+	subs := append(a.ag.Subagents(), a.bg.Statuses()...)
 	if len(subs) == 0 {
 		a.listAgentDefs()
 		return
@@ -524,7 +530,17 @@ func (a *app) agentsCommand() {
 	if err != nil || idx < 0 {
 		return
 	}
-	s := a.ag.Subagents()[idx] // fresh: it may have moved on while picking
+	// Fresh: it may have moved on while picking.
+	if fresh := append(a.ag.Subagents(), a.bg.Statuses()...); idx < len(fresh) && fresh[idx].Name == subs[idx].Name {
+		subs = fresh
+	}
+	a.printSubagent(subs[idx])
+}
+
+// printSubagent prints what a subagent did: its prompt, tool calls and
+// latest answer.
+func (a *app) printSubagent(s agent.SubagentStatus) {
+	c := a.ui.c
 	var b strings.Builder
 	w := 80
 	if a.ui.width != nil {

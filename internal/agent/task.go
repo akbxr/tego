@@ -42,6 +42,9 @@ type TaskTool struct {
 	// which removes the worktree if nothing is in it and says what became of
 	// it. nil: tasks can't ask for one.
 	Isolate func(task string) (dir, note string, finish func() string, err error)
+	// Background runs the tasks of a call with "background": true; nil:
+	// calls can't ask for it.
+	Background *Background
 }
 
 // SubagentModel is a named model subagents can run on (config
@@ -84,8 +87,24 @@ func (t *TaskTool) Def() llm.Tool {
 			"Each starts with an empty context and the read/write/edit/bash/grep/glob (and MCP) tools, and returns its final report. " +
 			"Prompts must be complete and self-contained: goal, relevant files, constraints, expected output. Never give two subagents overlapping files to edit.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"tasks":{"type":"array","minItems":1,"items":{"type":"object","properties":{"name":{"type":"string","description":"short CamelCase label"},"prompt":{"type":"string"}` +
-			t.agentProperty() + t.modelProperty() + t.isolationProperty() + `},"required":["name","prompt"]}}},"required":["tasks"]}`),
+			t.agentProperty() + t.modelProperty() + t.isolationProperty() + `},"required":["name","prompt"]}}` + t.backgroundProperty() + `},"required":["tasks"]}`),
 	}
+}
+
+// backgroundProperty is the call's "background" property, when tasks can
+// run in the background.
+func (t *TaskTool) backgroundProperty() string {
+	if t.Background == nil {
+		return ""
+	}
+	desc := "true: return at once and run the tasks in the background while you and the user go on; " +
+		"each report comes in a later message when its task ends (task_status checks, waits for or cancels them). " +
+		"For long tasks whose results your next step doesn't need. Don't do their work yourself meanwhile."
+	if t.Isolate != nil {
+		desc += " Background tasks that edit files should use isolation: worktree: you and the user keep editing this folder."
+	}
+	j, _ := json.Marshal(desc)
+	return `,"background":{"type":"boolean","description":` + string(j) + `}`
 }
 
 // isolationProperty is the tasks' "isolation" property, when worktrees
@@ -222,22 +241,29 @@ func (t *TaskTool) pickModels(asked []string) []taskModel {
 	return out
 }
 
+// taskSpec is one task of a task call.
+type taskSpec struct {
+	Name   string `json:"name"`
+	Prompt string `json:"prompt"`
+	Model  string `json:"model"` // "small", a named model, or main ("")
+	Agent  string `json:"agent"` // a defined agent, or "" for a general subagent
+	// Isolation "worktree": in a worktree of its own.
+	Isolation string `json:"isolation"`
+}
+
 func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, error) {
 	var in struct {
-		Tasks []struct {
-			Name   string `json:"name"`
-			Prompt string `json:"prompt"`
-			Model  string `json:"model"` // "small", a named model, or main ("")
-			Agent  string `json:"agent"` // a defined agent, or "" for a general subagent
-			// Isolation "worktree": in a worktree of its own.
-			Isolation string `json:"isolation"`
-		} `json:"tasks"`
+		Tasks      []taskSpec `json:"tasks"`
+		Background bool       `json:"background"`
 	}
 	if err := json.Unmarshal(input, &in); err != nil {
 		return "", err
 	}
 	if len(in.Tasks) == 0 {
 		return "", errors.New("tasks is empty")
+	}
+	if in.Background && t.Background == nil {
+		return "", errors.New("background tasks are not available here; omit background")
 	}
 	defs := make([]*AgentDef, len(in.Tasks))
 	anyAgent := false
@@ -266,7 +292,7 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 	p := t.Parent
 	limit := t.concurrency()
 	live := liveUI(p.UI)
-	if len(in.Tasks) > limit && !live {
+	if len(in.Tasks) > limit && !live && !in.Background {
 		p.UI.OnInfo(fmt.Sprintf("  %d subagents, %d at a time; the rest wait in queue", len(in.Tasks), limit))
 	}
 	asked := make([]string, len(in.Tasks))
@@ -283,6 +309,7 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 		if name == "" {
 			name = fmt.Sprintf("task%d", i+1)
 		}
+		in.Tasks[i].Name = name
 		states[i] = &SubagentStatus{Name: name, Prompt: task.Prompt, State: SubQueued, Window: p.ContextWindow}
 		if defs[i] != nil {
 			states[i].Agent = defs[i].Name
@@ -293,6 +320,9 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 			p.UI.OnInfo(fmt.Sprintf("  [%s] %s; it runs on %s", name, m.note, p.Model))
 		}
 	}
+	if in.Background {
+		return t.Background.start(t, in.Tasks, defs, models, states), nil
+	}
 	p.subMu.Lock()
 	p.subs = states
 	p.subMu.Unlock()
@@ -301,89 +331,101 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 	reports := make([]string, len(in.Tasks))
 	var wg sync.WaitGroup
 	for i, task := range in.Tasks {
-		st := states[i]
-		name := st.Name
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			select {
-			case slots <- struct{}{}:
-				defer func() { <-slots }()
-			case <-ctx.Done():
-				p.setSub(st, func(s *SubagentStatus) { s.State, s.Err = SubFailed, "cancelled before it started" })
-				reports[i] = fmt.Sprintf("## %s (cancelled before it started)", name)
-				return
+			status, report := t.runOne(ctx, task, defs[i], models[i], states[i], slots, live)
+			reports[i] = fmt.Sprintf("## %s (%s)", task.Name, status)
+			if report != "" {
+				reports[i] += "\n" + report
 			}
-			sub := &Agent{
-				Provider: p.Provider, ProviderName: p.ProviderName, Model: p.Model, Thinking: p.Thinking, Fast: p.Fast,
-				System: t.System, Tools: tools.Builtins(t.Env), Dynamic: p.Dynamic, LazyThreshold: p.LazyThreshold, SessionID: p.SessionID + "-" + name,
-				ContextWindow: p.ContextWindow, AutoCompact: true, MaxTurns: 150, Subagent: true, ToolStat: p.ToolStat,
-				CacheWritePremium: p.CacheWritePremium, Env: p.Env, Plan: p.Plan,
-				Perms: p.Perms, Approve: p.Approve, Name: name, declined: p.declined, Hooks: p.Hooks,
-			}
-			if m := models[i]; m.Provider != nil {
-				sub.Provider, sub.ProviderName, sub.Model, sub.ContextWindow = m.Provider, m.ProviderName, m.Model, m.Window
-				sub.Fast = false // fast mode is the session model's
-				if m.thinking != "" {
-					sub.Thinking = m.thinking
-				}
-			}
-			var finish func() string
-			if task.Isolation == "worktree" || defs[i] != nil && defs[i].Worktree {
-				if t.Isolate == nil {
-					p.setSub(st, func(s *SubagentStatus) { s.State, s.Err = SubFailed, "no worktrees here" })
-					reports[i] = fmt.Sprintf("## %s (failed: it can't have a worktree here: not a git repository, or worktrees are off)", name)
-					return
-				}
-				dir, note, fin, err := t.Isolate(name)
-				if err != nil {
-					p.setSub(st, func(s *SubagentStatus) { s.State, s.Err = SubFailed, err.Error() })
-					reports[i] = fmt.Sprintf("## %s (failed: no worktree for it: %v)", name, err)
-					return
-				}
-				// Its own tools, on the worktree on disk (not an editor's buffers).
-				sub.Tools = tools.Builtins(&tools.Env{Cwd: dir})
-				sub.System += "\n\n# Worktree\n" + note
-				finish = fin
-			}
-			if d := defs[i]; d != nil {
-				d.apply(sub)
-			}
-			sub.UI = &subUI{name: name, parent: p, st: st, sub: sub, live: live}
-			p.setSub(st, func(s *SubagentStatus) { s.State, s.Started = SubRunning, time.Now() })
-			if !live {
-				p.UI.OnInfo(fmt.Sprintf("  ⇢ [%s] started", name))
-			}
-			err := sub.Run(ctx, task.Prompt)
-			p.addUsage(&sub.Total)
-			report := strings.TrimSpace(sub.LastText())
-			status := "done"
-			if err != nil {
-				status = "failed: " + err.Error()
-				if report == "" {
-					report = "(no report)"
-				}
-			}
-			p.setSub(st, func(s *SubagentStatus) {
-				s.State, s.Ended, s.Usage = SubDone, time.Now(), sub.Usage()
-				if err != nil {
-					s.State, s.Err = SubFailed, err.Error()
-				}
-			})
-			if !live {
-				p.UI.OnInfo(fmt.Sprintf("  ⇠ [%s] %s", name, status))
-			}
-			if n := models[i].note; n != "" {
-				status += "; on the session's model: " + n
-			}
-			if finish != nil {
-				report += "\n\n[worktree: " + finish() + "]"
-			}
-			reports[i] = fmt.Sprintf("## %s (%s)\n%s", name, status, report)
 		}()
 	}
 	wg.Wait()
 	return strings.Join(reports, "\n\n"), ctx.Err()
+}
+
+// runOne runs one task's subagent, once it has one of slots, to its end:
+// its status ("done", "failed: …") and report. quiet: no info lines (a
+// live panel shows it, or it runs in the background).
+func (t *TaskTool) runOne(ctx context.Context, task taskSpec, def *AgentDef, model taskModel, st *SubagentStatus,
+	slots chan struct{}, quiet bool) (status, report string) {
+	p, name := t.Parent, task.Name
+	select {
+	case slots <- struct{}{}:
+		defer func() { <-slots }()
+	case <-ctx.Done():
+		p.setSub(st, func(s *SubagentStatus) {
+			s.State, s.Err, s.Ended = SubFailed, "cancelled before it started", time.Now()
+		})
+		return "cancelled before it started", ""
+	}
+	sub := &Agent{
+		Provider: p.Provider, ProviderName: p.ProviderName, Model: p.Model, Thinking: p.Thinking, Fast: p.Fast,
+		System: t.System, Tools: tools.Builtins(t.Env), Dynamic: p.Dynamic, LazyThreshold: p.LazyThreshold, SessionID: p.SessionID + "-" + name,
+		ContextWindow: p.ContextWindow, AutoCompact: true, MaxTurns: 150, Subagent: true, ToolStat: p.ToolStat,
+		CacheWritePremium: p.CacheWritePremium, Env: p.Env, Plan: p.Plan,
+		Perms: p.Perms, Approve: p.Approve, Name: name, declined: p.declined, Hooks: p.Hooks,
+	}
+	if m := model; m.Provider != nil {
+		sub.Provider, sub.ProviderName, sub.Model, sub.ContextWindow = m.Provider, m.ProviderName, m.Model, m.Window
+		sub.Fast = false // fast mode is the session model's
+		if m.thinking != "" {
+			sub.Thinking = m.thinking
+		}
+	}
+	failed := func(why, status string) (string, string) {
+		p.setSub(st, func(s *SubagentStatus) { s.State, s.Err, s.Ended = SubFailed, why, time.Now() })
+		return status, ""
+	}
+	var finish func() string
+	if task.Isolation == "worktree" || def != nil && def.Worktree {
+		if t.Isolate == nil {
+			return failed("no worktrees here", "failed: it can't have a worktree here: not a git repository, or worktrees are off")
+		}
+		dir, note, fin, err := t.Isolate(name)
+		if err != nil {
+			return failed(err.Error(), fmt.Sprintf("failed: no worktree for it: %v", err))
+		}
+		// Its own tools, on the worktree on disk (not an editor's buffers).
+		sub.Tools = tools.Builtins(&tools.Env{Cwd: dir})
+		sub.System += "\n\n# Worktree\n" + note
+		finish = fin
+	}
+	if def != nil {
+		def.apply(sub)
+	}
+	sub.UI = &subUI{name: name, parent: p, st: st, sub: sub, live: quiet}
+	p.setSub(st, func(s *SubagentStatus) { s.State, s.Started = SubRunning, time.Now() })
+	if !quiet {
+		p.UI.OnInfo(fmt.Sprintf("  ⇢ [%s] started", name))
+	}
+	err := sub.Run(ctx, task.Prompt)
+	p.addUsage(&sub.Total)
+	report = strings.TrimSpace(sub.LastText())
+	status = "done"
+	if err != nil {
+		status = "failed: " + err.Error()
+		if report == "" {
+			report = "(no report)"
+		}
+	}
+	p.setSub(st, func(s *SubagentStatus) {
+		s.State, s.Ended, s.Usage = SubDone, time.Now(), sub.Usage()
+		if err != nil {
+			s.State, s.Err = SubFailed, err.Error()
+		}
+	})
+	if !quiet {
+		p.UI.OnInfo(fmt.Sprintf("  ⇠ [%s] %s", name, status))
+	}
+	if n := model.note; n != "" {
+		status += "; on the session's model: " + n
+	}
+	if finish != nil {
+		report += "\n\n[worktree: " + finish() + "]"
+	}
+	return status, report
 }
 
 // Subagent states.
@@ -398,6 +440,7 @@ const (
 // call, for the UI.
 type SubagentStatus struct {
 	Name, Prompt   string
+	ID             string // a background task's ("t1"); "" in a task call's own
 	Agent          string // the defined agent it runs as, if any
 	Model          string // set when it runs on another model than the session's
 	State          string // SubQueued, SubRunning, SubDone, SubFailed

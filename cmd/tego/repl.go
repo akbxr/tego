@@ -34,6 +34,7 @@ var builtinCommands = []struct{ name, icon, help string }{
 	{"clone", "⧉", "Duplicate the current session into a new one"},
 	{"compact", "⇊", "Summarise history to free context: /compact [focus]"},
 	{"new", "+", "Start a fresh session (alias /clear)"},
+	{"tasks", "⇢", "Background tasks: see what they did, or stop them"},
 	{"session", "i", "Session info and token usage"},
 	{"retry", "↻", "Re-run the model on the current history (after an error)"},
 	{"skills", "✧", "List discovered skills"},
@@ -71,6 +72,10 @@ func (a *app) repl(initial string) error {
 	var lastInterrupt, lastEsc, lastLeft time.Time
 	var resized <-chan time.Time
 	redrawPending := false
+	// While background tasks run and nothing else animates the footer, their
+	// rows still tick.
+	bgTick := time.NewTicker(time.Second)
+	defer bgTick.Stop()
 	for {
 		a.syncHerdr() // state and session after whatever the last event changed
 		select {
@@ -127,7 +132,9 @@ func (a *app) repl(initial string) error {
 				lastInterrupt = time.Now()
 				a.ui.Dim("(Ctrl+C again to exit)")
 			case lineedit.EvEOF:
-				return nil
+				if a.confirmExit() {
+					return nil
+				}
 			case lineedit.EvResize:
 				// Text already printed keeps the old width (rows are broken by
 				// hand for the margins, frames and prompt blocks); re-render the
@@ -169,6 +176,16 @@ func (a *app) repl(initial string) error {
 			} else {
 				a.startPrompt(line, done)
 			}
+		case <-a.bgDone:
+			// A background task ended. Mid-turn its report goes with the next
+			// request; idle, it gets a turn of its own.
+			if a.cancel == nil {
+				a.startBackgroundReports(done)
+			}
+		case <-bgTick.C:
+			if a.cancel == nil && a.bg.Running() > 0 {
+				a.tui.Redraw()
+			}
 		case <-resized:
 			resized = nil
 			if a.cancel != nil {
@@ -202,6 +219,11 @@ func (a *app) repl(initial string) error {
 				if a.dispatch(line, done) {
 					return nil
 				}
+			}
+			// Reports that came too late for the turn that ended. Not after an
+			// interrupt or error: they go with the next prompt then.
+			if a.cancel == nil && err == nil {
+				a.startBackgroundReports(done)
 			}
 		}
 	}
@@ -586,7 +608,9 @@ func (a *app) command(line string, done chan<- error) bool {
 	w := a.out
 	switch name {
 	case "exit", "quit", "q":
-		return true
+		return a.confirmExit()
+	case "tasks":
+		a.tasksCommand()
 	case "help", "?":
 		for _, c := range builtinCommands {
 			fmt.Fprintf(w, "  /%-10s %s\n", c.name, c.help)

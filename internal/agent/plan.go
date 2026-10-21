@@ -25,7 +25,7 @@ const (
 // planSafe tools run in plan mode whatever their input: they only read,
 // keep the agent's own state, or run subagents that are in plan mode too.
 var planSafe = map[string]bool{"read": true, "grep": true, "glob": true, "multi_grep": true, "todo": true,
-	"task": true, "tool_search": true, "checkpoint": true, "rewind": true}
+	"task": true, "task_status": true, "tool_search": true, "checkpoint": true, "rewind": true}
 
 type readOnlyHinter interface{ ReadOnlyHint() bool }
 

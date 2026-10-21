@@ -120,7 +120,7 @@ func TestClearPolicy(t *testing.T) {
 	a.LastCtx = 210_000
 	p := a.clearPolicy()
 	want := &llm.ClearPolicy{TriggerToolUses: 37, ClearAtLeast: 80_000, Keep: 6,
-		Exclude: []string{"checkpoint", "rewind", "task", "todo", "tool_search"}}
+		Exclude: []string{"checkpoint", "rewind", "task", "task_status", "todo", "tool_search"}}
 	if !reflect.DeepEqual(p, want) {
 		t.Fatalf("policy %+v", p)
 	}

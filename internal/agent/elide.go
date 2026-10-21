@@ -46,7 +46,7 @@ var spilledRE = regexp.MustCompile(`are in (\S+) \(read it with offset/limit\)`)
 // elideKeep lists tools whose results stay verbatim: subagent reports and
 // rewind reports are distilled results that cannot be re-created by
 // re-running a cheap tool.
-var elideKeep = map[string]bool{"task": true, "rewind": true, "todo": true, "checkpoint": true}
+var elideKeep = map[string]bool{"task": true, "task_status": true, "rewind": true, "todo": true, "checkpoint": true}
 
 // ElideAt is the context size (tokens) above which old tool output is
 // elided while the prompt cache is warm; 0 disables it. Re-reading a huge

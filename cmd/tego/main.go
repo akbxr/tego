@@ -393,6 +393,7 @@ func run() error {
 			app.ui.Dim("stopped %s", plural(n, "background shell"))
 		}
 	}()
+	defer app.stopBackground()
 	if app.interactive {
 		app.banner()
 		updateOff := cfg.UpdateCheck == "off" || os.Getenv("TEGO_NO_UPDATE_CHECK") != ""
@@ -450,7 +451,12 @@ func run() error {
 		if prompt == "" {
 			return errors.New("print mode needs a prompt")
 		}
-		err := app.withInterrupt(func(ctx context.Context) error { return app.runTurn(ctx, prompt) })
+		err := app.withInterrupt(func(ctx context.Context) error {
+			if err := app.runTurn(ctx, prompt); err != nil {
+				return err
+			}
+			return app.drainBackground(ctx) // their reports, before exiting
+		})
 		app.ui.Finish()
 		return err
 	}
@@ -527,6 +533,8 @@ type app struct {
 	mcpWaited bool
 	ext       *ext.Manager // nil: no extensions
 	extMsgs   chan string  // prompts extensions send (sendMessage), taken by the REPL
+	bg        *agent.Background
+	bgDone    chan struct{} // a background task ended: the REPL may hand its report over
 
 	files fileIndex // project paths for the @ picker
 
@@ -540,6 +548,7 @@ type app struct {
 	// init creates the agent.
 	footerAgent atomic.Pointer[agent.Agent]
 	footerEnv   atomic.Pointer[tools.Env] // likewise, for the background shell count
+	footerBG    atomic.Pointer[agent.Background]
 	// todoRevAtStart is the todo revision when the current job started
 	// (written by the loop, read by the footer).
 	todoRevAtStart atomic.Int64
@@ -585,7 +594,8 @@ func (a *app) init(spec, thinking string) error {
 	}
 	task := &agent.TaskTool{Parent: a.ag, System: agent.SystemPrompt(a.cwd, files, a.skills, agent.SubagentMode), Env: a.env, Concurrency: a.cfg.Subagents,
 		Small: a.small, Models: a.subagentModels, Agents: a.agents, ResolveModel: a.resolveModel, Isolate: isolator(a.cfg.Dir, a.cwd)}
-	a.ag.Tools = append(tools.Builtins(a.env), task,
+	a.setupBackground(task)
+	a.ag.Tools = append(tools.Builtins(a.env), task, &agent.TaskStatusTool{BG: a.bg},
 		&agent.TodoTool{Parent: a.ag},
 		&agent.CheckpointTool{Parent: a.ag},
 		&agent.RewindTool{Parent: a.ag},
@@ -617,6 +627,7 @@ func (a *app) setModel(spec string) error {
 }
 
 func (a *app) newSession() error {
+	a.resetBackground()
 	a.closeSession()
 	a.ag.SetHistory(nil)
 	a.ag.Total = llm.Usage{}
@@ -641,6 +652,7 @@ func (a *app) resume(ref string) error {
 	if err != nil {
 		return err
 	}
+	a.resetBackground()
 	a.closeSession()
 	a.ag.Session = s
 	a.ag.SetHistory(msgs)
