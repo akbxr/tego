@@ -1,4 +1,4 @@
-# tego
+<h1 align="center"><img src="assets/tego.svg" alt="tego" width="420"></h1>
 
 A coding agent for your terminal, written in Go. One static binary, about 10 MB.
 
