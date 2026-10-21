@@ -225,6 +225,38 @@ func TestProjectExtensionsNeedTrust(t *testing.T) {
 	}
 }
 
+// Extensions learn the session's model when they start and when it
+// changes; ctx.model follows it.
+func TestExtensionsSeeTheModel(t *testing.T) {
+	needJS(t)
+	home, cwd := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(home, "extensions", "m.ts"), `export default (tego: any) => {
+  tego.on("session_start", (e: any, ctx: any) => ctx.ui.notify("start " + e.model_name + " " + ctx.model.provider));
+  tego.on("model_change", (e: any, ctx: any) => ctx.ui.notify("now " + e.model + " = " + ctx.model.model_name));
+  tego.registerCommand("which", { handler: (args: string, ctx: any) => ctx.ui.notify("using " + ctx.model.model) });
+}`)
+	h := &fakeHost{}
+	m := Start(Discover(home, cwd), Options{Home: home, Cwd: cwd, Host: h,
+		Model: Model{Provider: "anthropic", ID: "claude-opus-5-5", Name: "Opus 5.5"}})
+	defer m.Close()
+	m.Wait(20 * time.Second)
+	waitUntil(t, func() bool { n, _ := h.snapshot(); return len(n) == 1 })
+	m.SetModel(Model{Provider: "anthropic", ID: "claude-opus-5-5", Name: "Opus 5.5"}) // unchanged: no event
+	m.SetModel(Model{Provider: "openai-codex", ID: "gpt-6-luna", Name: "gpt-6-luna"})
+	waitUntil(t, func() bool { n, _ := h.snapshot(); return len(n) == 2 })
+	if err := m.RunCommand(context.Background(), "which", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, func() bool { n, _ := h.snapshot(); return len(n) == 3 })
+	notes, _ := h.snapshot()
+	want := []string{"m:info:start Opus 5.5 anthropic", "m:info:now gpt-6-luna = gpt-6-luna", "m:info:using gpt-6-luna"}
+	if !slices.Equal(notes, want) {
+		t.Fatalf("notes %q, want %q", notes, want)
+	}
+	var nilManager *Manager
+	nilManager.SetModel(Model{ID: "x"}) // before any extension starts
+}
+
 // codeBlock is the first ```lang block of the docs.
 func codeBlock(t *testing.T, lang string) string {
 	t.Helper()
@@ -335,8 +367,18 @@ func TestGoExtension(t *testing.T) {
 	m = Start(Discover(home, cwd), Options{Home: home, Cwd: cwd, Host: h})
 	m.Wait(3 * time.Minute)
 	defer m.Close()
-	if st := m.Status(); st[0].State != StateFailed || !strings.Contains(st[0].Err, "go build:") || !strings.Contains(st[0].Err, "undefined") {
+	if st := m.Status(); st[0].State != StateFailed || !strings.Contains(st[0].Err, "go build:") || !strings.Contains(st[0].Err, "undefined") ||
+		strings.Contains(st[0].Err, "newer tego") {
 		t.Fatalf("broken: %+v", st)
+	}
+	m.Close()
+
+	// Written for a newer extension package: says so.
+	write(t, src, "package main\n\nimport \"github.com/akbxr/tego/extension\"\n\nfunc main() { x := extension.New(\"g\"); x.On(extension.FutureEvent, nil) }\n")
+	m = Start(Discover(home, cwd), Options{Home: home, Cwd: cwd, Host: h})
+	m.Wait(3 * time.Minute)
+	if st := m.Status(); st[0].State != StateFailed || !strings.Contains(st[0].Err, "it needs a newer tego than this one (tego update)") {
+		t.Fatalf("newer SDK: %+v", st)
 	}
 }
 

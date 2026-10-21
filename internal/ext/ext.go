@@ -32,7 +32,8 @@ const hookTimeout = 10 * time.Minute
 // Events an extension can subscribe to. The request events wait for the
 // handlers and take what they return; the others are notifications.
 const (
-	EventSessionStart = "session_start" // {cwd, session_id}
+	EventSessionStart = "session_start" // {cwd, session_id, provider, model, model_name}
+	EventModelChange  = "model_change"  // {provider, model, model_name}
 	EventInput        = "input"         // {text} -> {text?, handled?}
 	EventToolCall     = "tool_call"     // {tool, input, agent} -> {block?, reason?, input?}
 	EventToolResult   = "tool_result"   // {tool, input, output, is_error, agent} -> {output?}
@@ -290,28 +291,61 @@ func (e *extension) conn() (*conn, error) {
 	return e.c, nil
 }
 
+// Model is the session's model, as extensions see it.
+type Model struct {
+	Provider string `json:"provider"`   // "anthropic"
+	ID       string `json:"model"`      // "claude-opus-5-5"
+	Name     string `json:"model_name"` // "Opus 5.5", as tego shows it
+}
+
+func (m Model) data() map[string]any {
+	return map[string]any{"provider": m.Provider, "model": m.ID, "model_name": m.Name}
+}
+
 // Options are what a Manager needs.
 type Options struct {
 	Home      string // tego's home: the host script's cache, logs, trust
 	Cwd       string
 	SessionID string
 	Version   string // tego's
+	Model     Model  // the session's at the start; SetModel follows it
 	Host      Host
 }
 
 // Manager runs the extensions of one session.
 type Manager struct {
-	o    Options
-	mu   sync.Mutex
-	exts []*extension
-	wg   sync.WaitGroup
+	o     Options
+	mu    sync.Mutex
+	exts  []*extension
+	wg    sync.WaitGroup
+	model Model // guarded by mu
+}
+
+// SetModel tells the extensions the session's model changed.
+func (m *Manager) SetModel(model Model) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	same := m.model == model
+	m.model = model
+	m.mu.Unlock()
+	if !same {
+		m.Emit(EventModelChange, model.data())
+	}
+}
+
+func (m *Manager) currentModel() Model {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.model
 }
 
 // Start runs the trusted candidates, each in the background, and returns
 // at once: Wait waits for them to be ready. Untrusted ones are listed but
 // don't run.
 func Start(cands []Candidate, o Options) *Manager {
-	m := &Manager{o: o}
+	m := &Manager{o: o, model: o.Model}
 	trusted := loadTrust(o.Home)
 	for _, c := range cands {
 		e := &extension{cand: c}
@@ -344,7 +378,9 @@ func (m *Manager) launch(e *extension) {
 		}
 		e.mu.Unlock()
 		if e.subscribed(EventSessionStart) {
-			_ = e.c.notifyExt("event", map[string]any{"event": EventSessionStart, "data": map[string]any{"cwd": m.o.Cwd, "session_id": m.o.SessionID}})
+			data := m.currentModel().data()
+			data["cwd"], data["session_id"] = m.o.Cwd, m.o.SessionID
+			_ = e.c.notifyExt("event", map[string]any{"event": EventSessionStart, "data": data})
 		}
 	}()
 }
@@ -404,6 +440,7 @@ func (m *Manager) run(e *extension) error {
 	var res initResult
 	err = c.call(ctx, "initialize", map[string]any{
 		"protocol_version": ProtocolVersion, "tego_version": m.o.Version, "cwd": m.o.Cwd, "session_id": m.o.SessionID,
+		"model": m.currentModel().data(),
 	}, &res)
 	if err != nil {
 		_ = cmd.Process.Kill()

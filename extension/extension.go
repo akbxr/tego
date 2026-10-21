@@ -43,7 +43,8 @@ import (
 
 // Events (see Extension.On).
 const (
-	SessionStart = "session_start" // Cwd, SessionID
+	SessionStart = "session_start" // Cwd, SessionID, Model
+	ModelChange  = "model_change"  // Model: the session switched to it (/model)
 	Input        = "input"         // Text; may ChangeText or Handled
 	ToolCall     = "tool_call"     // Tool, Input, Agent; may Block or ChangeInput
 	ToolResult   = "tool_result"   // Tool, Input, Output, IsError, Agent; may ChangeOutput
@@ -51,9 +52,17 @@ const (
 	SessionEnd   = "session_end"
 )
 
+// Model is the session's model.
+type Model struct {
+	Provider string `json:"provider"`   // "anthropic"
+	ID       string `json:"model"`      // "claude-opus-5-5"
+	Name     string `json:"model_name"` // "Opus 5.5", as tego shows it
+}
+
 // Event is what an event handler gets; the fields set depend on the event.
 type Event struct {
 	Name      string
+	Model     Model           // session_start, model_change
 	Tool      string          // tool_call, tool_result
 	Input     json.RawMessage // the tool's input
 	Output    string          // tool_result
@@ -110,6 +119,7 @@ func Handled() Result { return Result{handled: true} }
 type Ctx struct {
 	Cwd       string
 	SessionID string
+	Model     Model // the session's, as of this call
 	x         *Extension
 }
 
@@ -191,6 +201,7 @@ type Extension struct {
 	commands []*command
 
 	cwd, session string
+	model        Model // guarded by mu
 	w            io.Writer
 	wmu          sync.Mutex
 	mu           sync.Mutex
@@ -365,7 +376,11 @@ func (x *Extension) handle(m *message) {
 	x.write(out)
 }
 
-func (x *Extension) ctx() *Ctx { return &Ctx{Cwd: x.cwd, SessionID: x.session, x: x} }
+func (x *Extension) ctx() *Ctx {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return &Ctx{Cwd: x.cwd, SessionID: x.session, Model: x.model, x: x}
+}
 
 func (x *Extension) dispatch(method string, params json.RawMessage) (res any, err error) {
 	defer func() {
@@ -378,9 +393,12 @@ func (x *Extension) dispatch(method string, params json.RawMessage) (res any, er
 		var p struct {
 			Cwd     string `json:"cwd"`
 			Session string `json:"session_id"`
+			Model   Model  `json:"model"`
 		}
 		_ = json.Unmarshal(params, &p)
-		x.cwd, x.session = p.Cwd, p.Session
+		x.mu.Lock()
+		x.cwd, x.session, x.model = p.Cwd, p.Session, p.Model
+		x.mu.Unlock()
 		events := x.events
 		if events == nil {
 			events = []string{}
@@ -398,14 +416,20 @@ func (x *Extension) dispatch(method string, params json.RawMessage) (res any, er
 				Text      string          `json:"text"`
 				Cwd       string          `json:"cwd"`
 				SessionID string          `json:"session_id"`
+				Model
 			} `json:"data"`
 		}
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, err
 		}
 		d := p.Data
+		if p.Event == SessionStart || p.Event == ModelChange {
+			x.mu.Lock()
+			x.model = d.Model
+			x.mu.Unlock()
+		}
 		return x.runEvent(Event{Name: p.Event, Tool: d.Tool, Input: d.Input, Output: d.Output, IsError: d.IsError,
-			Agent: d.Agent, Text: d.Text, Cwd: d.Cwd, SessionID: d.SessionID})
+			Agent: d.Agent, Text: d.Text, Cwd: d.Cwd, SessionID: d.SessionID, Model: d.Model})
 	case "tool/execute":
 		var p struct {
 			Name  string          `json:"name"`

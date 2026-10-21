@@ -69,7 +69,7 @@ export default function (tego) {
 }
 ```
 
-`ctx` has `ui.notify(message, level?)`, `ui.confirm(title, message?)`, `ui.select(title, options)`, `ui.input(title, placeholder?)`, `sendMessage(text)`, `cwd` and `sessionId`. `level` is `info`, `warning` or `error`. Without a terminal (`tego -p`), confirm says no, and select and input return `undefined`.
+`ctx` has `ui.notify(message, level?)`, `ui.confirm(title, message?)`, `ui.select(title, options)`, `ui.input(title, placeholder?)`, `sendMessage(text)`, `cwd`, `sessionId` and `model`, which is the session's model as `{provider, model, model_name}`, for example `{provider: "anthropic", model: "claude-opus-5-5", model_name: "Opus 5.5"}`. `model` stays current when you switch models. `level` is `info`, `warning` or `error`. Without a terminal (`tego -p`), confirm says no, and select and input return `undefined`.
 
 `console.log` goes to the log. stdout belongs to the protocol.
 
@@ -77,7 +77,8 @@ export default function (tego) {
 
 | Event | Data | A handler may return |
 |---|---|---|
-| `session_start` | `{cwd, session_id}` | |
+| `session_start` | `{cwd, session_id, provider, model, model_name}` | |
+| `model_change` | `{provider, model, model_name}`, after `/model` | |
 | `input` | `{text}` | `{text}` to change the prompt, `{handled: true}` to send nothing |
 | `tool_call` | `{tool, input, agent}` | `{block: true, reason}`, or `{input}` to change it |
 | `tool_result` | `{tool, input, output, is_error, agent}` | `{output}` |
@@ -139,6 +140,8 @@ tego builds the extension with `go build` when it starts the extension for the f
 
 A `.go` file, or a folder of them without a `go.mod`, gets the `extension` package from the tego that runs it, so the build needs no download. A folder with its own `go.mod` is built as it is. Require `github.com/akbxr/tego` there to use more packages. A program you built yourself can go in the folder too.
 
+A complete example is [examples/extensions/discord](../examples/extensions/discord), which shows what tego is doing as your Discord status.
+
 Once `Run` starts, `fmt.Println` writes to the log, not to the protocol. A Go extension idles at a few MB of memory, against about 40 for node and 10 for bun.
 
 ## Other languages: the protocol
@@ -147,7 +150,7 @@ Messages are JSON-RPC 2.0, one per line, in both directions.
 
 tego sends these requests:
 
-- `initialize` with `{protocol_version: 1, tego_version, cwd, session_id}`. Answer with `{name, tools: [{name, description, parameters}], commands: [{name, description}], events: ["tool_call", ...]}`. Only the events listed are sent.
+- `initialize` with `{protocol_version: 1, tego_version, cwd, session_id, model: {provider, model, model_name}}`. Answer with `{name, tools: [{name, description, parameters}], commands: [{name, description}], events: ["tool_call", ...]}`. Only the events listed are sent.
 - `event` with `{event, data}`. Answer as in the table. The events with nothing to return come as notifications, without an `id`.
 - `tool/execute` with `{name, input}`. Answer `{content, is_error?}`.
 - `command/execute` with `{name, args}`. Answer `{}`.

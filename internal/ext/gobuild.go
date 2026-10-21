@@ -149,7 +149,12 @@ func buildGo(home string, c Candidate) (string, error) {
 		if msg == "" {
 			msg = err.Error()
 		}
-		return "", fmt.Errorf("go build: %s", strings.ReplaceAll(msg, "\n", " | "))
+		msg = strings.ReplaceAll(msg, "\n", " | ")
+		if !ownModule && strings.Contains(msg, "extension.") && (strings.Contains(msg, "undefined: extension.") || strings.Contains(msg, "has no field or method")) {
+			// Written for a newer extension package than this tego has.
+			return "", fmt.Errorf("it needs a newer tego than this one (tego update): go build: %s", msg)
+		}
+		return "", fmt.Errorf("go build: %s", msg)
 	}
 	if err := os.Rename(tmp, bin); err != nil {
 		return "", err

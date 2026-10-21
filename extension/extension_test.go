@@ -210,6 +210,33 @@ func TestExtension(t *testing.T) {
 	}
 }
 
+// The model comes with initialize, session_start and model_change, and
+// ctx.Model follows it.
+func TestModel(t *testing.T) {
+	x := New("m")
+	var seen []string
+	x.On(ModelChange, func(e Event, ctx *Ctx) Result {
+		seen = append(seen, e.Model.Name+"|"+ctx.Model.ID)
+		return Pass()
+	})
+	x.Command("which", "", func(_ string, ctx *Ctx) error {
+		seen = append(seen, "which "+ctx.Model.Provider+"/"+ctx.Model.ID)
+		return nil
+	})
+	f := start(t, x)
+	none := func(string, map[string]any) any { return nil }
+	f.request("initialize", map[string]any{"model": map[string]string{"provider": "anthropic", "model": "claude-opus-5-5", "model_name": "Opus 5.5"}}, none)
+	f.request("command/execute", map[string]any{"name": "which"}, none)
+	f.request("event", map[string]any{"event": ModelChange, "data": map[string]string{"provider": "openai-codex", "model": "gpt-6-luna", "model_name": "gpt-6-luna"}}, none)
+	f.request("command/execute", map[string]any{"name": "which"}, none)
+	want := "which anthropic/claude-opus-5-5,gpt-6-luna|gpt-6-luna,which openai-codex/gpt-6-luna"
+	if got := strings.Join(seen, ","); got != want {
+		t.Fatalf("got  %s\nwant %s", got, want)
+	}
+	f.send(map[string]any{"method": "shutdown"})
+	<-f.done
+}
+
 func TestRunOutsideTego(t *testing.T) {
 	t.Setenv("TEGO_EXTENSION", "")
 	if err := New("x").Run(); err == nil || !strings.Contains(err.Error(), "~/.tego/extensions") {

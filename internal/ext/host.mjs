@@ -44,6 +44,8 @@ const ctx = {
   ui,
   cwd: process.cwd(),
   sessionId: "",
+  // The session's model: { provider, model, model_name }, kept current.
+  model: { provider: "", model: "", model_name: "" },
   sendMessage: (text) => send({ method: "session/sendMessage", params: { text: String(text) } }),
 };
 const tego = {
@@ -96,6 +98,7 @@ async function handle(method, params) {
     case "initialize":
       ctx.cwd = params.cwd ?? ctx.cwd;
       ctx.sessionId = params.session_id ?? "";
+      if (params.model) ctx.model = params.model;
       return {
         name: mod.name ?? basename(file, extname(file)),
         tools: [...tools.values()].map((t) => ({
@@ -106,8 +109,13 @@ async function handle(method, params) {
         commands: [...commands.entries()].map(([name, d]) => ({ name, description: d.description ?? "" })),
         events: [...handlers.keys()],
       };
-    case "event":
-      return runEvent(params.event, params.data ?? {});
+    case "event": {
+      const d = params.data ?? {};
+      if (params.event === "session_start" || params.event === "model_change") {
+        ctx.model = { provider: d.provider ?? "", model: d.model ?? "", model_name: d.model_name ?? "" };
+      }
+      return runEvent(params.event, d);
+    }
     case "tool/execute": {
       const t = tools.get(params.name);
       if (!t) throw new Error(`no tool ${params.name}`);

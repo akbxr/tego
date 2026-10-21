@@ -612,6 +612,7 @@ func (a *app) setModel(spec string) error {
 	}
 	a.ag.Provider, a.ag.ProviderName, a.ag.Model = p, prov, model
 	a.ag.ContextWindow = a.cfg.ContextWindowFor(prov, model)
+	a.ext.SetModel(a.extModel()) // nil before the extensions start
 	return nil
 }
 

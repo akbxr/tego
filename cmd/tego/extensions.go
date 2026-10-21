@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -24,7 +25,8 @@ func (a *app) startExtensions() string {
 		return ""
 	}
 	a.extMsgs = make(chan string, 16)
-	a.ext = ext.Start(cands, ext.Options{Home: a.cfg.Dir, Cwd: a.cwd, SessionID: a.ag.SessionID, Version: version, Host: extHost{a}})
+	a.ext = ext.Start(cands, ext.Options{Home: a.cfg.Dir, Cwd: a.cwd, SessionID: a.ag.SessionID, Version: version,
+		Model: a.extModel(), Host: extHost{a}})
 	a.ag.Hooks = a.ext
 	mcpTools := a.ag.Dynamic
 	a.ag.Dynamic = func() []tools.Tool {
@@ -41,6 +43,7 @@ func (a *app) startExtensions() string {
 		}
 		return append(ts[:len(ts):len(ts)], a.ext.Tools(func(n string) bool { return taken[n] })...)
 	}
+	go a.reportExtensionFailures()
 	var untrusted []string
 	for _, s := range a.ext.Status() {
 		if s.State == ext.StateUntrusted {
@@ -56,6 +59,38 @@ func (a *app) startExtensions() string {
 	}
 	return fmt.Sprintf("this project has %s not trusted yet (%s): /extensions shows them, /extensions trust runs them",
 		plural(len(untrusted), "extension"), strings.Join(untrusted, ", "))
+}
+
+// extStartWait bounds how long startup failures are waited for: a Go
+// extension's first build included.
+var extStartWait = 3 * time.Minute
+
+// reportExtensionFailures says which extensions failed to start, once
+// they all tried: otherwise one that doesn't run goes unnoticed.
+func (a *app) reportExtensionFailures() {
+	a.ext.Wait(extStartWait)
+	for _, s := range a.ext.Status() {
+		if s.State != ext.StateFailed {
+			continue
+		}
+		msg := fmt.Sprintf("extension %s did not start: %s", s.Name, s.Err)
+		if a.interactive {
+			a.ui.Errorf("%s", msg)
+			if a.tui != nil {
+				a.tui.Redraw()
+			}
+		} else {
+			fmt.Fprintln(os.Stderr, "tego:", msg)
+		}
+	}
+}
+
+// extModel is the session's model, for extensions.
+func (a *app) extModel() ext.Model {
+	if a.ag.Model == "" {
+		return ext.Model{}
+	}
+	return ext.Model{Provider: a.ag.ProviderName, ID: a.ag.Model, Name: modelLabel(a.ag.Model)}
 }
 
 // waitExtensions lets the extensions finish starting before a turn uses
