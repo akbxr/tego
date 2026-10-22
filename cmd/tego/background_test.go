@@ -141,3 +141,28 @@ func (p *slowFake) Stream(ctx context.Context, _ *llm.Request, _ func(llm.Event)
 	}
 	return &llm.Message{Role: llm.RoleAssistant, StopReason: "end_turn", Blocks: []llm.Block{{Type: llm.BlockText, Text: "ok"}}}, nil
 }
+
+// A shell in /tasks, and the header with one server running.
+func TestShellRowAndHeader(t *testing.T) {
+	row := shellRow(tools.ShellInfo{ID: "bg1", Command: "npm   run dev", Status: "running for 3m0s", Port: ":3000", Running: true})
+	if row != "▶ bg1 npm run dev · running for 3m0s · :3000" {
+		t.Fatalf("row %q", row)
+	}
+	row = shellRow(tools.ShellInfo{ID: "bg2", Command: "make watch", Status: "ended after 2s", Owner: "Builder#3"})
+	if row != "■ bg2 make watch · ended after 2s · by Builder" {
+		t.Fatalf("ended row %q", row)
+	}
+	n, port := 1, ":5173"
+	b := &statusBar{c: palette{}, shells: func() int { return n }, shellPort: func() string { return port }}
+	if h := b.header(80); !strings.Contains(h, "▶ bg :5173") {
+		t.Fatalf("header %q", h)
+	}
+	n = 2
+	if h := b.header(80); !strings.Contains(h, "▶ 2 bg") {
+		t.Fatalf("header %q", h)
+	}
+	n, port = 1, ""
+	if h := b.header(80); !strings.Contains(h, "▶ 1 bg") {
+		t.Fatalf("header %q", h)
+	}
+}

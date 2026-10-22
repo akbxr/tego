@@ -45,9 +45,10 @@ type statusBar struct {
 	rate  func() float64 // live tok/s; set once before the first turn
 	// agents counts running subagents and shells running background
 	// commands; both are set before the TUI starts drawing
-	agents func() int
-	shells func() int
-	plan   func() bool // plan mode is on
+	agents    func() int
+	shells    func() int
+	shellPort func() string // the one running shell's ":3000", or ""
+	plan      func() bool   // plan mode is on
 }
 
 func newStatusBar(c palette, cwd string, ic iconSet) *statusBar {
@@ -94,7 +95,13 @@ func (b *statusBar) header(width int) string {
 	}
 	if b.shells != nil {
 		if n := b.shells(); n > 0 {
-			add(fmt.Sprintf("▶ %d bg", n), c.cyan) // background shells keep running between turns
+			label := fmt.Sprintf("▶ %d bg", n) // background shells keep running between turns
+			if n == 1 && b.shellPort != nil {
+				if p := b.shellPort(); p != "" {
+					label = "▶ bg " + p // the one server, and where it listens
+				}
+			}
+			add(label, c.cyan)
 		}
 	}
 	if label != "" && title != "" {

@@ -36,6 +36,9 @@ type Agent struct {
 	// MaxOutputTokens caps each response (llm.Request.MaxTokens); 0: the
 	// provider's default for the model.
 	MaxOutputTokens int
+	// Shells is the session's background shells started since a time that
+	// still run; with it, a model about to finish is reminded of them.
+	Shells func(since time.Time) []tools.ShellInfo
 	// Fast asks for fast mode on models that have it (llm.Request.Fast).
 	// FastActive says whether the last response actually ran fast.
 	Fast, FastActive bool
@@ -284,7 +287,7 @@ var ErrNoModel = errors.New("no model configured: use /login to sign in or add a
 func (a *Agent) loop(ctx context.Context) error {
 	a.stuck = stuckState{} // streaks count within one prompt (or /retry)
 	_, rev := a.TodoState()
-	a.stop = stopState{todoRev: rev}
+	a.stop = stopState{todoRev: rev, started: time.Now()}
 	overflowRetried := false
 	if !a.Subagent || a.declined == nil { // a subagent keeps its parent's
 		a.declined = new(atomic.Bool)

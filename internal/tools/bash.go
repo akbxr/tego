@@ -45,7 +45,8 @@ func (t *bashTool) Def() llm.Tool {
 		Description: "Run a shell command with bash -c in the working directory; returns combined stdout+stderr " +
 			"(long output is truncated in the middle, and the result names a file with all of it to read). No stdin: avoid interactive commands. Default timeout 120s, max 600s. " +
 			"For something that keeps running (a dev server, a watcher, a long build) set background: true: it returns at once with an id " +
-			"for bash_output, and the process keeps running until it ends, you kill it, or tego exits. Don't end commands with & yourself. " +
+			"for bash_output, and the process keeps running until it ends, you kill it, or tego exits (a subagent's, when it finishes). " +
+			"Don't end commands with & yourself. Stop shells once they are no longer needed. " +
 			"To view a file use the read tool, not cat/head/sed.",
 		Schema: schema(`{"type":"object","properties":{` +
 			`"command":{"type":"string"},` +
@@ -79,7 +80,7 @@ func (t *bashTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 			"explain why to the user and let them run it themselves (in tego: !<command>)", why)
 	}
 	if in.Background {
-		out, err := t.env.startBackground(in.Command)
+		out, err := t.env.startBackground(ctx, in.Command)
 		return out + t.env.noteShellWrite(in.Command), err
 	}
 	dur := time.Duration(timeout * float64(time.Second))
@@ -87,7 +88,11 @@ func (t *bashTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 		out, err := runInTerminal(ctx, t.env.Terminal, t.env.Cwd, in.Command, dur)
 		return out + t.env.noteShellWrite(in.Command), err
 	}
-	out, err := runShell(ctx, t.env.Cwd, in.Command, dur)
+	started := time.Now()
+	out, left, err := runShellLeft(ctx, t.env.Cwd, in.Command, dur)
+	if left != nil {
+		out += t.env.adopt(ctx, in.Command, started, left)
+	}
 	return out + t.env.noteShellWrite(in.Command), err
 }
 
@@ -126,7 +131,62 @@ func runInTerminal(ctx context.Context, term Terminal, dir, command string, time
 	return text, nil
 }
 
+// leftover is what a command left running in its process group after
+// its shell exited (`npm run dev &`): the group, and the pipe its output
+// still comes through.
+type leftover struct {
+	pgid int
+	r    *os.File
+	sink *switchWriter
+}
+
+// switchWriter writes to w until set gives it another writer.
+type switchWriter struct {
+	mu   sync.Mutex
+	w    io.Writer
+	last time.Time
+}
+
+func (s *switchWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.last = time.Now()
+	return s.w.Write(p)
+}
+
+func (s *switchWriter) set(w io.Writer) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.w = w
+}
+
+// settle waits until nothing was written for idle, up to most.
+func (s *switchWriter) settle(idle, most time.Duration) {
+	deadline := time.Now().Add(most)
+	for time.Now().Before(deadline) {
+		s.mu.Lock()
+		quiet := time.Since(s.last) >= idle
+		s.mu.Unlock()
+		if quiet {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// runShell runs command and stops whatever it leaves running.
 func runShell(ctx context.Context, dir, command string, timeout time.Duration) (string, error) {
+	out, left, err := runShellLeft(ctx, dir, command, timeout)
+	if left != nil {
+		_ = syscall.Kill(-left.pgid, syscall.SIGKILL)
+		_ = left.r.Close()
+	}
+	return out, err
+}
+
+// runShellLeft runs command, and returns what it left running in its
+// process group, if anything, for the caller to keep or stop.
+func runShellLeft(ctx context.Context, dir, command string, timeout time.Duration) (string, *leftover, error) {
 	shell := "bash"
 	if _, err := exec.LookPath(shell); err != nil {
 		shell = "sh"
@@ -142,23 +202,57 @@ func runShell(ctx context.Context, dir, command string, timeout time.Duration) (
 		// Kill the whole process group, not just the shell.
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
-	// Background children that keep the output pipe open must not block us
-	// forever once the shell itself has exited.
-	cmd.WaitDelay = 2 * time.Second
 	out := &capWriter{spill: true}
 	defer out.close()
 	var w io.Writer = out
 	if fn := progressFrom(ctx); fn != nil {
 		w = io.MultiWriter(out, progressWriter(fn)) // shown live while it runs
 	}
-	cmd.Stdout = w
-	cmd.Stderr = w // same writer: exec shares one pipe for both, in order
+	// Our own pipe, not exec's: what the command leaves running may keep
+	// writing to it after the shell exits, into a background shell then.
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		return "", nil, err
+	}
+	cmd.Stdout, cmd.Stderr = pw, pw // one pipe for both, in order
 
 	start := time.Now()
 	if err := cmd.Start(); err != nil {
-		return "", fmt.Errorf("failed to start %s: %v", shell, err)
+		pr.Close()
+		pw.Close()
+		return "", nil, fmt.Errorf("failed to start %s: %v", shell, err)
 	}
+	pw.Close()
+	sink := &switchWriter{w: w}
+	copied := make(chan struct{})
+	go func() { _, _ = io.Copy(sink, pr); close(copied) }()
 	werr := cmd.Wait()
+
+	var left *leftover
+	pgid := cmd.Process.Pid
+	if ctx.Err() == nil && tctx.Err() == nil && groupAlive(pgid) {
+		// Something it started outlived it. Short-lived leftovers get a
+		// moment to end by themselves.
+		deadline := time.Now().Add(bgSettle)
+		for groupAlive(pgid) && time.Now().Before(deadline) {
+			time.Sleep(20 * time.Millisecond)
+		}
+		if groupAlive(pgid) {
+			left = &leftover{pgid: pgid, r: pr, sink: sink}
+		}
+	}
+	if left != nil {
+		sink.settle(100*time.Millisecond, time.Second) // what came before the shell exited
+	} else {
+		// A daemon that left the group may hold the pipe open: don't wait
+		// for it long.
+		select {
+		case <-copied:
+		case <-time.After(2 * time.Second):
+		}
+		pr.Close()
+		<-copied
+	}
 
 	text := out.String()
 	var notes []string
@@ -186,7 +280,7 @@ func runShell(ctx context.Context, dir, command string, timeout time.Duration) (
 	if text == "" {
 		text = "(no output)"
 	}
-	return text, nil
+	return text, left, nil
 }
 
 // capWriter keeps the first outHeadLines/outHeadBytes and the last

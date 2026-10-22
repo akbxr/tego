@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/akbxr/tego/internal/agent"
 	"github.com/akbxr/tego/internal/lineedit"
+	"github.com/akbxr/tego/internal/tools"
 )
 
 // setupBackground lets the agent run task subagents in the background
@@ -135,6 +138,94 @@ func (a *app) confirmExit() bool {
 	return err == nil && idx == 0
 }
 
+// shellRow is a background shell in /tasks: "▶ bg1 npm run dev · running
+// for 3m0s · :3000".
+func shellRow(s tools.ShellInfo) string {
+	mark := "▶"
+	if !s.Running {
+		mark = "■"
+	}
+	parts := []string{mark + " " + s.ID + " " + oneLineCut(s.Command, 50), s.Status}
+	if s.Port != "" {
+		parts = append(parts, s.Port)
+	}
+	if s.Owner != "" {
+		parts = append(parts, "by "+strings.SplitN(s.Owner, "#", 2)[0])
+	}
+	return strings.Join(parts, " · ")
+}
+
+func oneLineCut(s string, max int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if r := []rune(s); len(r) > max {
+		s = string(r[:max-1]) + "…"
+	}
+	return s
+}
+
+// shellAction shows a shell's latest output, or stops it.
+func (a *app) shellAction(s tools.ShellInfo) {
+	if s.Running {
+		act, err := a.tui.Pick(s.ID+" "+oneLineCut(s.Command, 60), []lineedit.PickItem{{Label: "Show its output"}, {Label: "Stop it"}}, "", 0)
+		if err != nil || act < 0 {
+			return
+		}
+		if act == 1 {
+			if a.env.StopShell(s.ID) {
+				a.ag.Notice(fmt.Sprintf("The user stopped background shell %s (%s).", s.ID, oneLineCut(s.Command, 60)))
+				a.ui.Dim("stopped %s", s.ID)
+			}
+			return
+		}
+	}
+	c := a.ui.c
+	a.ui.Finish()
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s%s%s %s %s· %s%s\n", c.bold, s.ID, c.reset, s.Command, c.dim, s.Status, c.reset)
+	if tail := a.env.ShellTail(s.ID, 40); tail != "" {
+		fmt.Fprintf(&b, "%s%s%s\n", c.dim, tail, c.reset)
+	} else {
+		fmt.Fprintf(&b, "%s(no output)%s\n", c.dim, c.reset)
+	}
+	fmt.Fprint(a.out, b.String())
+}
+
+// shellRecord is where this tego keeps its running shells' groups.
+func (a *app) shellRecord() string {
+	return filepath.Join(a.cfg.Dir, "shells", fmt.Sprintf("%d.json", os.Getpid()))
+}
+
+// offerStaleShells asks about processes a tego that crashed left running.
+func (a *app) offerStaleShells() {
+	stale := tools.StaleShells(filepath.Dir(a.shellRecord()))
+	if len(stale) == 0 {
+		return
+	}
+	var lines []string
+	for _, s := range stale {
+		line := fmt.Sprintf("%s (in %s, started %s)", oneLineCut(s.Command, 50), s.Cwd, s.Started.Format("Jan 2 15:04"))
+		if len(s.Members) > 0 {
+			line += ": now " + strings.Join(s.Members, "; ")
+		}
+		lines = append(lines, line)
+	}
+	title := fmt.Sprintf("A tego that ended without stopping them left %s running", plural(len(stale), "background shell"))
+	items := []lineedit.PickItem{
+		{Label: "Stop them", Detail: strings.Join(lines, " | ")},
+		{Label: "Leave them running", Detail: "tego won't ask about them again"},
+	}
+	idx, err := a.tui.Pick(title, items, "", 0)
+	if err != nil || idx < 0 {
+		return // asked again next time
+	}
+	if idx == 0 {
+		tools.StopStale(stale)
+		a.ui.Dim("stopped %s left by an earlier tego", plural(len(stale), "background shell"))
+		return
+	}
+	tools.ForgetStale(stale)
+}
+
 // stopTask stops a background task for the user. It gets no report: the
 // agent hears with its next request that the user stopped it.
 func (a *app) stopTask(s agent.SubagentStatus) {
@@ -161,18 +252,25 @@ func (a *app) runningBackground() []agent.SubagentStatus {
 // it did, or stop it.
 func (a *app) tasksCommand() {
 	subs := a.bg.Statuses()
-	if len(subs) == 0 {
-		a.ui.Dim("no background tasks (tego runs them when it starts subagents with background: true)")
+	shells := a.env.Shells()
+	if len(subs) == 0 && len(shells) == 0 {
+		a.ui.Dim("nothing runs in the background (subagents started with background: true, and shells, such as a dev server, show here)")
 		return
 	}
 	c := a.ui.c
-	items := make([]lineedit.PickItem, len(subs))
-	sel := len(subs) - 1
-	for i, s := range subs {
-		items[i] = lineedit.PickItem{Label: stripSGR(subRow(c, s, false)), Detail: strings.Join(strings.Fields(s.Prompt), " ")}
+	items := make([]lineedit.PickItem, 0, len(subs)+len(shells))
+	for _, s := range subs {
+		items = append(items, lineedit.PickItem{Label: stripSGR(subRow(c, s, false)), Detail: strings.Join(strings.Fields(s.Prompt), " ")})
 	}
-	idx, err := a.tui.Pick("Background tasks · enter: show or stop", items, "", sel)
+	for _, s := range shells {
+		items = append(items, lineedit.PickItem{Label: shellRow(s), Detail: strings.Join(strings.Fields(s.Command), " ")})
+	}
+	idx, err := a.tui.Pick("Background tasks and shells · enter: show or stop", items, "", len(items)-1)
 	if err != nil || idx < 0 {
+		return
+	}
+	if idx >= len(subs) {
+		a.shellAction(shells[idx-len(subs)])
 		return
 	}
 	s := subs[idx]

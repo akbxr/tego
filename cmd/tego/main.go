@@ -342,6 +342,12 @@ func run() error {
 			}
 			return 0
 		}
+		app.status.shellPort = func() string {
+			if e := app.footerEnv.Load(); e != nil {
+				return e.RunningPort()
+			}
+			return ""
+		}
 		t, err := lineedit.Start(lineedit.Options{
 			HistoryPath: filepath.Join(cfg.Dir, "history"),
 			Prompt:      pal.magenta + pal.bold + "❯" + pal.reset + " ",
@@ -562,6 +568,7 @@ type app struct {
 
 func (a *app) init(spec, thinking string) error {
 	a.env = &tools.Env{Cwd: a.cwd}
+	a.env.RecordShells(a.shellRecord()) // for the tego after a crash
 	files := agent.LoadContextFiles(a.cfg.Dir, a.cwd)
 	mode := agent.Interactive
 	if !a.interactive {
@@ -596,6 +603,10 @@ func (a *app) init(spec, thinking string) error {
 	task := &agent.TaskTool{Parent: a.ag, System: agent.SystemPrompt(a.cwd, files, a.skills, agent.SubagentMode), Env: a.env, Concurrency: a.cfg.Subagents,
 		Small: a.small, Models: a.subagentModels, Agents: a.agents, ResolveModel: a.resolveModel, Isolate: isolator(a.cfg.Dir, a.cwd)}
 	a.setupBackground(task)
+	if a.tui != nil {
+		// Shells a prompt left running get a word before the turn ends.
+		a.ag.Shells = func(since time.Time) []tools.ShellInfo { return a.env.ShellsSince(since, "") }
+	}
 	a.ag.Tools = append(tools.Builtins(a.env), task, &agent.TaskStatusTool{BG: a.bg},
 		&agent.TodoTool{Parent: a.ag},
 		&agent.CheckpointTool{Parent: a.ag},

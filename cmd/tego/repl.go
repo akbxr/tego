@@ -60,6 +60,7 @@ func (a *app) repl(initial string) error {
 			a.login.cancel()
 		}
 	}()
+	a.offerStaleShells()
 	defer func() {
 		if a.cancel != nil { // exiting mid-turn: stop it and let it record the abort
 			a.cancel()

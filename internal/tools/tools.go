@@ -55,7 +55,7 @@ type Env struct {
 	seen        map[string][sha256.Size]byte // abs path -> content hash when a tool last read or wrote it
 	shellWrites int                          // notes given about edits made from the shell
 
-	bg shells // background shells (bash background:true)
+	bg *shells // background shells, shared with At's Envs; made at first use (reg)
 }
 
 // MarkRead records p as read by the model, e.g. a file attached to the

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/akbxr/tego/internal/llm"
@@ -345,6 +346,9 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 	return strings.Join(reports, "\n\n"), ctx.Err()
 }
 
+// shellOwners numbers the subagents' shell owners.
+var shellOwners atomic.Int64
+
 // runOne runs one task's subagent, once it has one of slots, to its end:
 // its status ("done", "failed: …") and report. quiet: no info lines (a
 // live panel shows it, or it runs in the background).
@@ -388,7 +392,7 @@ func (t *TaskTool) runOne(ctx context.Context, task taskSpec, def *AgentDef, mod
 			return failed(err.Error(), fmt.Sprintf("failed: no worktree for it: %v", err))
 		}
 		// Its own tools, on the worktree on disk (not an editor's buffers).
-		sub.Tools = tools.Builtins(&tools.Env{Cwd: dir})
+		sub.Tools = tools.Builtins(t.Env.At(dir)) // its background shells are the session's to see and clean up
 		sub.System += "\n\n# Worktree\n" + note
 		finish = fin
 	}
@@ -400,9 +404,20 @@ func (t *TaskTool) runOne(ctx context.Context, task taskSpec, def *AgentDef, mod
 	if !quiet {
 		p.UI.OnInfo(fmt.Sprintf("  ⇢ [%s] started", name))
 	}
+	// The shells it starts are its own, and stop when it finishes: nothing
+	// could read or stop them after.
+	owner := fmt.Sprintf("%s#%d", name, shellOwners.Add(1))
+	ctx = tools.WithShellOwner(ctx, owner)
+	if t.Env != nil {
+		sub.Notices = func() string { return t.Env.ShellNoticesFor(owner) }
+	}
 	err := sub.Run(ctx, task.Prompt)
+	left := t.Env.StopShells(owner)
 	p.addUsage(&sub.Total)
 	report = strings.TrimSpace(sub.LastText())
+	if len(left) > 0 {
+		report += "\n\n[background shells it left running were stopped: " + strings.Join(left, ", ") + "]"
+	}
 	status = "done"
 	if err != nil {
 		status = "failed: " + err.Error()

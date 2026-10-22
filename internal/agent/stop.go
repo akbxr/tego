@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/akbxr/tego/internal/llm"
 )
@@ -20,6 +21,8 @@ type stopState struct {
 	todoReminded   bool
 	verifyReminded bool
 	cutResumes     int // times the prompt went on after the output limit (resumeCut)
+	started        time.Time
+	shellsReminded bool
 }
 
 // docExts are files whose edits need no build or test run.
@@ -72,7 +75,37 @@ func (a *Agent) stopNudge() bool {
 		// turn would replace it, and the parent verifies the combined work.
 		return false
 	}
-	return a.needsTodoNudge() || a.needsVerifyNudge()
+	return a.needsTodoNudge() || a.needsVerifyNudge() || a.needsShellNudge()
+}
+
+// needsShellNudge: background shells this prompt started still run. A dev
+// server the user will try may stay, but the model says so; the rest
+// shouldn't outlive the task.
+func (a *Agent) needsShellNudge() bool {
+	if a.stop.shellsReminded || a.Shells == nil {
+		return false
+	}
+	// One the answer names (its id or port) was left running on purpose,
+	// and the user knows.
+	last := a.LastText()
+	var running []string
+	for _, s := range a.Shells(a.stop.started) {
+		if strings.Contains(last, s.ID) || s.Port != "" && strings.Contains(last, s.Port) ||
+			len(s.Port) >= 5 && strings.Contains(last, s.Port[1:]) { // "port 3000"; not a bare "80"
+			continue
+		}
+		running = append(running, s.Describe())
+	}
+	if len(running) == 0 {
+		return false
+	}
+	a.stop.shellsReminded = true
+	a.UI.OnInfo("background shells still running: reminding the model")
+	a.remind(fmt.Sprintf("Background shells you started are still running: %s. "+
+		"Stop each one that is no longer needed with bash_output (kill: true). "+
+		"Keep one only if the user needs it running, such as a dev server to try the result, and then tell them it is running and where. "+
+		"Reply with one short line; your earlier answer stands, do not repeat it.", strings.Join(running, ", ")))
+	return true
 }
 
 // needsTodoNudge only fires for a list this prompt worked on: a stale list

@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/akbxr/tego/internal/llm"
 	"github.com/akbxr/tego/internal/tools"
@@ -116,6 +117,69 @@ func TestBashBeforeEditDoesNotCount(t *testing.T) {
 		[]llm.Block{result("b1", "ok"), result("e1", "ok"), result("e2", "ok")})
 	if !reflect.DeepEqual(a.stop.unverified, []string{"x.go"}) {
 		t.Fatalf("unverified = %q", a.stop.unverified)
+	}
+}
+
+// Shells the prompt started that still run get one reminder, naming them.
+func TestShellNudge(t *testing.T) {
+	var since []time.Time
+	running := []tools.ShellInfo{{ID: "bg1", Command: "npm run dev", Port: ":3000", Running: true, Started: time.Now()}}
+	a := &Agent{Shells: func(t time.Time) []tools.ShellInfo { since = append(since, t); return running }}
+	before := time.Now()
+	runWith(t, a, assistant(text("done")), assistant(text("The dev server stays on for you.")))
+	r := reminders(a.Messages)
+	if len(r) != 1 || !strings.Contains(r[0], "still running: bg1 `npm run dev` (running 0s, :3000)") || !strings.Contains(r[0], "kill: true") {
+		t.Fatalf("reminders %q", r)
+	}
+	if len(since) != 1 || since[0].Before(before) {
+		t.Fatalf("asked since %v", since)
+	}
+	// An answer that names the shell or its port left it on purpose.
+	for _, answer := range []string{"Open http://localhost:3000/ to try it.", "The server runs on port 3000.", "bg1 keeps running."} {
+		a = &Agent{Shells: func(time.Time) []tools.ShellInfo { return running }}
+		runWith(t, a, assistant(text(answer)))
+		if r := reminders(a.Messages); len(r) != 0 {
+			t.Fatalf("%q: reminded %q", answer, r)
+		}
+	}
+	// Nothing running: nothing said.
+	running = nil
+	a = &Agent{Shells: func(time.Time) []tools.ShellInfo { return running }}
+	runWith(t, a, assistant(text("done")))
+	if r := reminders(a.Messages); len(r) != 0 {
+		t.Fatalf("reminder with no shells: %q", r)
+	}
+	// A subagent's stop when it finishes: no reminder.
+	a = &Agent{Subagent: true, Shells: func(time.Time) []tools.ShellInfo {
+		return []tools.ShellInfo{{ID: "bg1", Command: "x", Running: true}}
+	}}
+	runWith(t, a, assistant(text("report")))
+	if a.LastText() != "report" {
+		t.Fatal("subagent reminded")
+	}
+}
+
+// A subagent's background shells stop when it finishes, and its report
+// says so; the session's go on. Its worktree's shells too.
+func TestSubagentShellsStopWithIt(t *testing.T) {
+	env := &tools.Env{Cwd: t.TempDir()}
+	defer env.KillShells()
+	parent := &Agent{UI: nopUI{}}
+	parent.Provider = providerFunc(func(req *llm.Request) *llm.Message {
+		last := req.Messages[len(req.Messages)-1]
+		if last.Role == llm.RoleUser && last.Blocks[0].Type == llm.BlockText {
+			return &llm.Message{Role: llm.RoleAssistant, StopReason: "tool_use", Blocks: []llm.Block{
+				call("b1", "bash", `{"command":"sleep 60","background":true}`)}}
+		}
+		return &llm.Message{Role: llm.RoleAssistant, StopReason: "end_turn", Blocks: []llm.Block{text("started a server")}}
+	})
+	task := &TaskTool{Parent: parent, Env: env}
+	out, err := task.Run(context.Background(), json.RawMessage(`{"tasks":[{"name":"Srv","prompt":"p"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "[background shells it left running were stopped: bg1 (sleep 60)]") || env.RunningShells() != 0 {
+		t.Fatalf("report %q, running %d", out, env.RunningShells())
 	}
 }
 

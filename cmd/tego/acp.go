@@ -406,6 +406,7 @@ func mergeMCP(own []mcp.ServerConfig, servers []acp.MCPServer) []mcp.ServerConfi
 
 func (sess *acpSession) close() {
 	sess.cancelPrompt()
+	sess.env.KillShells() // a dev server must not outlive the thread
 	if sess.mcp != nil {
 		sess.mcp.Close()
 	}
