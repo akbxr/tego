@@ -77,7 +77,7 @@ type server struct {
 
 // Start connects to all enabled servers concurrently in the background and
 // returns immediately. stdio servers run in cwd (or their own cwd) and log
-// stderr to <logDir>/mcp-<name>.log.
+// stderr to <logDir>/mcp-<name>.log (1 MB at most, then .log.1).
 func Start(cfgs []ServerConfig, cwd, logDir string) *Manager {
 	return StartWith(cfgs, cwd, logDir, Options{})
 }

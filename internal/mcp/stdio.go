@@ -28,9 +28,12 @@ type stdioTransport struct {
 	closing atomic.Bool
 	once    sync.Once
 
-	log      *os.File // nil when logDir is empty
-	logPath  string
-	logStart int64
+	log     *serverLog // nil when logDir is empty
+	logPath string
+	stderr  *os.File // the server's stderr, read into log
+	stderrW *os.File // its other end, ours until the server starts
+	// copied is closed when all the server's stderr is in the log.
+	copied chan struct{}
 }
 
 func startStdio(c *conn, cfg ServerConfig, cwd, logDir string) (*stdioTransport, error) {
@@ -55,14 +58,17 @@ func startStdio(c *conn, cfg ServerConfig, cwd, logDir string) (*stdioTransport,
 
 	if logDir != "" {
 		if err := os.MkdirAll(logDir, 0o700); err == nil {
-			t.logPath = filepath.Join(logDir, "mcp-"+sanitize(cfg.Name)+".log")
-			if f, err := os.OpenFile(t.logPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600); err == nil {
-				t.log = f
-				if st, err := f.Stat(); err == nil {
-					t.logStart = st.Size()
+			path := filepath.Join(logDir, "mcp-"+sanitize(cfg.Name)+".log")
+			if l, err := openServerLog(path, logLimit); err == nil {
+				if r, w, err := os.Pipe(); err == nil {
+					t.log, t.logPath, t.stderr, t.stderrW = l, path, r, w
+					fmt.Fprintf(l, "--- %s start: %s %s\n", time.Now().Format(time.RFC3339), cfg.Command, strings.Join(cfg.Args, " "))
+					// Our own pipe, read by our goroutine: Wait doesn't wait
+					// on it, as with stdout.
+					cmd.Stderr = w
+				} else {
+					l.Close()
 				}
-				fmt.Fprintf(f, "--- %s start: %s %s\n", time.Now().Format(time.RFC3339), cfg.Command, strings.Join(cfg.Args, " "))
-				cmd.Stderr = f // *os.File: no copy goroutine
 			}
 		}
 	}
@@ -90,6 +96,15 @@ func startStdio(c *conn, cfg ServerConfig, cwd, logDir string) (*stdioTransport,
 	}
 	inR.Close()
 	outW.Close()
+	if t.stderr != nil {
+		t.stderrW.Close()
+		t.stderrW = nil
+		t.copied = make(chan struct{})
+		go func() {
+			_, _ = io.Copy(t.log, t.stderr)
+			close(t.copied)
+		}()
+	}
 	t.cmd, t.stdin, t.stdout = cmd, inW, outR
 	c.t = t
 
@@ -173,10 +188,8 @@ func (t *stdioTransport) line(c *conn, line []byte) {
 	if line[0] != '{' && line[0] != '[' {
 		// Stray output on stdout (servers sometimes log there): keep it
 		// out of the protocol but preserve it in the log.
-		if t.log != nil {
-			t.log.Write([]byte("stdout: "))
-			t.log.Write(line)
-			t.log.Write([]byte{'\n'})
+		if t.log != nil { // one write: stderr lines don't come between
+			t.log.Write(append(append([]byte("stdout: "), line...), '\n'))
 		}
 		return
 	}
@@ -208,9 +221,17 @@ func (t *stdioTransport) exitErr() error {
 
 // stderrTail returns the last non-empty stderr line written by this run.
 func (t *stdioTransport) stderrTail() string {
-	if t.logPath == "" {
+	if t.log == nil {
 		return ""
 	}
+	if t.copied != nil { // what the server wrote last may still be in the pipe
+		select {
+		case <-t.copied:
+		case <-time.After(500 * time.Millisecond): // a grandchild holds it open
+		}
+	}
+	t.log.sync()
+	start := t.log.runStart()
 	f, err := os.Open(t.logPath)
 	if err != nil {
 		return ""
@@ -220,7 +241,7 @@ func (t *stdioTransport) stderrTail() string {
 	if err != nil {
 		return ""
 	}
-	start := max(t.logStart, st.Size()-1024)
+	start = max(start, st.Size()-1024)
 	buf := make([]byte, st.Size()-start)
 	if _, err := f.ReadAt(buf, start); err != nil && err != io.EOF {
 		return ""
@@ -262,6 +283,12 @@ func (t *stdioTransport) close() {
 }
 
 func (t *stdioTransport) closeLog() {
+	if t.stderrW != nil { // not started
+		t.stderrW.Close()
+	}
+	if t.stderr != nil {
+		t.stderr.Close() // a grandchild may still hold the other end
+	}
 	if t.log != nil {
 		t.log.Close()
 	}
