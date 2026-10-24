@@ -390,6 +390,24 @@ func (a *app) redrawConversation() {
 	a.replay()
 }
 
+// redrawIfResized redraws the conversation at the terminal's new width
+// when it was resized during the turn: rows already printed were broken
+// for the old width, so the terminal's reflow cuts each one in two. The
+// UI calls it before each streamed delta, on the agent's goroutine: no
+// tool runs then, and the history holds everything shown but the response
+// being streamed, which is shown again after it.
+func (a *app) redrawIfResized() {
+	if !a.redrawWanted.Swap(false) {
+		return
+	}
+	live := a.ui.takeLive()
+	a.ui.Finish()
+	a.tui.Clear()
+	a.banner()
+	a.replayMessages()
+	a.ui.showLive(live)
+}
+
 func (a *app) sessionID() string {
 	if a.ag.Session == nil {
 		return "(none)"

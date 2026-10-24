@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -56,6 +57,7 @@ type termUI struct {
 	atBOL     bool             // diag cursor at beginning of line
 	quiet     bool             // print mode: suppress thinking and tool previews
 	md        *markdown.Stream // nil when out is not a terminal: raw text
+	think     *markdown.Stream // thinking in the TUI; nil: raw
 	width     func() int
 	cwd, home string                        // for shortening paths in tool-call lines
 	promptGap bool                          // a prompt block was just printed; see AfterPrompt
@@ -86,6 +88,19 @@ type termUI struct {
 	// height is the content area's height (nil outside the TUI). It takes
 	// the TUI's lock: never call it while the TUI draws.
 	height func() int
+
+	// live is what the response being streamed has shown so far, guarded
+	// by mu. beforeStream runs before each of its deltas, on the agent's
+	// goroutine: a resize mid-turn redraws the conversation there and
+	// shows live again (app.redrawIfResized).
+	live         []liveSeg
+	beforeStream func()
+}
+
+// liveSeg is a run of streamed text or thinking.
+type liveSeg struct {
+	thinking bool
+	text     string
 }
 
 // newPrintUI writes the answer to stdout and everything else to stderr,
@@ -109,6 +124,8 @@ func newTUIUI(w io.Writer, width, height func() int) *termUI {
 	c := colorPalette()
 	u := &termUI{out: w, diag: w, c: c, dc: c, atBOL: true, width: width, height: height}
 	u.md = markdown.NewStream(w, markdown.Options{Width: width, Height: height, Color: c.reset != ""})
+	// Thinking is plain, dim and italic, and word-wrapped like the answer.
+	u.think = markdown.NewStream(styled{w, c.dim + c.italic, c.reset}, markdown.Options{Width: width, Height: height})
 	return u
 }
 
@@ -135,7 +152,9 @@ func (u *termUI) endStream() {
 			fmt.Fprintln(u.out)
 		}
 	case modeThinking:
-		if !u.atBOL {
+		if u.think != nil {
+			u.think.Close() // its last line ends with a newline
+		} else if !u.atBOL {
 			fmt.Fprintln(u.diag)
 		}
 	}
@@ -144,9 +163,25 @@ func (u *termUI) endStream() {
 }
 
 func (u *termUI) OnText(d string) {
+	if h := u.beforeStream; h != nil {
+		h()
+	}
+	u.streamed(len(d))
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	u.streamed(len(d))
+	u.recordLive(false, d)
+	u.textLocked(d)
+}
+
+// ReplayText shows text from the history: not counted for tok/s, not
+// recorded as live.
+func (u *termUI) ReplayText(d string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.textLocked(d)
+}
+
+func (u *termUI) textLocked(d string) {
 	if u.mode != modeText {
 		u.promptGap = false // text already opens with a blank line
 		u.endStream()
@@ -171,9 +206,27 @@ func (u *termUI) OnThinking(d string) {
 	if u.quiet {
 		return
 	}
+	if h := u.beforeStream; h != nil {
+		h()
+	}
+	u.streamed(len(d))
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	u.streamed(len(d))
+	u.recordLive(true, d)
+	u.thinkingLocked(d)
+}
+
+// ReplayThinking shows thinking from the history, like ReplayText.
+func (u *termUI) ReplayThinking(d string) {
+	if u.quiet {
+		return
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.thinkingLocked(d)
+}
+
+func (u *termUI) thinkingLocked(d string) {
 	if u.mode != modeThinking {
 		u.endStream()
 		u.mode = modeThinking
@@ -182,9 +235,60 @@ func (u *termUI) OnThinking(d string) {
 	if d == "" {
 		return
 	}
-	// Style every chunk: a pinned footer may redraw (and reset SGR) between writes.
-	fmt.Fprint(u.diag, u.dc.dim+u.dc.italic+d+u.dc.reset)
+	if u.think != nil {
+		u.think.Write(d) // word-wrapped, styled by its writer
+	} else {
+		// Style every chunk: a pinned footer may redraw (and reset SGR) between writes.
+		fmt.Fprint(u.diag, u.dc.dim+u.dc.italic+d+u.dc.reset)
+	}
 	u.atBOL = strings.HasSuffix(d, "\n")
+}
+
+// styled writes each chunk in its own style: a pinned footer may redraw
+// (and reset SGR) between writes.
+type styled struct {
+	w          io.Writer
+	start, end string
+}
+
+func (s styled) Write(p []byte) (int, error) {
+	if _, err := io.WriteString(s.w, s.start+string(p)+s.end); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+func (u *termUI) recordLive(thinking bool, d string) {
+	if n := len(u.live); n > 0 && u.live[n-1].thinking == thinking {
+		u.live[n-1].text += d
+		return
+	}
+	u.live = append(u.live, liveSeg{thinking, d})
+}
+
+// takeLive is what the response being streamed has shown so far.
+func (u *termUI) takeLive() []liveSeg {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return slices.Clone(u.live)
+}
+
+// resetLive starts a response: nothing streamed yet.
+func (u *termUI) resetLive() {
+	u.mu.Lock()
+	u.live = nil
+	u.mu.Unlock()
+}
+
+// showLive shows segs again, after a redraw.
+func (u *termUI) showLive(segs []liveSeg) {
+	for _, s := range segs {
+		if s.thinking {
+			u.ReplayThinking(s.text)
+		} else {
+			u.ReplayText(s.text)
+		}
+	}
 }
 
 func (u *termUI) OnToolStart(string) {
@@ -293,6 +397,7 @@ func (u *termUI) OnTurnEnd(m *llm.Message) {
 	u.endWrite() // the response is complete, or cut off: nothing is being written
 	u.mu.Lock()
 	u.endStream()
+	u.live = nil // in the history now
 	hook := u.onTurnEnd
 	u.mu.Unlock()
 	u.rateMu.Lock()

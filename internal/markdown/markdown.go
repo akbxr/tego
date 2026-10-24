@@ -1,9 +1,11 @@
 // Package markdown renders assistant markdown for the terminal, either as a
 // whole document (Render) or as text arriving in arbitrary deltas (Stream).
 //
-// Rendering is line based: paragraphs are never reflowed (the terminal soft
-// wraps) and inline styles do not span lines. Tables and mermaid diagrams are
-// rendered once complete.
+// Rendering is line based: a source line is never joined with the next, and
+// inline styles do not span lines. Paragraphs, headings, list items and
+// quotes are word-wrapped to the width (a terminal UI that keeps margins
+// breaks long rows itself, inside words); code is not. Tables and mermaid
+// diagrams are rendered once complete.
 package markdown
 
 import (
@@ -84,6 +86,12 @@ type machine struct {
 	para    bool  // previous line was not blank
 	indCode bool  // inside an indented code block
 
+	// The line being rendered starts at buf[row]; its continuation rows
+	// start with hang, hangW columns wide (endRow).
+	row   int
+	hang  []byte
+	hangW int
+
 	buf   []byte
 	items []item
 	tbl   tableState
@@ -117,6 +125,7 @@ func (m *machine) line(l string) {
 			m.out.hold()
 			return
 		}
+		m.beginRow()
 		m.paragraph(m.held[0], 0)
 		m.clearHeld()
 	case heldTable:
@@ -142,6 +151,7 @@ func (m *machine) line(l string) {
 func (m *machine) end() {
 	switch m.kind {
 	case heldCand:
+		m.beginRow()
 		m.paragraph(m.held[0], 0)
 	case heldTable:
 		m.table()
@@ -168,8 +178,24 @@ func (m *machine) clearHeld() {
 	m.kind = heldNone
 }
 
+// beginRow starts rendering a line at the end of m.buf.
+func (m *machine) beginRow() {
+	m.row = len(m.buf)
+	m.hang, m.hangW = m.hang[:0], 0
+}
+
+// endRow word-wraps the line begun at m.row and ends it.
+func (m *machine) endRow() {
+	if w := m.w(); visWidth(m.buf[m.row:]) > w {
+		row := append([]byte(nil), m.buf[m.row:]...)
+		m.buf = wrapRow(m.buf[:m.row], row, m.hang, m.hangW, w)
+	}
+	m.buf = append(m.buf, '\n')
+}
+
 // block renders l into m.buf, or starts holding it and returns true.
 func (m *machine) block(l string) bool {
+	m.beginRow()
 	if m.fence != 0 {
 		if m.closes(l) {
 			m.fence = 0
@@ -248,7 +274,7 @@ func (m *machine) leaf(l string, ind, p int, quoted bool) bool {
 			}
 			m.items = parseInline(m.items, text, 0, "")
 			m.buf, _ = renderItems(m.buf, m.items, base, m.color)
-			m.buf = append(m.buf, '\n')
+			m.endRow()
 			return true
 		}
 		if isRule(s) {
@@ -270,6 +296,7 @@ func (m *machine) leaf(l string, ind, p int, quoted bool) bool {
 	if !quoted {
 		depth = m.listDepth(ind)
 	}
+	mark := len(m.buf)
 	m.buf = append(m.buf, l[:p]...)
 	box := ""
 	if len(rest) >= 3 && rest[0] == '[' && rest[2] == ']' && (len(rest) == 3 || rest[3] == ' ') {
@@ -298,13 +325,17 @@ func (m *machine) leaf(l string, ind, p int, quoted bool) bool {
 		m.colored(c, box)
 		m.buf = append(m.buf, ' ')
 	}
+	// Its text wraps under itself, not under the marker.
+	w := visWidth(m.buf[mark:])
+	m.hang = appendSpaces(m.hang, w)
+	m.hangW += w
 	base := style(0)
 	if quoted {
 		base = stItalic
 	}
 	m.items = parseInline(m.items[:0], rest, 0, "")
 	m.buf, _ = renderItems(m.buf, m.items, base, m.color)
-	m.buf = append(m.buf, '\n')
+	m.endRow()
 	return true
 }
 
@@ -322,7 +353,10 @@ func (m *machine) quote(s string) {
 	if s == "" {
 		prefix = prefix[:len(prefix)-1]
 	}
+	bars := len(m.buf)
 	m.dimText(prefix)
+	m.hang = append(m.hang, m.buf[bars:]...) // continuation rows keep the bars
+	m.hangW += textWidth(prefix)
 	if s == "" {
 		m.buf = append(m.buf, '\n')
 		return
@@ -346,7 +380,7 @@ func (m *machine) listDepth(ind int) int {
 func (m *machine) paragraph(l string, base style) {
 	m.items = parseInline(m.items[:0], l, 0, "")
 	m.buf, _ = renderItems(m.buf, m.items, base, m.color)
-	m.buf = append(m.buf, '\n')
+	m.endRow()
 }
 
 func (m *machine) code(l string) {

@@ -280,6 +280,12 @@ func (a *app) resumeAndShow(path string) {
 // paths as a live turn: prompts, thinking, markdown answers, tool calls and
 // their result previews. Nothing is clipped.
 func (a *app) replay() {
+	a.replayMessages()
+	a.ui.Finish()
+	fmt.Fprintln(a.out)
+}
+
+func (a *app) replayMessages() {
 	calls := map[string]llm.Block{} // tool_use id -> call, to label results
 	for _, m := range a.ag.Messages {
 		for _, b := range m.Blocks {
@@ -306,9 +312,9 @@ func (a *app) replay() {
 			case b.Type == llm.BlockImage:
 				a.ui.Dim("  [image]")
 			case b.Type == llm.BlockThinking && b.Text != "":
-				a.ui.OnThinking(b.Text)
+				a.ui.ReplayThinking(b.Text)
 			case b.Type == llm.BlockText:
-				a.ui.OnText(b.Text)
+				a.ui.ReplayText(b.Text)
 			case b.Type == llm.BlockToolUse:
 				calls[b.ID] = b
 				a.ui.OnToolCall(b.Name, b.Input)
@@ -318,8 +324,6 @@ func (a *app) replay() {
 			}
 		}
 	}
-	a.ui.Finish()
-	fmt.Fprintln(a.out)
 }
 
 func ago(t time.Time) string {

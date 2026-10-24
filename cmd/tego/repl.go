@@ -72,7 +72,6 @@ func (a *app) repl(initial string) error {
 	}
 	var lastInterrupt, lastEsc, lastLeft time.Time
 	var resized <-chan time.Time
-	redrawPending := false
 	// While background tasks run and nothing else animates the footer, their
 	// rows still tick.
 	bgTick := time.NewTicker(time.Second)
@@ -138,8 +137,9 @@ func (a *app) repl(initial string) error {
 				}
 			case lineedit.EvResize:
 				// Text already printed keeps the old width (rows are broken by
-				// hand for the margins, frames and prompt blocks); re-render the
-				// conversation at the new width once the drag settles.
+				// hand for the margins, frames and prompt blocks), and the
+				// terminal's reflow cuts each in two; re-render the conversation
+				// at the new width once the drag settles.
 				resized = time.After(250 * time.Millisecond)
 			case lineedit.EvLeft:
 				// Left twice on an empty editor: look at the subagents.
@@ -190,9 +190,12 @@ func (a *app) repl(initial string) error {
 		case <-resized:
 			resized = nil
 			if a.cancel != nil {
-				redrawPending = true // don't disturb a streaming turn; redraw when it ends
+				// Mid-turn the agent's goroutine redraws, before the next
+				// streamed delta, or the turn's end does.
+				a.redrawWanted.Store(true)
 				continue
 			}
+			a.redrawWanted.Store(false)
 			a.redrawConversation()
 		case err := <-done:
 			a.finishJob(err)
@@ -208,8 +211,7 @@ func (a *app) repl(initial string) error {
 			if planned && err == nil && a.pendingCount() == 0 && a.plan.Load() && a.ag.LastText() != "" {
 				a.offerPlan(done)
 			}
-			if redrawPending {
-				redrawPending = false
+			if a.redrawWanted.Swap(false) {
 				a.redrawConversation()
 			}
 			for a.cancel == nil {
@@ -326,6 +328,7 @@ func (a *app) startJob(done chan<- error, fn func(ctx context.Context) error) {
 	_, rev := a.ag.TodoState()
 	a.todoRevAtStart.Store(int64(rev)) // a done list shows only if this job updates it
 	a.ui.resetRate()
+	a.ui.resetLive()
 	a.status.update(func(s *statusInfo) { s.busy, s.busySince = true, a.jobStart })
 	a.tui.SetBusy(true) // Alt+Enter now queues a follow-up
 	a.tui.Redraw()
