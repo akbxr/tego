@@ -109,14 +109,18 @@ func (a *Agent) keepCut() int {
 // number of compactions.
 const summaryPrompt = `You are compacting a coding-agent conversation so the work can continue in a fresh context window. The agent will see only your summary and the most recent messages. Write a dense, factual handoff of the transcript below with exactly these sections (write "none" for an empty one):
 
-## User goals and instructions
+` + summarySections
+
+// summarySections are the handoff's sections and rules, for both ways of
+// asking for it (a transcript, or the conversation's next turn).
+const summarySections = `## User goals and instructions
 What the user wants now, and every explicit instruction, constraint or preference that still holds. The user's messages are appended word for word after your summary, so do not copy them out: say what they add up to, and which earlier requests or instructions were later changed, withdrawn or already answered.
 
 ## Completed
 Work done so far and the key decisions, each with its reason.
 
 ## Current state
-What was in progress at the end of the transcript, exactly where it stopped.
+What was in progress at the end of the summarised part, exactly where it stopped.
 
 ## Key facts
 What was learned that is still needed: code structure, APIs, commands that work, causes of errors.
@@ -133,7 +137,7 @@ Bugs, failing checks, open questions and anything the user still has to answer.
 ## Next steps
 The concrete steps left to finish, in order.
 
-Rules: keep exact names, paths, numbers, versions and error messages; do not invent anything; mark what is uncertain. If the transcript starts with an earlier summary, merge it: keep everything in it that still holds and drop only what is done and no longer matters. Omit pleasantries and tool-call mechanics. Output only the summary.`
+Rules: keep exact names, paths, numbers, versions and error messages; do not invent anything; mark what is uncertain. If the conversation starts with an earlier summary, merge it: keep everything in it that still holds and drop only what is done and no longer matters. Omit pleasantries and tool-call mechanics. Output only the summary.`
 
 // filesHeading lists the files the agent changed, gathered from its edit and
 // write calls rather than left to the summary, and carried over from one
@@ -202,23 +206,36 @@ func (a *Agent) Compact(ctx context.Context, focus string) error {
 	if cut := a.keepCut(); cut > 0 {
 		head, tail = a.Messages[:cut], a.Messages[cut:]
 	}
-	instr := summaryPrompt
-	if focus != "" {
-		instr += "\n\nFocus especially on: " + focus
-	}
-	req := &llm.Request{
-		Model: a.Model, System: instr, SessionID: a.SessionID, Class: llm.ClassCompaction,
-		Messages: []llm.Message{{Role: llm.RoleUser, Blocks: []llm.Block{{Type: llm.BlockText,
-			Text: "<transcript>\n" + a.fitTranscript(renderTranscript(head)) + "\n</transcript>\n\nWrite the handoff summary now."}}}},
-	}
-	msg, err := a.Provider.Stream(ctx, req, func(llm.Event) {})
+	transcript := a.fitTranscript(renderTranscript(head))
+	// The conversation's next turn reads its prompt cache and sees all of
+	// it; a transcript is the way when that can't be done or costs more.
+	summary, how, why, err := a.cachedSummary(ctx, tail, focus, transcript)
 	if err != nil {
 		return err
 	}
-	a.addUsage(msg.Usage)
-	summary := strings.TrimSpace(textOf(msg))
 	if summary == "" {
-		return errors.New("model returned an empty summary")
+		instr := summaryPrompt
+		if focus != "" {
+			instr += "\n\nFocus especially on: " + focus
+		}
+		req := &llm.Request{
+			Model: a.Model, System: instr, SessionID: a.SessionID, Class: llm.ClassCompaction,
+			Messages: []llm.Message{{Role: llm.RoleUser, Blocks: []llm.Block{{Type: llm.BlockText,
+				Text: "<transcript>\n" + transcript + "\n</transcript>\n\nWrite the handoff summary now."}}}},
+		}
+		msg, err := a.Provider.Stream(ctx, req, func(llm.Event) {})
+		if err != nil {
+			return err
+		}
+		a.addUsage(msg.Usage)
+		summary = strings.TrimSpace(textOf(msg))
+		if summary == "" {
+			return errors.New("model returned an empty summary")
+		}
+		how = "from a transcript"
+		if why != "" {
+			how += " (" + why + ")"
+		}
 	}
 	// All of the history, kept tail included: the list says "so far".
 	if files := changedFiles(a.Messages); len(files) > 0 {
@@ -260,6 +277,7 @@ func (a *Agent) Compact(ctx context.Context, focus string) error {
 		before = a.EstimateContext()
 	}
 	a.Messages = next
+	a.sent = sentRequest{}
 	// Indices into the old history are meaningless now.
 	a.cp, a.pendingRewind, a.elideFloor, a.cleared, a.clearMark = checkpointState{}, nil, 0, 0, 0
 	a.clearUses = 0
@@ -268,7 +286,7 @@ func (a *Agent) Compact(ctx context.Context, focus string) error {
 	if err := a.Session.Compacted(next); err != nil {
 		a.UI.OnInfo("session write failed: " + err.Error())
 	}
-	a.UI.OnInfo(fmt.Sprintf("compacted ~%.1fk → ~%.1fk tokens (kept %d recent messages)", float64(before)/1000, float64(a.LastCtx)/1000, len(tail)))
+	a.UI.OnInfo(fmt.Sprintf("compacted ~%.1fk → ~%.1fk tokens (kept %d recent messages; summary %s)", float64(before)/1000, float64(a.LastCtx)/1000, len(tail), how))
 	return nil
 }
 

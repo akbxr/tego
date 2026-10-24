@@ -119,9 +119,12 @@ type Agent struct {
 	// lastReply is when the provider last answered (from the session on
 	// resume): after the cache TTL the next request misses the cache.
 	lastReply time.Time
-	clock     func() time.Time // tests; nil = time.Now
-	stuck     stuckState
-	stop      stopState
+	// sent is the last request that got a reply, which a compaction can
+	// repeat to read its prompt cache.
+	sent  sentRequest
+	clock func() time.Time // tests; nil = time.Now
+	stuck stuckState
+	stop  stopState
 
 	cp            checkpointState
 	pendingRewind *rewindReq // set by the rewind tool, applied after the tool batch
@@ -346,6 +349,7 @@ func (a *Agent) loop(ctx context.Context) error {
 			Thinking: a.Thinking, SessionID: a.SessionID, LongCache: a.LongCache, Class: class,
 			ClearToolResults: a.clearPolicy(), Fast: a.Fast, MaxTokens: a.MaxOutputTokens,
 		}
+		sent := a.noteSent(req)
 		msg, err := a.Provider.Stream(ctx, req, a.onEvent)
 		if err == nil && req.ClearToolResults != nil {
 			msg.ClearTrigger = req.ClearToolResults.TriggerToolUses
@@ -370,6 +374,7 @@ func (a *Agent) loop(ctx context.Context) error {
 		}
 		a.addUsage(msg.Usage)
 		a.lastReply = a.now()
+		a.sent = sent.answered(a.lastReply, msg.Usage)
 		if n := msg.Usage.ContextTokens(); n > 0 {
 			a.LastCtx = n
 		}

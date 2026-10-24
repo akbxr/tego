@@ -222,3 +222,57 @@ func TestOneOffRequestsDoNotCacheTheirMessages(t *testing.T) {
 		}
 	}
 }
+
+// A compaction that reads the conversation's cache repeats the last request
+// up to its message breakpoint and puts its own breakpoint there, not on the
+// new instruction at the end.
+func TestCachedCompactionReadsTheLastRequestsBreakpoint(t *testing.T) {
+	p := &anthropicProvider{name: "anthropic", base: "x", key: "k"}
+	prev := []Message{
+		{Role: RoleUser, Blocks: []Block{{Type: BlockText, Text: "fix the bug"}}},
+		{Role: RoleAssistant, Blocks: []Block{{Type: BlockText, Text: "looking"}, {Type: BlockToolUse, ID: "t1", Name: "read", Input: json.RawMessage(`{"path":"a.go"}`)}}},
+		{Role: RoleUser, Blocks: []Block{{Type: BlockToolResult, ToolUseID: "t1", Content: "package a"}, {Type: BlockText, Text: "<system-reminder>x</system-reminder>"}}},
+	}
+	tools := []Tool{{Name: "read", Description: "r", Schema: json.RawMessage(`{"type":"object"}`)}}
+	type body struct {
+		System   json.RawMessage   `json:"system"`
+		Tools    json.RawMessage   `json:"tools"`
+		Messages []json.RawMessage `json:"messages"`
+	}
+	enc := func(req *Request) body {
+		raw, err := p.buildBody(req, "2.1.280", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var b body
+		if err := json.Unmarshal(raw, &b); err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	last := enc(&Request{Model: "claude-opus-5-5", System: "s", Tools: tools, Messages: prev, LongCache: true})
+	more := append(append([]Message(nil), prev...),
+		Message{Role: RoleAssistant, Blocks: []Block{{Type: BlockToolUse, ID: "t2", Name: "read", Input: json.RawMessage(`{"path":"b.go"}`)}}},
+		Message{Role: RoleUser, Blocks: []Block{{Type: BlockToolResult, ToolUseID: "t2", Content: "package b"}}},
+		Message{Role: RoleUser, Blocks: []Block{{Type: BlockText, Text: "summarise"}}})
+	got := enc(&Request{Model: "claude-opus-5-5", System: "s", Tools: tools, Messages: more, LongCache: true, Class: ClassCompaction, CachePrefix: len(prev)})
+	if string(got.System) != string(last.System) || string(got.Tools) != string(last.Tools) {
+		t.Fatal("system or tools differ")
+	}
+	for i := range last.Messages {
+		if string(got.Messages[i]) != string(last.Messages[i]) {
+			t.Fatalf("message %d differs:\n%s\n%s", i, got.Messages[i], last.Messages[i])
+		}
+	}
+	if len(got.Messages) != len(last.Messages)+2 {
+		t.Fatalf("%d messages", len(got.Messages))
+	}
+	for _, m := range got.Messages[len(last.Messages):] {
+		if strings.Contains(string(m), "cache_control") {
+			t.Fatalf("a breakpoint after the cached prefix: %s", m)
+		}
+	}
+	if !strings.Contains(string(last.Messages[len(last.Messages)-1]), "cache_control") {
+		t.Fatal("the last request had no message breakpoint")
+	}
+}

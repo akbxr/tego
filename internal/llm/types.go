@@ -202,6 +202,12 @@ type Request struct {
 	// ClearToolResults asks providers whose ClearsToolResults reports true
 	// to clear old tool results server-side; nil = never.
 	ClearToolResults *ClearPolicy
+	// CachePrefix > 0 says the first CachePrefix messages, and everything
+	// before them, repeat an earlier request byte for byte (a compaction
+	// that reads the conversation's cache). Providers with explicit cache
+	// breakpoints put the message breakpoint where that request had it, so
+	// this one reads it exactly and writes nothing new.
+	CachePrefix int
 }
 
 // ClearPolicy is server-side clearing of old tool results. Reading the

@@ -474,13 +474,17 @@ func (p *anthropicProvider) buildBodySpeed(req *Request, version string, t *ccTu
 	tools, deferred := p.anthropicTools(req, oauth, cc)
 	r.Tools = tools
 	msgCC := cc
-	if req.Class == ClassCompaction || req.Class == ClassAuxiliary {
+	if (req.Class == ClassCompaction || req.Class == ClassAuxiliary) && req.CachePrefix == 0 {
 		// Sent once: caching their messages (a compaction's whole transcript)
 		// costs 1.25-2x input for a write nothing reads (measured: a 161k
 		// transcript went to the cache).
 		msgCC = nil
 	}
-	r.Messages = anthropicMessages(req.Messages, oauth, msgCC, deferred, nil)
+	if req.CachePrefix > 0 && req.CachePrefix < len(req.Messages) {
+		r.Messages = anthropicMessagesCachedTo(req.Messages, req.CachePrefix, oauth, msgCC, deferred)
+	} else {
+		r.Messages = anthropicMessages(req.Messages, oauth, msgCC, deferred, nil)
+	}
 
 	r.Thinking, r.OutputConfig = anthropicThinking(req.Model, req.Thinking)
 	r.MaxTokens = anthropicMaxTokens(req.Model, req.MaxTokens, req.Thinking, r.Thinking)
@@ -617,6 +621,25 @@ func anthropicMessages(msgs []Message, oauth bool, cc *aCacheControl, deferred m
 			c := out[i].Content
 			c[len(c)-1].CacheControl = cc
 			break
+		}
+	}
+	return out
+}
+
+// anthropicMessagesCachedTo encodes msgs with the one message breakpoint
+// where a request of just msgs[:prefix] had it, on the last block those
+// messages make, rather than at the end: the request reads that cache
+// entry exactly, and what follows is billed as plain input, not written
+// to a cache nothing will read.
+func anthropicMessagesCachedTo(msgs []Message, prefix int, oauth bool, cc *aCacheControl, deferred map[string]bool) []aMessage {
+	var origins [][]BlockRef
+	out := anthropicMessages(msgs, oauth, nil, deferred, &origins)
+	for i := len(out) - 1; i >= 0; i-- {
+		for k := len(out[i].Content) - 1; k >= 0; k-- {
+			if k < len(origins[i]) && origins[i][k].Msg < prefix {
+				out[i].Content[k].CacheControl = cc
+				return out
+			}
 		}
 	}
 	return out
