@@ -50,6 +50,9 @@ type Env struct {
 	Files TextFiles
 	// Terminal, when set, runs bash commands (an editor's terminal).
 	Terminal Terminal
+	// LSP, when set, checks a file after edit and write with its language
+	// server; the syntax check runs when it does not answer.
+	LSP Checker
 
 	mu          sync.Mutex
 	seen        map[string][sha256.Size]byte // abs path -> content hash when a tool last read or wrote it

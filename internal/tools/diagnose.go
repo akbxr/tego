@@ -14,11 +14,12 @@ import (
 	"time"
 )
 
-// Post-edit diagnostics (Fan et al. 2026): after edit/write, a fast,
-// read-only syntax check runs on the file and its findings are appended to
-// the tool result, so a broken edit is fixed before a turn is spent on
-// builds or tests. Only syntax is checked (no type checking, no builds);
-// checkers that are not installed are skipped silently.
+// Post-edit diagnostics (Fan et al. 2026): after edit/write, the file's
+// language server (Env.LSP) reports its errors, types and imports
+// included, and they are appended to the tool result, so a broken edit is
+// fixed before a turn is spent on builds or tests. Without a server that
+// answers, a fast, read-only syntax check runs instead (no type checking,
+// no builds); checkers that are not installed are skipped silently.
 
 const diagnoseTimeout = 5 * time.Second
 
@@ -111,9 +112,23 @@ func haveTool(name string) bool {
 	return ok
 }
 
+// Checker checks a file's new content with a language server: a note on
+// its errors ("" when clean), and ok false when no server checked it.
+// before is the content the edit replaced ("" for a new file): errors
+// already there in other files are not the edit's.
+type Checker interface {
+	Check(ctx context.Context, path, before, after string, rel func(string) string) (note string, ok bool)
+}
+
 // diagnose returns a note to append to an edit/write result, or "" when the
-// file checks clean (or has no checker).
-func (e *Env) diagnose(ctx context.Context, p string) string {
+// file checks clean (or has no checker). before and after are the content
+// replaced and written.
+func (e *Env) diagnose(ctx context.Context, p, before, after string) string {
+	if e.LSP != nil {
+		if note, ok := e.LSP.Check(ctx, p, before, after, e.rel); ok {
+			return note
+		}
+	}
 	c, ok := checkerFor(p)
 	if !ok {
 		return ""

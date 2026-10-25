@@ -30,7 +30,7 @@ const bulkFiles = 3
 const (
 	shellWriteNote = "\n\n[note: this command changed source files from the shell. To change a file, use the edit tool: " +
 		"several changes go in one call (edits), and a file you only saw through grep or sed needs no read when each old_string matches exactly once. " +
-		"Shell edits skip the stale-file check, the syntax check and the diff the user sees.]"
+		"Shell edits skip the stale-file check, the error check and the diff the user sees.]"
 	shellWriteNotes = 2
 )
 

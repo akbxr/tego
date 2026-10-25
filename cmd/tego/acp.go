@@ -19,6 +19,7 @@ import (
 	"github.com/akbxr/tego/internal/auth"
 	"github.com/akbxr/tego/internal/config"
 	"github.com/akbxr/tego/internal/llm"
+	"github.com/akbxr/tego/internal/lsp"
 	"github.com/akbxr/tego/internal/mcp"
 	"github.com/akbxr/tego/internal/session"
 	"github.com/akbxr/tego/internal/stats"
@@ -251,6 +252,7 @@ type acpSession struct {
 	app  *app // the session's model choices (small model, web search)
 	env  *tools.Env
 	mcp  *mcp.Manager
+	lsp  *lsp.Manager // nil when off
 	plan atomic.Bool
 
 	mu        sync.Mutex
@@ -282,6 +284,11 @@ func (s *acpServer) open(cwd string, servers []acp.MCPServer, id string) (*acpSe
 	}
 	if s.caps.Terminal {
 		env.Terminal = sess
+	}
+	// The editor's own language servers report to the editor, not to the
+	// agent, so tego runs its own for the edits it makes.
+	if sess.lsp, _ = newLSP(cfg, cwd, nil); sess.lsp != nil {
+		env.LSP = sess.lsp
 	}
 	files := agent.LoadContextFiles(cfg.Dir, cwd)
 	skills := agent.LoadSkills(cfg.Dir, cwd)
@@ -407,6 +414,7 @@ func mergeMCP(own []mcp.ServerConfig, servers []acp.MCPServer) []mcp.ServerConfi
 func (sess *acpSession) close() {
 	sess.cancelPrompt()
 	sess.env.KillShells() // a dev server must not outlive the thread
+	sess.lsp.Close()
 	if sess.mcp != nil {
 		sess.mcp.Close()
 	}

@@ -133,7 +133,7 @@ func (t *editTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 	}
 	b.WriteByte('\n')
 	b.WriteString(strings.Join(hunks, "\n... next change\n"))
-	return strings.TrimSuffix(b.String(), "\n") + t.env.diagnose(ctx, p), nil
+	return strings.TrimSuffix(b.String(), "\n") + t.env.diagnose(ctx, p, content, cur), nil
 }
 
 // Preview is the diff an edit or write call would make, in the format of

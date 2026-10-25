@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -54,5 +55,57 @@ func TestWriteReportsSyntaxErrors(t *testing.T) {
 		case strings.Contains(out, dir):
 			t.Errorf("%s: note shows the absolute path: %q", c.path, out)
 		}
+	}
+}
+
+type fakeChecker struct {
+	ok    bool
+	texts []string // before|after
+}
+
+func (f *fakeChecker) Check(_ context.Context, path, before, after string, rel func(string) string) (string, bool) {
+	f.texts = append(f.texts, before+"|"+after)
+	if !f.ok {
+		return "", false
+	}
+	return "\n\nfake reports errors after this edit:\n" + rel(path) + ":1:1: no", true
+}
+
+// With a language server, its note replaces the syntax check and gets the
+// content written; without an answer the syntax check runs.
+func TestEditsGoToTheLanguageServer(t *testing.T) {
+	if _, err := exec.LookPath("gofmt"); err != nil {
+		t.Skip("gofmt not installed")
+	}
+	dir := t.TempDir()
+	lsp := &fakeChecker{ok: true}
+	env := &Env{Cwd: dir, LSP: lsp}
+	read, edit, write := &readTool{env}, &editTool{env}, &writeTool{env}
+
+	out, err := run(t, write, map[string]any{"path": "a.go", "content": "package x\n\nfunc F() {\n"})
+	if err != nil || !strings.HasSuffix(out, "\n\nfake reports errors after this edit:\na.go:1:1: no") || strings.Contains(out, "Syntax check") {
+		t.Fatalf("write: %q %v", out, err)
+	}
+	run(t, read, map[string]any{"path": "a.go"})
+	if _, err := run(t, edit, map[string]any{"path": "a.go", "old_string": "F() {", "new_string": "G() {"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(t, write, map[string]any{"path": "a.go", "content": "package y\n"}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"|package x\n\nfunc F() {\n", "package x\n\nfunc F() {\n|package x\n\nfunc G() {\n", "package x\n\nfunc G() {\n|package y\n"}
+	if strings.Join(lsp.texts, "\n--\n") != strings.Join(want, "\n--\n") {
+		t.Fatalf("server got %q", lsp.texts)
+	}
+	run(t, write, map[string]any{"path": "a.go", "content": "package x\n\nfunc G() {\n"})
+	// A subagent's worktree Env uses the same servers.
+	if env.At(dir).LSP != env.LSP {
+		t.Fatal("At dropped the language servers")
+	}
+
+	lsp.ok = false
+	out, _ = run(t, edit, map[string]any{"path": "a.go", "old_string": "G() {", "new_string": "H() {"})
+	if !strings.Contains(out, "Syntax check (gofmt)") {
+		t.Fatalf("no syntax check when the server did not answer: %q", out)
 	}
 }

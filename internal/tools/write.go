@@ -42,6 +42,7 @@ func (t *writeTool) Run(ctx context.Context, input json.RawMessage) (string, err
 	p := t.env.abs(in.Path)
 	mode := os.FileMode(0o644)
 	verb := "Created"
+	var before string // what the language server compares the errors with
 	if st, err := os.Stat(p); err == nil {
 		if st.IsDir() {
 			return "", fmt.Errorf("%s is a directory", in.Path)
@@ -53,6 +54,11 @@ func (t *writeTool) Run(ctx context.Context, input json.RawMessage) (string, err
 		if err := t.env.checkSeen(p, sum, "overwrite"); err != nil {
 			return "", err
 		}
+		if t.env.LSP != nil {
+			if old, err := t.env.readText(ctx, p); err == nil {
+				before = string(old)
+			}
+		}
 		mode = st.Mode().Perm()
 		verb = "Overwrote"
 	}
@@ -63,5 +69,5 @@ func (t *writeTool) Run(ctx context.Context, input json.RawMessage) (string, err
 		return "", err
 	}
 	t.env.markSeen(p, sha256.Sum256([]byte(*in.Content)))
-	return fmt.Sprintf("%s %s (%d bytes, %d lines)", verb, t.env.rel(p), len(*in.Content), countLines(*in.Content)) + t.env.diagnose(ctx, p), nil
+	return fmt.Sprintf("%s %s (%d bytes, %d lines)", verb, t.env.rel(p), len(*in.Content), countLines(*in.Content)) + t.env.diagnose(ctx, p, before, *in.Content), nil
 }

@@ -218,7 +218,7 @@ func (e *Env) At(dir string) *Env {
 	if e == nil {
 		return &Env{Cwd: dir}
 	}
-	return &Env{Cwd: dir, bg: e.reg()}
+	return &Env{Cwd: dir, LSP: e.LSP, bg: e.reg()}
 }
 
 type shellOwnerKey struct{}

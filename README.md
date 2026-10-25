@@ -46,7 +46,7 @@ tego -m openai-codex/gpt-5.6 -t high # model and thinking level
 
 **Guard rails.**
 - Permission modes decide which calls wait for you. `yolo`, the default, runs everything. `edits` asks before shell commands and MCP tools that may change things. `ask` asks before file edits too. Reads and read-only commands such as `go test` never ask. "Don't ask again" covers that kind of call for the rest of the session, but never `sudo`, inline scripts, command substitution or a redirect into a file. No stops the turn, subagents included. No with a note lets the agent go on with what you wrote. Set the mode with `/permissions`, `--permissions` or `"permissions"`. With `-p` nobody can answer, so those calls are refused.
-- After every edit tego runs a syntax check and shows the model what broke.
+- After every edit, the file's language server reports the errors the edit left, wrong types and missing imports included. Servers that check the whole project, such as gopls, also report the callers it broke in other files. tego uses gopls, TypeScript 7's `tsc --lsp`, typescript-language-server, basedpyright or pyright, rust-analyzer, clangd, sourcekit-lsp and zls. It installs none of them: it looks in the project's `node_modules/.bin` or `.venv/bin`, then on your PATH. A server starts at the first edit of a file it checks and stops after 10 minutes unused. Without one, tego runs a syntax check instead.
 - An edit fails if the file changed since the agent read it, and the error carries the current content.
 - `/undo` restores the files from before any prompt of the session. Snapshots live in their own git repository under `~/.tego/snapshots/`, so your `.git` stays untouched.
 - Plan mode, Shift+Tab or `/plan`, lets the agent read and propose a plan. Nothing changes until you approve it.
@@ -121,6 +121,17 @@ In my benchmarks, 3 runs per task, tego cost 44% less than oh-my-pi with Sonnet 
 
 `subagent_models` names more models for subagents, from other subscriptions too. The session's model picks one per task from its name and `use`, or you can ask for one ("review it with gpt"). `thinking` sets one's thinking level. Only models you are logged in for are offered, and a subagent whose model fails to start runs on the session's model and says so.
 
+`"lsp": false` turns off the language servers. `lsp_servers` adds one, changes a built-in one by name or turns it off with `false`:
+
+```json
+"lsp_servers": {
+  "luau-lsp": { "command": ["luau-lsp", "lsp"], "languages": { ".luau": "luau" }, "roots": [".luaurc"] },
+  "clangd": false
+}
+```
+
+A server also takes `env`, `settings` (its `workspace/configuration`) and `init_options`.
+
 `/model` saves the model and thinking level here. Thinking goes from `off` to `max`, and on a model without the level you picked, tego uses the highest it has. `/fast` or `--fast` turns on Claude's fast mode for Opus 4.8 and newer. It gives up to 2.5 times the output speed at twice the price, and a subscription pays for it from usage credits only. If fast mode is rate limited, tego carries on at standard speed.
 
 A response's output limit covers its thinking and its answer. On Claude it is 64k tokens, and the whole 128k at `xhigh` and `max` on models that can write that much. `max_output_tokens` sets your own. A response is billed for what it writes, not for its limit. When a response hits the limit without a tool call, tego goes on by itself up to twice a prompt. One that spent it all thinking is told to start acting. API keys can also come from the environment, such as `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY`. Logins are stored in `~/.tego/auth.json` with mode 0600.
@@ -144,7 +155,7 @@ Type `/` for the full list. `@` attaches a file, `!cmd` runs a shell command you
 
 ## What tego leaves out
 
-A full-screen UI, LSP integration, browser control and MCP OAuth. Some may come later. If you need one, open an issue with your use case.
+A full-screen UI, LSP navigation (go to definition, references), browser control and MCP OAuth. Some may come later. If you need one, open an issue with your use case.
 
 ## Contributing
 

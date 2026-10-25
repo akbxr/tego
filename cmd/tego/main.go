@@ -25,6 +25,7 @@ import (
 	"github.com/akbxr/tego/internal/ext"
 	"github.com/akbxr/tego/internal/lineedit"
 	"github.com/akbxr/tego/internal/llm"
+	"github.com/akbxr/tego/internal/lsp"
 	"github.com/akbxr/tego/internal/mcp"
 	"github.com/akbxr/tego/internal/session"
 	"github.com/akbxr/tego/internal/tools"
@@ -379,6 +380,18 @@ func run() error {
 	if err := app.init(spec, thinking); err != nil {
 		return err
 	}
+	var lspNote string
+	app.lsp, lspNote = newLSP(cfg, app.cwd, func(server, reason string) {
+		if app.interactive {
+			app.ui.Dim("%s did not start (%s); edits get a syntax check only", server, reason)
+		}
+	})
+	if lspNote != "" {
+		notes = append(notes, lspNote)
+	}
+	if app.lsp != nil {
+		app.env.LSP = app.lsp
+	}
 	app.ui.subagents = app.ag.Subagents
 	recordStats(cfg, cwd, app.ag, app.ui)
 	app.footerAgent.Store(app.ag) // the footer's panels may read it from now on
@@ -400,6 +413,7 @@ func run() error {
 			app.ui.Dim("stopped %s", plural(n, "background shell"))
 		}
 	}()
+	defer app.lsp.Close()
 	defer app.stopBackground()
 	if app.interactive {
 		app.banner()
@@ -510,6 +524,7 @@ type app struct {
 	ui          *termUI
 	ag          *agent.Agent
 	env         *tools.Env
+	lsp         *lsp.Manager // language servers checking edits; nil when off
 	skills      []agent.Skill
 	agentDefs   []agent.AgentDef // agents/*.md
 	skillRecent *skillRecency    // nil outside the TUI

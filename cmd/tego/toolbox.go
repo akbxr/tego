@@ -299,8 +299,8 @@ func (u *termUI) approvalBox(req agent.Approval, preview string, rows int) []str
 	return append(out, strings.TrimSuffix(u.boxBottom(mark, border), "\n"))
 }
 
-// editBody: the replacement count, the numbered diff, then any syntax-check
-// findings.
+// editBody: the replacement count, the numbered diff, then any errors the
+// language server or syntax check found.
 func (u *termUI) editBody(b *strings.Builder, lines []string, border string) {
 	if len(lines) > 0 {
 		head := lines[0]
@@ -315,8 +315,8 @@ func (u *termUI) editBody(b *strings.Builder, lines []string, border string) {
 	u.noteRows(b, rest, border)
 }
 
-// writeBody: the size line, a peek at the written content, then any
-// syntax-check findings.
+// writeBody: the size line, a peek at the written content, then any errors
+// the language server or syntax check found.
 func (u *termUI) writeBody(b *strings.Builder, lines []string, content, border string) {
 	if len(lines) > 0 {
 		head := lines[0]

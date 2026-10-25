@@ -37,6 +37,8 @@ type Config struct {
 	Notify        string                         `json:"notify,omitempty"`        // "off" disables the notification (sound) when a turn finishes
 	UpdateCheck   string                         `json:"update_check,omitempty"`  // "off" stops the daily check for a newer release
 	Gzip          *bool                          `json:"gzip_requests,omitempty"` // compress large request bodies to the hosts known to take that (default on)
+	LSP           *bool                          `json:"lsp,omitempty"`           // check edits with the installed language servers (default on)
+	LSPServers    map[string]json.RawMessage     `json:"lsp_servers,omitempty"`   // add or change servers by name; false turns a built-in one off (lsp.Specs)
 	ContextWindow int                            `json:"context_window,omitempty"`
 	MaxOutput     int                            `json:"max_output_tokens,omitempty"` // a response's limit, thinking included (default by model; at most the model's)
 	AutoCompact   *bool                          `json:"auto_compact,omitempty"`
@@ -162,6 +164,9 @@ func (c *Config) AutoCompactEnabled() bool { return c.AutoCompact == nil || *c.A
 
 // GzipEnabled reports whether large request bodies go compressed.
 func (c *Config) GzipEnabled() bool { return c.Gzip == nil || *c.Gzip }
+
+// LSPEnabled is lsp: on unless set to false.
+func (c *Config) LSPEnabled() bool { return c.LSP == nil || *c.LSP }
 
 // DefaultIdleCompactTokens is the context size above which a return from a
 // break compacts (as Claude Code's idle compaction).
