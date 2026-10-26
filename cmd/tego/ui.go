@@ -89,19 +89,39 @@ type termUI struct {
 	// the TUI's lock: never call it while the TUI draws.
 	height func() int
 
-	// live is what the response being streamed has shown so far, guarded
-	// by mu. beforeStream runs before each of its deltas, on the agent's
-	// goroutine: a resize mid-turn redraws the conversation there and
-	// shows live again (app.redrawIfResized).
+	// live is what the turn has shown that the history does not hold yet,
+	// guarded by mu: the response being streamed, then the results and
+	// notices of its tool calls until they land in the history. A resize
+	// mid-turn redraws the conversation and shows live again: before the
+	// next streamed delta, on the agent's goroutine (beforeStream,
+	// app.redrawIfResized), or while a tool runs (toolRun,
+	// app.toolRunning).
 	live         []liveSeg
 	beforeStream func()
+	// toolRun is told when a tool of the main agent starts running (after
+	// OnToolCall) and when it is done (first thing in OnToolResult).
+	toolRun func(running bool)
+	// replaying: the history is being shown again, not run (mu).
+	replaying bool
 }
 
-// liveSeg is a run of streamed text or thinking.
+// liveSeg is a piece of the turn on screen but not in the history yet.
 type liveSeg struct {
-	thinking bool
-	text     string
+	kind  liveKind
+	text  string // the text, thinking or notice; a result's output
+	name  string // a result's tool, input and error flag
+	input json.RawMessage
+	isErr bool
 }
+
+type liveKind int
+
+const (
+	liveText liveKind = iota
+	liveThinking
+	liveResult // a tool call's result, before the batch's results land
+	liveInfo   // a notice
+)
 
 // newPrintUI writes the answer to stdout and everything else to stderr,
 // rendering markdown when stdout is a terminal.
@@ -169,7 +189,7 @@ func (u *termUI) OnText(d string) {
 	u.streamed(len(d))
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	u.recordLive(false, d)
+	u.recordLive(liveText, d)
 	u.textLocked(d)
 }
 
@@ -212,7 +232,7 @@ func (u *termUI) OnThinking(d string) {
 	u.streamed(len(d))
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	u.recordLive(true, d)
+	u.recordLive(liveThinking, d)
 	u.thinkingLocked(d)
 }
 
@@ -258,18 +278,23 @@ func (s styled) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (u *termUI) recordLive(thinking bool, d string) {
-	if n := len(u.live); n > 0 && u.live[n-1].thinking == thinking {
+func (u *termUI) recordLive(kind liveKind, d string) {
+	if n := len(u.live); n > 0 && u.live[n-1].kind == kind {
 		u.live[n-1].text += d
 		return
 	}
-	u.live = append(u.live, liveSeg{thinking, d})
+	u.live = append(u.live, liveSeg{kind: kind, text: d})
 }
 
-// takeLive is what the response being streamed has shown so far.
-func (u *termUI) takeLive() []liveSeg {
+// takeLive is what the turn has shown that the history does not hold.
+// Once the next response streams, the last batch's results are in the
+// history: streaming keeps only the response's text and thinking.
+func (u *termUI) takeLive(streaming bool) []liveSeg {
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	if streaming {
+		return slices.DeleteFunc(slices.Clone(u.live), func(s liveSeg) bool { return s.kind > liveThinking })
+	}
 	return slices.Clone(u.live)
 }
 
@@ -283,12 +308,27 @@ func (u *termUI) resetLive() {
 // showLive shows segs again, after a redraw.
 func (u *termUI) showLive(segs []liveSeg) {
 	for _, s := range segs {
-		if s.thinking {
-			u.ReplayThinking(s.text)
-		} else {
+		switch s.kind {
+		case liveText:
 			u.ReplayText(s.text)
+		case liveThinking:
+			u.ReplayThinking(s.text)
+		case liveResult:
+			u.ReplayToolResult(s.name, s.input, s.text, s.isErr)
+		case liveInfo:
+			u.mu.Lock()
+			u.infoLocked(s.text)
+			u.mu.Unlock()
 		}
 	}
+}
+
+// closeStream ends an open text or thinking stream, and nothing else: a
+// command may be running.
+func (u *termUI) closeStream() {
+	u.mu.Lock()
+	u.endStream()
+	u.mu.Unlock()
 }
 
 func (u *termUI) OnToolStart(string) {
@@ -299,11 +339,25 @@ func (u *termUI) OnToolStart(string) {
 
 func (u *termUI) OnToolCall(name string, input json.RawMessage) {
 	u.endWrite() // the call is complete: its own box follows
+	u.toolCall(name, input, false)
+	if h := u.toolRun; h != nil {
+		h(true)
+	}
+}
+
+// ReplayToolCall shows a call from the history: nothing starts running.
+func (u *termUI) ReplayToolCall(name string, input json.RawMessage) {
+	u.toolCall(name, input, true)
+}
+
+func (u *termUI) toolCall(name string, input json.RawMessage, replay bool) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.endStream()
 	if u.boxed(name) {
-		u.boxCallLocked(name, input)
+		if !replay {
+			u.boxCallLocked(name, input)
+		}
 		return
 	}
 	fmt.Fprintf(u.diag, "%s%s●%s %s%s\n", u.dc.cyan, u.dc.bold, u.dc.reset+u.dc.cyan, u.shortPaths(name, tools.Summary(name, input)), u.dc.reset)
@@ -339,11 +393,29 @@ func (u *termUI) shortPath(p string) string {
 }
 
 func (u *termUI) OnToolResult(name string, input json.RawMessage, output string, isErr bool) {
+	if h := u.toolRun; h != nil {
+		h(false) // waits for a redraw in progress
+	}
 	if hook := u.onTurnEnd; hook != nil && (name == "todo" || name == "rewind") {
 		defer hook() // after mu is released (deferred calls run LIFO)
 	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	u.live = append(u.live, liveSeg{kind: liveResult, name: name, input: input, text: output, isErr: isErr})
+	u.toolResultLocked(name, input, output, isErr)
+}
+
+// ReplayToolResult shows a result from the history (or live): the command
+// running now, if any, keeps its footer box.
+func (u *termUI) ReplayToolResult(name string, input json.RawMessage, output string, isErr bool) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.replaying = true
+	defer func() { u.replaying = false }()
+	u.toolResultLocked(name, input, output, isErr)
+}
+
+func (u *termUI) toolResultLocked(name string, input json.RawMessage, output string, isErr bool) {
 	if u.boxed(name) {
 		u.boxResultLocked(name, input, output, isErr)
 		return
@@ -469,6 +541,11 @@ func (u *termUI) rate() float64 {
 func (u *termUI) OnInfo(msg string) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	u.live = append(u.live, liveSeg{kind: liveInfo, text: msg})
+	u.infoLocked(msg)
+}
+
+func (u *termUI) infoLocked(msg string) {
 	u.endStream()
 	fmt.Fprintf(u.diag, "%s%s%s\n", u.dc.yellow, msg, u.dc.reset)
 }

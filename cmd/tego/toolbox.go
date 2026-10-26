@@ -157,7 +157,9 @@ func (u *termUI) boxResultLocked(name string, input json.RawMessage, output stri
 	declined := isErr && strings.HasPrefix(output, agent.Declined)
 	var b strings.Builder
 	if name == "bash" {
-		u.setRunning("")
+		if !u.replaying {
+			u.setRunning("")
+		}
 		mark := ""
 		switch m := exitCodeRe.FindStringSubmatch(output); {
 		case declined:

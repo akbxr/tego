@@ -400,8 +400,47 @@ func (a *app) redrawIfResized() {
 	if !a.redrawWanted.Swap(false) {
 		return
 	}
-	live := a.ui.takeLive()
+	live := a.ui.takeLive(true)
 	a.ui.Finish()
+	a.tui.Clear()
+	a.banner()
+	a.replayMessages()
+	a.ui.showLive(live)
+}
+
+// toolRunning is told when a tool of the main agent starts running and
+// when it is done (termUI.toolRun). Meanwhile the agent's goroutine leaves
+// the history alone, so a resize can redraw it from another goroutine
+// (redrawDuringTool); the tool's result waits for that redraw to end, as
+// OnToolResult needs drawMu first. A resize that came while the response
+// streamed redraws when its tool starts.
+func (a *app) toolRunning(on bool) {
+	a.drawMu.Lock()
+	defer a.drawMu.Unlock()
+	a.toolBusy = on
+	if on {
+		a.redrawDuringToolLocked()
+	}
+}
+
+// redrawDuringTool redraws the conversation at the terminal's new width
+// if a tool is running; otherwise the agent's goroutine does, before the
+// next streamed delta or when the next tool starts, or the turn's end.
+func (a *app) redrawDuringTool() {
+	a.drawMu.Lock()
+	defer a.drawMu.Unlock()
+	a.redrawDuringToolLocked()
+}
+
+func (a *app) redrawDuringToolLocked() {
+	if !a.toolBusy || !a.redrawWanted.Swap(false) {
+		return
+	}
+	// The history ends with the calls; the results of those done so far,
+	// and the notices since, are live. A command running now keeps its
+	// footer box: no Finish.
+	live := a.ui.takeLive(false)
+	a.ui.closeStream()
 	a.tui.Clear()
 	a.banner()
 	a.replayMessages()

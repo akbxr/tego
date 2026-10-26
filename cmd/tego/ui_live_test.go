@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"reflect"
 	"regexp"
 	"strings"
@@ -45,14 +46,14 @@ func TestLiveResponseIsRecorded(t *testing.T) {
 	var out bytes.Buffer
 	u := &termUI{out: &out, diag: &out, atBOL: true, width: func() int { return 80 }}
 	var before []int
-	u.beforeStream = func() { before = append(before, len(u.takeLive())) }
+	u.beforeStream = func() { before = append(before, len(u.takeLive(true))) }
 
 	u.OnThinking("let me ")
 	u.OnThinking("think")
 	u.OnText("Hello ")
 	u.OnText("world")
-	want := []liveSeg{{true, "let me think"}, {false, "Hello world"}}
-	if got := u.takeLive(); !reflect.DeepEqual(got, want) {
+	want := []liveSeg{{kind: liveThinking, text: "let me think"}, {kind: liveText, text: "Hello world"}}
+	if got := u.takeLive(true); !reflect.DeepEqual(got, want) {
 		t.Fatalf("live %+v", got)
 	}
 	// The hook runs before each delta is recorded: a redraw there shows
@@ -64,28 +65,81 @@ func TestLiveResponseIsRecorded(t *testing.T) {
 	// A redraw shows it again without recording it twice.
 	out.Reset()
 	u.Finish()
-	u.showLive(u.takeLive())
+	u.showLive(u.takeLive(true))
 	u.Finish()
 	if s := out.String(); !strings.Contains(s, "let me think") || !strings.Contains(s, "Hello world") ||
 		strings.Index(s, "let me think") > strings.Index(s, "Hello world") {
 		t.Fatalf("shown again: %q", s)
 	}
-	if got := u.takeLive(); !reflect.DeepEqual(got, want) {
+	if got := u.takeLive(true); !reflect.DeepEqual(got, want) {
 		t.Fatalf("live after showing it %+v", got)
 	}
 
 	u.OnTurnEnd(&llm.Message{})
-	if got := u.takeLive(); got != nil {
+	if got := u.takeLive(false); got != nil {
 		t.Fatalf("live after the response ended %+v", got)
 	}
 	u.ReplayText("from history")
 	u.ReplayThinking("old thought")
-	if got := u.takeLive(); got != nil {
+	u.ReplayToolCall("grep", json.RawMessage(`{"pattern":"x"}`))
+	u.ReplayToolResult("grep", json.RawMessage(`{"pattern":"x"}`), "a.go:1:x", false)
+	if got := u.takeLive(false); got != nil {
 		t.Fatalf("replay recorded %+v", got)
 	}
 	u.OnText("next")
 	u.resetLive()
-	if got := u.takeLive(); got != nil {
+	if got := u.takeLive(false); got != nil {
 		t.Fatalf("live after reset %+v", got)
+	}
+}
+
+// While a batch of calls runs, the results of those done and the notices
+// since are live: a redraw then shows them after the history's calls. Once
+// the next response streams they are in the history and not live. toolRun
+// brackets each run, and a replay leaves the running command's footer box.
+func TestToolResultsAreLiveUntilTheNextResponse(t *testing.T) {
+	var out bytes.Buffer
+	u := &termUI{out: &out, diag: &out, atBOL: true, width: func() int { return 80 }}
+	var runs []bool
+	u.toolRun = func(on bool) { runs = append(runs, on) }
+	grep := json.RawMessage(`{"pattern":"needle"}`)
+	bash := json.RawMessage(`{"command":"make build"}`)
+
+	u.OnText("Looking.")
+	u.OnTurnEnd(&llm.Message{})
+	u.OnToolCall("grep", grep)
+	u.OnToolResult("grep", grep, "a.go:3:needle", false)
+	u.OnInfo("  · [scout] read a.go")
+	u.OnToolCall("bash", bash) // runs now
+	if !reflect.DeepEqual(runs, []bool{true, false, true}) {
+		t.Fatalf("toolRun %v", runs)
+	}
+	want := []liveSeg{
+		{kind: liveResult, name: "grep", input: grep, text: "a.go:3:needle"},
+		{kind: liveInfo, text: "  · [scout] read a.go"},
+	}
+	live := u.takeLive(false)
+	if !reflect.DeepEqual(live, want) {
+		t.Fatalf("live %+v", live)
+	}
+	out.Reset()
+	u.ReplayToolResult("bash", json.RawMessage(`{"command":"ls"}`), "a.go", false) // an earlier command, from the history
+	u.showLive(live)
+	if s := out.String(); !strings.Contains(s, "a.go:3:needle") || !strings.Contains(s, "[scout] read a.go") {
+		t.Fatalf("shown again: %q", s)
+	}
+	if u.running == "" {
+		t.Fatal("a replayed result ended the running command's box")
+	}
+	if got := u.takeLive(false); !reflect.DeepEqual(got, want) {
+		t.Fatalf("showing it recorded it again: %+v", got)
+	}
+
+	u.OnToolResult("bash", bash, "ok", false)
+	if u.running != "" {
+		t.Fatal("the command's box outlived its result")
+	}
+	if got := u.takeLive(true); len(got) != 0 {
+		t.Fatalf("results kept for the next response: %+v", got)
 	}
 }

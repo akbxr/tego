@@ -369,6 +369,7 @@ func run() error {
 		app.ui = newTUIUI(t.Writer(), t.ContentWidth, t.ContentHeight)
 		app.ui.onTurnEnd = app.refreshStatus
 		app.ui.beforeStream = app.redrawIfResized
+		app.ui.toolRun = app.toolRunning
 		app.status.rate = app.ui.rate
 	} else {
 		app.ui = newPrintUI()
@@ -578,6 +579,10 @@ type app struct {
 	// conversation is redrawn at the next streamed delta, or when the turn
 	// ends (redrawIfResized).
 	redrawWanted atomic.Bool
+	// drawMu: a redraw while a tool runs (toolRunning); toolBusy: the main
+	// agent's tool is running, so its goroutine leaves the history alone.
+	drawMu   sync.Mutex
+	toolBusy bool
 	// plan is plan mode (/plan, Shift+Tab), shared with the agent; planTurn
 	// marks a running prompt that started in plan mode.
 	plan     atomic.Bool

@@ -291,7 +291,7 @@ func (a *app) replayMessages() {
 		for _, b := range m.Blocks {
 			switch {
 			case m.Role == llm.RoleUser && b.Type == llm.BlockText:
-				a.ui.Finish()
+				a.ui.closeStream() // not Finish: a command may be running (redrawDuringTool)
 				switch text := strings.TrimSpace(b.Text); {
 				case strings.HasPrefix(text, "<system-reminder>"):
 				case strings.HasPrefix(text, mentionPrefix):
@@ -317,10 +317,10 @@ func (a *app) replayMessages() {
 				a.ui.ReplayText(b.Text)
 			case b.Type == llm.BlockToolUse:
 				calls[b.ID] = b
-				a.ui.OnToolCall(b.Name, b.Input)
+				a.ui.ReplayToolCall(b.Name, b.Input)
 			case b.Type == llm.BlockToolResult:
 				c := calls[b.ToolUseID]
-				a.ui.OnToolResult(c.Name, c.Input, b.Content, b.IsError)
+				a.ui.ReplayToolResult(c.Name, c.Input, b.Content, b.IsError)
 			}
 		}
 	}

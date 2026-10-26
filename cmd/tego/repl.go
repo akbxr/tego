@@ -190,9 +190,11 @@ func (a *app) repl(initial string) error {
 		case <-resized:
 			resized = nil
 			if a.cancel != nil {
-				// Mid-turn the agent's goroutine redraws, before the next
-				// streamed delta, or the turn's end does.
+				// Mid-turn: now if a tool runs, else on the agent's
+				// goroutine before the next streamed delta or tool, or at
+				// the turn's end.
 				a.redrawWanted.Store(true)
+				a.redrawDuringTool()
 				continue
 			}
 			a.redrawWanted.Store(false)
