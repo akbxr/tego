@@ -85,6 +85,14 @@ type Agent struct {
 	// CacheWritePremium reports models whose cache writes cost more than
 	// input (nil = none); see ElideAt.
 	CacheWritePremium func(provider, model string) bool
+	// CacheReadRatio is a cache read's price as a share of input's (nil or
+	// 0 = 0.1); the keep-alive budget uses it (keepalive.go).
+	CacheReadRatio func(provider, model string) float64
+	// KeepAlive is how long idle the prompt cache is kept warm at most
+	// (keepalive.go); 0 = never. KeepAliveAuto also stops once the
+	// refreshes cost what letting the cache go cold would.
+	KeepAlive     time.Duration
+	KeepAliveAuto bool
 
 	ContextWindow  int
 	AutoCompact    bool
@@ -122,6 +130,7 @@ type Agent struct {
 	// sent is the last request that got a reply, which a compaction can
 	// repeat to read its prompt cache.
 	sent  sentRequest
+	ka    keepAliveState
 	clock func() time.Time // tests; nil = time.Now
 	stuck stuckState
 	stop  stopState
@@ -298,6 +307,7 @@ func (a *Agent) loop(ctx context.Context) error {
 	if a.Provider == nil {
 		return ErrNoModel
 	}
+	a.keepAliveReport()
 	for turn := 1; ; turn++ {
 		if a.MaxTurns > 0 && turn > a.MaxTurns {
 			return fmt.Errorf("stopped after %d turns", a.MaxTurns)

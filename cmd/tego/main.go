@@ -318,7 +318,7 @@ func run() error {
 		return fmt.Errorf("invalid permission mode %q (yolo, edits or ask)", perms)
 	}
 	app := &app{cfg: cfg, store: store, cwd: cwd, noSession: o.noSession, interactive: !o.print, out: os.Stdout, icons: icons(cfg.Icons),
-		fast: o.fast || cfg.Fast, perms: perms, worktree: wt}
+		fast: o.fast || cfg.Fast, perms: perms, worktree: wt, keepAliveCh: make(chan keepAliveResult, 1)}
 	if app.interactive {
 		app.undo = undo.Open(cfg.Dir, cwd)
 	}
@@ -583,6 +583,10 @@ type app struct {
 	// agent's tool is running, so its goroutine leaves the history alone.
 	drawMu   sync.Mutex
 	toolBusy bool
+	// keepAliveCh brings a cache keep-alive's outcome back to the REPL;
+	// keepAliveBusy: one is in flight (keepalive.go).
+	keepAliveCh   chan keepAliveResult
+	keepAliveBusy bool
 	// plan is plan mode (/plan, Shift+Tab), shared with the agent; planTurn
 	// marks a running prompt that started in plan mode.
 	plan     atomic.Bool
@@ -620,10 +624,13 @@ func (a *app) init(spec, thinking string) error {
 		// From the models.dev prices: models with a cache-write premium get
 		// a more conservative warm elision threshold.
 		CacheWritePremium: statsPrices(a.cfg).CacheWritePremium,
+		CacheReadRatio:    statsPrices(a.cfg).CacheReadRatio,
 	}
 	if a.tui != nil {
 		a.ag.Steer = a.takeSteering // messages typed mid-turn steer it
 		a.ag.Approve = a.approve    // without a terminal, calls that need approval are refused
+		// The REPL keeps the prompt cache warm while the user is away.
+		a.ag.KeepAlive, a.ag.KeepAliveAuto = a.cfg.CacheKeepAlive()
 	}
 	task := &agent.TaskTool{Parent: a.ag, System: agent.SystemPrompt(a.cwd, files, a.skills, agent.SubagentMode), Env: a.env, Concurrency: a.cfg.Subagents,
 		Small: a.small, Models: a.subagentModels, Agents: a.agents, ResolveModel: a.resolveModel, Isolate: isolator(a.cfg.Dir, a.cwd)}

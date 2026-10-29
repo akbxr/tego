@@ -135,6 +135,22 @@ func (p *Pool) pick(req *Request) int {
 	return p.current
 }
 
+func (p *Pool) CanPrewarm(model string) bool {
+	return len(p.members) > 0 && CanPrewarm(p.members[0].Provider, model)
+}
+
+// Prewarm goes to the account the session's last turn used, as the cache
+// it keeps is that account's; there is no switching on a limit.
+func (p *Pool) Prewarm(ctx context.Context, req *Request) (Usage, error) {
+	p.mu.Lock()
+	i, ok := p.sessions[req.SessionID]
+	if !ok {
+		i = p.current
+	}
+	p.mu.Unlock()
+	return Prewarm(ctx, p.members[i].Provider, req)
+}
+
 func isPromptMessage(m Message) bool {
 	if m.Role != RoleUser {
 		return false

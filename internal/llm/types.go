@@ -5,6 +5,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 )
 
 type Role string
@@ -258,6 +259,32 @@ func KnownCacheTTL(p Provider, model string) bool {
 	return ok && f.KnownCacheTTL(model)
 }
 
+// Prewarmer is implemented by providers that can read a request's prompt
+// into the cache without a response (Anthropic's max_tokens 0): reading a
+// cached prefix keeps it alive for another TTL, at the cache read price.
+// The request is built as the next one would be, with Class ClassKeepAlive
+// and CachePrefix at the end of the history it keeps; its last message is
+// a placeholder the model reads but does not answer.
+type Prewarmer interface {
+	CanPrewarm(model string) bool
+	Prewarm(ctx context.Context, req *Request) (Usage, error)
+}
+
+// CanPrewarm reports whether p can keep model's cache alive.
+func CanPrewarm(p Provider, model string) bool {
+	w, ok := p.(Prewarmer)
+	return ok && w.CanPrewarm(model)
+}
+
+// Prewarm reads req's prompt into p's cache; an error when p cannot.
+func Prewarm(ctx context.Context, p Provider, req *Request) (Usage, error) {
+	w, ok := p.(Prewarmer)
+	if !ok {
+		return Usage{}, fmt.Errorf("%s cannot keep its prompt cache alive", p.Name())
+	}
+	return w.Prewarm(ctx, req)
+}
+
 // ImplicitCache is implemented by providers whose prompt cache is implicit
 // and best-effort (Gemini, OpenAI, DeepSeek, xAI): it keeps a repeated prefix
 // for an unknown time, without markers. Rewriting old history to shrink it
@@ -279,6 +306,7 @@ const (
 	ClassSubagent   = "subagent"
 	ClassCompaction = "compaction"
 	ClassAuxiliary  = "auxiliary" // side requests: titles, web search
+	ClassKeepAlive  = "keepalive" // a prompt read into the cache while idle (Prewarmer)
 )
 
 type EventType int

@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -90,6 +91,54 @@ func (p *anthropicProvider) Stream(ctx context.Context, req *Request, onEvent fu
 		}
 		return msg, err
 	})
+}
+
+var errNoPrewarm = errors.New("this model's thinking budget cannot go with max_tokens 0")
+
+func (p *anthropicProvider) CanPrewarm(string) bool { return true }
+
+// Prewarm sends req with max_tokens 0 and no stream: the API reads the
+// prompt (from the cache, keeping it alive) and answers nothing. Like the
+// main requests it is sent as Claude Code's, at the speed they use (speed
+// is part of the cached prefix).
+func (p *anthropicProvider) Prewarm(ctx context.Context, req *Request) (Usage, error) {
+	if req.Class != ClassKeepAlive || req.CachePrefix <= 0 || req.CachePrefix >= len(req.Messages) {
+		return Usage{}, errors.New("prewarm: needs class " + ClassKeepAlive + " and a placeholder after CachePrefix")
+	}
+	start := time.Now()
+	var t *ccTurn
+	if p.oauth != nil {
+		// As the main requests: their prompt count and id, which the
+		// placeholder prompt must not change.
+		t = p.turn(ctx, p.sessionID(req), ClassMain, req.Messages[:req.CachePrefix])
+	}
+	fast := p.fastFor(req)
+	resp, err := p.send(ctx, t, fast, func(version string) ([]byte, error) { return p.buildBodySpeed(req, version, t, fast) })
+	msg := &Message{Role: RoleAssistant}
+	defer func() { reportRequest(p.name, req, start, time.Time{}, time.Time{}, msg, err) }()
+	if err != nil {
+		return Usage{}, err
+	}
+	defer resp.Body.Close()
+	var r struct {
+		ID         string `json:"id"`
+		StopReason string `json:"stop_reason"`
+		Usage      struct {
+			Input      int `json:"input_tokens"`
+			Output     int `json:"output_tokens"`
+			CacheRead  int `json:"cache_read_input_tokens"`
+			CacheWrite int `json:"cache_creation_input_tokens"`
+		} `json:"usage"`
+	}
+	if err = json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return Usage{}, fmt.Errorf("%s: reading the keep-alive response: %w", p.name, err)
+	}
+	if t != nil {
+		p.finish(t, resp.Header.Get("request-id"), r.ID)
+	}
+	u := Usage{Input: r.Usage.Input, Output: r.Usage.Output, CacheRead: r.Usage.CacheRead, CacheWrite: r.Usage.CacheWrite, Fast: fast}
+	msg.Usage, msg.StopReason = &u, r.StopReason
+	return u, nil
 }
 
 // send posts the body built for the advertised Claude Code version, adopting
@@ -488,6 +537,14 @@ func (p *anthropicProvider) buildBodySpeed(req *Request, version string, t *ccTu
 
 	r.Thinking, r.OutputConfig = anthropicThinking(req.Model, req.Thinking)
 	r.MaxTokens = anthropicMaxTokens(req.Model, req.MaxTokens, req.Thinking, r.Thinking)
+	if req.Class == ClassKeepAlive {
+		// Read into the cache, no response: max_tokens 0 takes neither
+		// streaming nor a fixed thinking budget (adaptive is fine).
+		if r.Thinking != nil && r.Thinking.Type == "enabled" {
+			return nil, errNoPrewarm
+		}
+		r.Stream, r.MaxTokens = false, 0
+	}
 	if r.Thinking != nil && anthropicBindsThinking(req.Model) {
 		r.Thinking.BlockBinding = dropMismatchedThinking
 	}

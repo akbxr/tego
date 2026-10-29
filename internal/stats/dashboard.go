@@ -221,6 +221,8 @@ func agentName(class string) string {
 		return "Compaction"
 	case llm.ClassAuxiliary:
 		return "Titles and search"
+	case llm.ClassKeepAlive:
+		return "Cache keep-alive"
 	}
 	return class
 }

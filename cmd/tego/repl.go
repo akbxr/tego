@@ -187,6 +187,9 @@ func (a *app) repl(initial string) error {
 			if a.cancel == nil && a.bg.Running() > 0 {
 				a.tui.Redraw()
 			}
+			a.keepAliveTick()
+		case r := <-a.keepAliveCh:
+			a.keepAliveFinish(r)
 		case <-resized:
 			resized = nil
 			if a.cancel != nil {
@@ -324,6 +327,7 @@ func wrapCells(text string, width int) []string {
 
 // startJob runs fn in the background; its result arrives on done.
 func (a *app) startJob(done chan<- error, fn func(ctx context.Context) error) {
+	a.keepAliveWait() // the agent is the turn's from here
 	ctx, cancel := context.WithCancel(context.Background())
 	a.cancel = cancel
 	a.jobStart, a.jobBefore = time.Now(), a.ag.Usage()

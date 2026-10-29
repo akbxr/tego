@@ -46,6 +46,7 @@ type Config struct {
 	KeepRecent    int                            `json:"compact_keep_tokens,omitempty"` // recent tokens kept verbatim when compacting (default 20000)
 	IdleCompact   *bool                          `json:"idle_compact,omitempty"`        // after a break the prompt cache did not survive, compact a long context rather than cache it all again (default on)
 	IdleTokens    int                            `json:"idle_compact_tokens,omitempty"` // how long: above this many tokens (default 200000)
+	KeepAlive     string                         `json:"cache_keepalive,omitempty"`     // keep the prompt cache warm while idle: "auto" (default), a duration such as "8h", or "off"
 	SubModels     map[string]SubagentModel       `json:"subagent_models,omitempty"`
 	Providers     map[string]*llm.ProviderConfig `json:"providers,omitempty"`
 	// Prices override or add API prices ($ per million tokens) for tego
@@ -171,6 +172,24 @@ func (c *Config) LSPEnabled() bool { return c.LSP == nil || *c.LSP }
 // DefaultIdleCompactTokens is the context size above which a return from a
 // break compacts (as Claude Code's idle compaction).
 const DefaultIdleCompactTokens = 200_000
+
+// DefaultKeepAlive is the longest cache_keepalive "auto" keeps a prompt
+// cache warm.
+const DefaultKeepAlive = 12 * time.Hour
+
+// CacheKeepAlive is cache_keepalive: how long idle the prompt cache is kept
+// warm at most (0 = off), and whether it also stops once that would cost
+// more than a cold cache ("auto", the default).
+func (c *Config) CacheKeepAlive() (time.Duration, bool) {
+	switch c.KeepAlive {
+	case "off", "never", "0":
+		return 0, false
+	}
+	if d, err := time.ParseDuration(c.KeepAlive); err == nil && d > 0 {
+		return d, false
+	}
+	return DefaultKeepAlive, true
+}
 
 // DefaultMCPIdle is how long a local MCP server may sit unused before it
 // is stopped.

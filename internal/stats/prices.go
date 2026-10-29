@@ -85,6 +85,16 @@ func (ps Prices) CacheWritePremium(provider, model string) bool {
 	return ok && p.CacheWrite > p.Input
 }
 
+// CacheReadRatio is a cache read's price as a share of an input token's
+// (0.1 for most Claude models, 0.05 for Opus and Sonnet 5.5); 0 unknown.
+func (ps Prices) CacheReadRatio(provider, model string) float64 {
+	p, ok := ps.lookup(provider, model)
+	if !ok || p.Input <= 0 || p.CacheRead <= 0 {
+		return 0
+	}
+	return p.CacheRead / p.Input
+}
+
 // priceIDs lists the ids a model may be priced under: as given, without a
 // vendor prefix (OpenRouter "anthropic/claude-sonnet-4.5"), a date
 // suffix, an effort suffix (Antigravity "gemini-3.8-flash-high") or
