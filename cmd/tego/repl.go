@@ -77,11 +77,14 @@ func (a *app) repl(initial string) error {
 	bgTick := time.NewTicker(time.Second)
 	defer bgTick.Stop()
 	for {
-		a.syncHerdr() // state and session after whatever the last event changed
+		a.syncStatus() // state and session after whatever the last event changed
 		select {
 		case ev, ok := <-events:
 			if !ok {
 				return nil
+			}
+			if ev.Kind != lineedit.EvResize {
+				a.restStatus = statusRecord{} // the user is back: a finished turn is seen
 			}
 			switch ev.Kind {
 			case lineedit.EvSubmit:
@@ -261,6 +264,7 @@ func (a *app) startPrompt(line string, done chan<- error) {
 	a.echoPrompt(line)
 	a.maybeTitle(line)
 	a.planTurn = a.plan.Load()
+	a.jobMsg = line // what the turn reports it works on
 	a.startJob(done, func(ctx context.Context) error { return a.runTurn(ctx, line) })
 }
 
@@ -344,6 +348,8 @@ func (a *app) startJob(done chan<- error, fn func(ctx context.Context) error) {
 func (a *app) finishJob(err error) {
 	a.cancel()
 	a.cancel = nil
+	a.endStatus(err, errors.Is(err, context.Canceled))
+	a.jobMsg = ""
 	a.ui.Finish()
 	switch {
 	case errors.Is(err, context.Canceled):
@@ -604,6 +610,7 @@ func (a *app) runSkill(name, args, line string, done chan<- error) {
 		prompt := fmt.Sprintf("<skill name=%q path=%q>\n%s\n</skill>\n\n%s", s.Name, s.Path, strings.TrimSpace(string(body)), req)
 		a.echoPrompt(line)
 		a.maybeTitle(line)
+		a.jobMsg = line
 		a.startJob(done, func(ctx context.Context) error { return a.runTurn(ctx, prompt) })
 		return
 	}
@@ -668,6 +675,7 @@ func (a *app) command(line string, done chan<- error) bool {
 		}
 		a.setPermissions(args)
 	case "compact":
+		a.jobMsg = "Compacting the conversation"
 		a.startJob(done, func(ctx context.Context) error { return a.ag.Compact(ctx, args) })
 		return false
 	case "new", "clear":
@@ -743,6 +751,7 @@ func (a *app) command(line string, done chan<- error) bool {
 			return false
 		}
 		if a.ext.HasCommand(name) {
+			a.jobMsg = line
 			a.startJob(done, func(ctx context.Context) error { return a.ext.RunCommand(ctx, name, args) })
 			return false
 		}
@@ -750,6 +759,7 @@ func (a *app) command(line string, done chan<- error) bool {
 			prompt := c.Expand(args)
 			a.echoPrompt(line)
 			a.maybeTitle(line)
+			a.jobMsg = line
 			a.startJob(done, func(ctx context.Context) error { return a.runTurn(ctx, prompt) })
 			return false
 		}

@@ -25,11 +25,13 @@ func (a *app) setPlan(on bool) {
 
 // offerPlan asks what to do with the plan a plan-mode turn just presented.
 func (a *app) offerPlan(done chan<- error) {
+	unblock := a.blockStatus("question", "Plan ready: implement it?")
 	idx, err := a.tui.Pick("Plan ready: what next?", []lineedit.PickItem{
 		{Label: "Implement it", Detail: "leave plan mode and carry out the plan"},
 		{Label: "Keep planning", Detail: "type your feedback; plan mode stays on"},
 		{Label: "Leave plan mode", Detail: "without implementing"},
 	}, "", 0)
+	unblock()
 	switch {
 	case err != nil || idx == 1:
 		return

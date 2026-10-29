@@ -24,6 +24,7 @@ var permissionHelp = map[string]string{
 func (a *app) approve(ctx context.Context, req agent.Approval) (agent.Decision, error) {
 	a.ui.showApproval(req, tools.Preview(a.env, req.Tool, req.Input))
 	defer a.ui.hideApproval()
+	defer a.blockStatus("permission", approvalStatus(req))()
 	a.notify("Waiting for approval")
 	items := []lineedit.PickItem{{Label: "Yes", Detail: "run it"}}
 	always := -1

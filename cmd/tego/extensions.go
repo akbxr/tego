@@ -175,6 +175,7 @@ func (h extHost) Confirm(ctx context.Context, name, title, msg string) (bool, er
 	if a.tui == nil {
 		return false, nil // -p: nobody can say yes
 	}
+	defer a.blockStatus("permission", "["+name+"] "+title+" "+msg)()
 	items := []lineedit.PickItem{{Label: "Yes", Detail: msg}, {Label: "No"}}
 	idx, err := a.pickWhenFree(ctx, func() (int, error) { return a.tui.Pick("["+name+"] "+title, items, "", 0) })
 	return idx == 0 && err == nil, nil
@@ -185,6 +186,7 @@ func (h extHost) Select(ctx context.Context, name, title string, options []strin
 	if a.tui == nil {
 		return -1, nil
 	}
+	defer a.blockStatus("question", "["+name+"] "+title)()
 	items := make([]lineedit.PickItem, len(options))
 	for i, o := range options {
 		items[i] = lineedit.PickItem{Label: o}
@@ -204,6 +206,7 @@ func (h extHost) Input(ctx context.Context, name, title, placeholder string) (st
 	if placeholder != "" {
 		title += " (" + placeholder + ")"
 	}
+	defer a.blockStatus("question", "["+name+"] "+title)()
 	for {
 		s, err := a.tui.Ask("["+name+"] "+title, "")
 		if !errors.Is(err, lineedit.ErrBusy) {

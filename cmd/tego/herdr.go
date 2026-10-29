@@ -14,7 +14,9 @@ import (
 
 // herdr integration (https://herdr.dev/docs/add-herdr-support/). Inside a
 // herdr pane, interactive tego reports its state (working while a turn
-// runs, idle otherwise) and the command that resumes the current session,
+// runs, blocked with the question while it waits for an approval or an
+// answer, idle otherwise; progstatus.go decides which) and the command
+// that resumes the current session,
 // and releases the pane on exit. herdr then shows tego in its sidebar and
 // `herdr agent list`, notifies when a turn finishes in a background tab, and
 // reopens the session after a herdr restart.
@@ -29,9 +31,12 @@ type herdrReporter struct {
 	bin, pane string
 
 	mu      sync.Mutex
-	seq     int64    // last sequence number handed out
-	last    string   // key of the last queued report, to skip repeats
-	pending []string // latest report not sent yet
+	seq     int64        // last sequence number handed out
+	last    string       // key of the last queued report, to skip repeats
+	state   string       // idle, working or blocked
+	msg     string       // why it is blocked
+	sess    herdrSession // sent along with idle
+	pending []string     // latest report not sent yet
 	wake    chan struct{}
 	stop    chan struct{}
 	stopped chan struct{}
@@ -66,20 +71,49 @@ type herdrSession struct {
 	resume   []string
 }
 
-// report queues state ("working" or "idle") with the session, unless it
-// repeats the previous report.
-func (h *herdrReporter) report(state string, s herdrSession) {
+// update sets the state ("idle", "working" or "blocked" with msg saying
+// why) and queues a report unless nothing changed. Safe from any goroutine.
+func (h *herdrReporter) update(state, msg string) {
 	if h == nil {
 		return
 	}
-	key := state + "\x00" + s.id + "\x00" + strings.Join(s.resume, "\x00")
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.state, h.msg = state, msg
+	h.queue()
+}
+
+// setSession sets the session reported with idle.
+func (h *herdrReporter) setSession(s herdrSession) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.sess = s
+	h.queue()
+}
+
+// queue makes the current state the pending report, unless it repeats the
+// previous one. While tego works only the state is sent: the session goes
+// with idle. h.mu held.
+func (h *herdrReporter) queue() {
+	if h.state == "" {
+		return
+	}
+	var s herdrSession
+	if h.state == "idle" {
+		s = h.sess
+	}
+	key := h.state + "\x00" + h.msg + "\x00" + s.id + "\x00" + strings.Join(s.resume, "\x00")
 	if key == h.last {
 		return
 	}
 	h.last = key
-	args := []string{"pane", "report-agent", h.pane, "--source", herdrSource, "--agent", herdrSource, "--state", state, "--seq", h.nextSeq()}
+	args := []string{"pane", "report-agent", h.pane, "--source", herdrSource, "--agent", herdrSource, "--state", h.state, "--seq", h.nextSeq()}
+	if h.state == "blocked" && h.msg != "" {
+		args = append(args, "--message", h.msg)
+	}
 	if s.id != "" {
 		args = append(args, "--agent-session-id", s.id, "--agent-session-path", s.path)
 		if len(s.resume) > 0 {
@@ -167,19 +201,6 @@ func (h *herdrReporter) notify(title, body string) {
 			h.run(5*time.Second, "notification", "show", title, "--body", body, "--sound", "done")
 		}
 	}()
-}
-
-// syncHerdr reports the current state. While a turn runs only the state
-// is sent: the agent goroutine owns the history then.
-func (a *app) syncHerdr() {
-	if a.herdr == nil {
-		return
-	}
-	if a.cancel != nil {
-		a.herdr.report("working", herdrSession{})
-		return
-	}
-	a.herdr.report("idle", a.herdrSession())
 }
 
 // herdrSession describes the current session and the command that reopens

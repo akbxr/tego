@@ -473,6 +473,12 @@ func run() error {
 		if prompt == "" {
 			return errors.New("print mode needs a prompt")
 		}
+		// Status goes to the terminal only when stdout is one (`hc run tego
+		// -p …`), never into a pipe that captures the answer.
+		if term.IsTerminal(int(os.Stdout.Fd())) {
+			app.pstat = newProgStatus(func(s string) { os.Stdout.WriteString(s) })
+			app.pstat.set(statusRecord{state: "working", msg: prompt})
+		}
 		err := app.withInterrupt(func(ctx context.Context) error {
 			if err := app.runTurn(ctx, prompt); err != nil {
 				return err
@@ -480,12 +486,19 @@ func run() error {
 			return app.drainBackground(ctx) // their reports, before exiting
 		})
 		app.ui.Finish()
+		if app.pstat != nil {
+			app.endStatus(err, errors.Is(err, context.Canceled))
+			app.pstat.finish(app.restStatus) // outlives the process
+		}
 		return err
 	}
 	// Only the interactive agent owns the pane: a `tego -p` started by
 	// another agent's shell in the same pane must not take it over.
 	app.herdr = newHerdr()
 	defer app.herdr.close()
+	app.pstat = newProgStatus(app.tui.WriteRaw)
+	app.pstat.onRoot = func(r statusRecord) { app.herdr.update(herdrState(r)) }
+	defer app.pstat.close() // before herdr's release and while the TUI still writes
 	if err := app.repl(prompt); err != nil {
 		return err
 	}
@@ -567,6 +580,9 @@ type app struct {
 	titlingFor     *session.Session // session whose title is being generated
 	reloadProvider string           // provider logged into during a turn; reloaded after it
 	herdr          *herdrReporter   // set inside a herdr pane (interactive only)
+	pstat          *progStatus      // OSC 7501 program status (progstatus.go); nil when nothing reads it
+	jobMsg         string           // what the running job does, for its working report
+	restStatus     statusRecord     // root record between jobs: idle, done or error
 	// footerAgent is ag for the TUI goroutine, which starts drawing before
 	// init creates the agent.
 	footerAgent atomic.Pointer[agent.Agent]

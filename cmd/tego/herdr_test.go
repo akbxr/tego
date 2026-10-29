@@ -35,18 +35,23 @@ func TestHerdrReports(t *testing.T) {
 		return nil
 	}
 	sess := herdrSession{id: "s1", path: "/x/s1.jsonl", resume: []string{"tego", "-r", "s1", "-m", "anthropic/claude-opus-5-5", "-t", "high"}}
-	h.report("working", herdrSession{})
+	h.setSession(sess) // no state yet: nothing to send
+	h.update("working", "")
 	calls(1)
-	h.report("idle", sess)
+	h.update("blocked", "Allow bash: rm -rf build?")
 	calls(2)
-	h.report("idle", sess) // unchanged: not sent again
+	h.update("idle", "")
+	calls(3)
+	h.update("idle", "") // unchanged: not sent again
+	h.setSession(sess)
 	h.close()
-	got := calls(3)
-	if len(got) != 3 {
+	got := calls(4)
+	if len(got) != 4 {
 		t.Fatalf("calls: %q", got)
 	}
 	want := []string{
 		"pane report-agent w1:p1 --source tego --agent tego --state working --seq ",
+		"pane report-agent w1:p1 --source tego --agent tego --state blocked --seq ",
 		"pane report-agent w1:p1 --source tego --agent tego --state idle --seq ",
 		"pane release-agent w1:p1 --source tego --agent tego --seq ",
 	}
@@ -61,8 +66,14 @@ func TestHerdrReports(t *testing.T) {
 		}
 		last = seq
 	}
-	if !strings.HasSuffix(got[1], "--agent-session-id s1 --agent-session-path /x/s1.jsonl -- tego -r s1 -m anthropic/claude-opus-5-5 -t high") {
-		t.Fatalf("session report = %q", got[1])
+	if strings.Contains(got[0], "--agent-session") {
+		t.Fatalf("session sent while working: %q", got[0])
+	}
+	if !strings.HasSuffix(got[1], "--message Allow bash: rm -rf build?") {
+		t.Fatalf("blocked report = %q", got[1])
+	}
+	if !strings.HasSuffix(got[2], "--agent-session-id s1 --agent-session-path /x/s1.jsonl -- tego -r s1 -m anthropic/claude-opus-5-5 -t high") {
+		t.Fatalf("session report = %q", got[2])
 	}
 
 	t.Setenv("HERDR_ENV", "")

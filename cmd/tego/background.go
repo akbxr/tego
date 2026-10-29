@@ -85,6 +85,7 @@ func (a *app) startBackgroundReports(done chan<- error) bool {
 	if reports == "" {
 		return false
 	}
+	a.jobMsg = "Reading background task reports"
 	a.startJob(done, func(ctx context.Context) error { return a.ag.Run(ctx, backgroundPrompt(reports)) })
 	return true
 }
