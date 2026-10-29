@@ -37,7 +37,7 @@ func New(cfg ProviderConfig) (Provider, error) {
 			return nil, fmt.Errorf("provider %s: no API key (set %s or log in)", name, keyHint(cfg))
 		}
 		if base == "" {
-			base = "https://api.anthropic.com"
+			base = anthropicAPIBase
 		}
 		return &anthropicProvider{name: name, base: base, key: key, headers: cfg.Headers, oauth: cfg.OAuth, deviceID: cfg.DeviceID}, nil
 	case "openai":
@@ -181,6 +181,9 @@ type RequestStat struct {
 	// WebSearches is the number of searches a native web search ran; they
 	// are billed per search on top of the tokens.
 	WebSearches int
+	// CacheMiss is what the provider said broke the prompt cache (nil =
+	// nothing, or it does not say).
+	CacheMiss *CacheMiss
 }
 
 var requestHook atomic.Pointer[func(RequestStat)]
@@ -214,7 +217,7 @@ func reportRequest(provider string, req *Request, start, first, started time.Tim
 	if msg.Usage != nil {
 		st.Usage = *msg.Usage
 	}
-	st.GenOutput = msg.GenOutput
+	st.GenOutput, st.CacheMiss = msg.GenOutput, msg.CacheMiss
 	if err != nil && msg.StopReason != "aborted" {
 		st.Err = err.Error()
 	}

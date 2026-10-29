@@ -85,6 +85,8 @@ func (p *anthropicProvider) Stream(ctx context.Context, req *Request, onEvent fu
 		}
 		if t != nil {
 			p.finish(t, resp.Header.Get("request-id"), msgID)
+		} else {
+			p.notePrevMessage(p.sessionID(req), req.Class, msgID)
 		}
 		if msg != nil && len(msg.droppedPaths) > 0 {
 			msg.DroppedThinking = droppedRefs(req.Messages, p.oauth != nil, msg.droppedPaths)
@@ -121,9 +123,10 @@ func (p *anthropicProvider) Prewarm(ctx context.Context, req *Request) (Usage, e
 	}
 	defer resp.Body.Close()
 	var r struct {
-		ID         string `json:"id"`
-		StopReason string `json:"stop_reason"`
-		Usage      struct {
+		ID          string       `json:"id"`
+		StopReason  string       `json:"stop_reason"`
+		Diagnostics *aDiagResult `json:"diagnostics"`
+		Usage       struct {
 			Input      int `json:"input_tokens"`
 			Output     int `json:"output_tokens"`
 			CacheRead  int `json:"cache_read_input_tokens"`
@@ -134,10 +137,12 @@ func (p *anthropicProvider) Prewarm(ctx context.Context, req *Request) (Usage, e
 		return Usage{}, fmt.Errorf("%s: reading the keep-alive response: %w", p.name, err)
 	}
 	if t != nil {
-		p.finish(t, resp.Header.Get("request-id"), r.ID)
+		// No message id: the next request is compared with the last real
+		// one, whose prompt it repeats, not with the placeholder.
+		p.finish(t, resp.Header.Get("request-id"), "")
 	}
 	u := Usage{Input: r.Usage.Input, Output: r.Usage.Output, CacheRead: r.Usage.CacheRead, CacheWrite: r.Usage.CacheWrite, Fast: fast}
-	msg.Usage, msg.StopReason = &u, r.StopReason
+	msg.Usage, msg.StopReason, msg.CacheMiss = &u, r.StopReason, r.Diagnostics.miss()
 	return u, nil
 }
 
@@ -511,6 +516,11 @@ func (p *anthropicProvider) buildBodySpeed(req *Request, version string, t *ccTu
 		r.Diagnostics = &aDiagnostics{}
 		if t.prevMsg != "" {
 			r.Diagnostics.PreviousMessageID = &t.prevMsg
+		}
+	} else if p.diagnoses() {
+		r.Diagnostics = &aDiagnostics{}
+		if prev := p.prevMessage(p.sessionID(req)); prev != "" {
+			r.Diagnostics.PreviousMessageID = &prev
 		}
 	}
 	if req.System != "" {
@@ -926,6 +936,7 @@ type aStreamEvent struct {
 		ID                   string                 `json:"id"`
 		Usage                aUsage                 `json:"usage"`
 		InputTransformations []aInputTransformation `json:"input_transformations"`
+		Diagnostics          *aDiagResult           `json:"diagnostics"`
 	} `json:"message"`
 	InputTransformations []aInputTransformation `json:"input_transformations"`
 	ContextManagement    *aAppliedEdits         `json:"context_management"`
@@ -1022,6 +1033,7 @@ func parseAnthropicStream(ctx context.Context, body io.Reader, oauth bool, emit 
 				if msgID != nil {
 					*msgID = ev.Message.ID
 				}
+				msg.CacheMiss = ev.Message.Diagnostics.miss()
 				noteEdits(msg, ev.Message.InputTransformations, nil)
 			}
 			noteEdits(msg, ev.InputTransformations, ev.ContextManagement)

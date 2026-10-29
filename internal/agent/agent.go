@@ -301,6 +301,8 @@ func (a *Agent) loop(ctx context.Context) error {
 	_, rev := a.TodoState()
 	a.stop = stopState{todoRev: rev, started: time.Now()}
 	overflowRetried := false
+	// A cache miss is told once per prompt.
+	missNoted := false
 	if !a.Subagent || a.declined == nil { // a subagent keeps its parent's
 		a.declined = new(atomic.Bool)
 	}
@@ -359,7 +361,8 @@ func (a *Agent) loop(ctx context.Context) error {
 			Thinking: a.Thinking, SessionID: a.SessionID, LongCache: a.LongCache, Class: class,
 			ClearToolResults: a.clearPolicy(), Fast: a.Fast, MaxTokens: a.MaxOutputTokens,
 		}
-		sent := a.noteSent(req)
+		// idle: since the cache was last read (a keep-alive counts)
+		sent, prev, idle := a.noteSent(req), a.sent, a.now().Sub(a.lastReply)
 		msg, err := a.Provider.Stream(ctx, req, a.onEvent)
 		if err == nil && req.ClearToolResults != nil {
 			msg.ClearTrigger = req.ClearToolResults.TriggerToolUses
@@ -394,6 +397,10 @@ func (a *Agent) loop(ctx context.Context) error {
 		}
 		if msg.FastNote != "" {
 			a.UI.OnInfo(msg.FastNote)
+		}
+		if note := cacheMissNote(msg.CacheMiss); note != "" && !missNoted && a.expectsCacheRead(prev, sent, idle) {
+			missNoted = true
+			a.UI.OnInfo(note)
 		}
 		calls := sanitizeCalls(msg)
 		a.append(*msg)

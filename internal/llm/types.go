@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 type Role string
@@ -87,7 +88,25 @@ type Message struct {
 	// speed (rate limited, not enabled for the account); "" otherwise. Set
 	// on the request where that started, not on every one after.
 	FastNote string `json:"-"`
+	// CacheMiss is what the provider says changed since the session's
+	// previous request, missing the prompt cache (Anthropic's cache
+	// diagnostics); nil when nothing did or it does not say.
+	CacheMiss *CacheMiss `json:"-"`
 }
+
+// CacheMiss is a provider's account of a prompt cache miss: Reason is
+// Anthropic's cache_miss_reason type ("tools_changed", "system_changed",
+// "messages_changed", "model_changed"; "previous_message_not_found" and
+// "unavailable" when it could not compare), Tokens the input it put at
+// the miss.
+type CacheMiss struct {
+	Reason string
+	Tokens int
+}
+
+// Changed reports whether the request itself changed, rather than the
+// provider not being able to tell.
+func (c *CacheMiss) Changed() bool { return c != nil && strings.HasSuffix(c.Reason, "_changed") }
 
 // BlockRef is block Block of message Msg in a request's messages.
 type BlockRef struct{ Msg, Block int }

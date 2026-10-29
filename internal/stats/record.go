@@ -41,6 +41,10 @@ type Record struct {
 	Stop        string   `json:"stop,omitempty"`
 	Error       string   `json:"error,omitempty"`
 	Tools       []string `json:"tools,omitempty"`
+	// CacheMiss is what the provider said differed from the session's
+	// previous request, with the input it put at the miss.
+	CacheMiss       string `json:"cache_miss,omitempty"`
+	CacheMissTokens int    `json:"cache_miss_tokens,omitempty"`
 	// tool
 	Tool      string `json:"tool,omitempty"`
 	ToolError bool   `json:"tool_error,omitempty"`
@@ -76,12 +80,16 @@ func RequestRecord(st llm.RequestStat, folder string) Record {
 	if class == "" {
 		class = llm.ClassMain
 	}
-	return Record{Kind: "request", TS: st.Start.UnixMilli(), Folder: folder, Session: st.SessionID, Class: class,
+	r := Record{Kind: "request", TS: st.Start.UnixMilli(), Folder: folder, Session: st.SessionID, Class: class,
 		Provider: st.Provider, Model: st.Model,
 		Input: st.Usage.Input, Output: st.Usage.Output, CacheRead: st.Usage.CacheRead, CacheWrite: st.Usage.CacheWrite,
 		LongCache: st.LongCache, Fast: st.Usage.Fast, DurationMs: st.Duration.Milliseconds(), TTFTMs: st.TTFT.Milliseconds(),
 		GenStartMs: st.GenStart.Milliseconds(), GenOutput: st.GenOutput,
 		Stop: st.StopReason, Error: st.Err, Tools: st.Tools, WebSearches: st.WebSearches}
+	if m := st.CacheMiss; m != nil {
+		r.CacheMiss, r.CacheMissTokens = m.Reason, m.Tokens
+	}
+	return r
 }
 
 // Load reads the stats log plus the history imported from session files

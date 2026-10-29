@@ -31,10 +31,16 @@ type sentRequest struct {
 	sum      [32]byte // of those messages
 	at       time.Time
 	usage    llm.Usage // the reply's
+	// extends: its messages begin with the previous request's, unchanged
+	extends bool
 }
 
 func (a *Agent) noteSent(req *llm.Request) sentRequest {
-	s := sentRequest{req: *req, provider: a.Provider, n: len(req.Messages), sum: hashMessages(req.Messages)}
+	s := sentRequest{req: *req, provider: a.Provider, n: len(req.Messages)}
+	prev := a.sent.n
+	var head [32]byte
+	s.sum, head = hashMessagesAt(req.Messages, min(prev, s.n))
+	s.extends = prev > 0 && prev <= s.n && head == a.sent.sum
 	s.req.Messages = nil
 	return s
 }
@@ -49,9 +55,19 @@ func (s sentRequest) answered(at time.Time, u *llm.Usage) sentRequest {
 
 // hashMessages covers what of the messages goes to the provider.
 func hashMessages(msgs []llm.Message) [32]byte {
+	sum, _ := hashMessagesAt(msgs, 0)
+	return sum
+}
+
+// hashMessagesAt is hashMessages of msgs and, in the same pass, of
+// msgs[:n].
+func hashMessagesAt(msgs []llm.Message, n int) (all, head [32]byte) {
 	h := sha256.New()
 	enc := json.NewEncoder(h)
 	for i := range msgs {
+		if i == n {
+			h.Sum(head[:0])
+		}
 		m := &msgs[i]
 		_ = enc.Encode(struct {
 			R llm.Role
@@ -59,9 +75,11 @@ func hashMessages(msgs []llm.Message) [32]byte {
 			B []llm.Block
 		}{m.Role, m.Provider, m.Blocks})
 	}
-	var sum [32]byte
-	h.Sum(sum[:0])
-	return sum
+	h.Sum(all[:0])
+	if n >= len(msgs) {
+		head = all
+	}
+	return all, head
 }
 
 // sameProvider: providers are pointers; anything else never compares equal.
@@ -86,6 +104,19 @@ const (
 	thinkingCost = 10_000
 )
 
+// warmFor is how long after s was answered its prompt cache is taken to be
+// still there, with a margin.
+func (a *Agent) warmFor(s sentRequest) time.Duration {
+	if !llm.KnownCacheTTL(a.Provider, a.Model) {
+		return implicitCacheWarm
+	}
+	warm := 5 * time.Minute
+	if s.req.LongCache {
+		warm = time.Hour
+	}
+	return warm - warm/10 // a miss rewrites the whole context
+}
+
 // cachedSummary asks for the summary as the conversation's next turn. It
 // returns "" and why not when the transcript way should run; err only when
 // ctx ended.
@@ -101,16 +132,7 @@ func (a *Agent) cachedSummary(ctx context.Context, tail []llm.Message, focus, tr
 	case s.usage.CacheRead+s.usage.CacheWrite == 0:
 		return "", "", "the provider reported no prompt cache", nil
 	}
-	idle := a.now().Sub(s.at)
-	warm := implicitCacheWarm
-	if llm.KnownCacheTTL(a.Provider, a.Model) {
-		warm = 5 * time.Minute
-		if s.req.LongCache {
-			warm = time.Hour
-		}
-		warm -= warm / 10 // a margin: a miss rewrites the whole context
-	}
-	if idle > warm {
+	if a.now().Sub(s.at) > a.warmFor(s) {
 		return "", "", "the prompt cache has expired", nil
 	}
 	prompt := s.usage.Input + s.usage.CacheRead + s.usage.CacheWrite

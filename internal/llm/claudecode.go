@@ -127,7 +127,7 @@ func (p *anthropicProvider) finish(t *ccTurn, requestID, messageID string) {
 	if t.class == ClassMain && requestID != "" {
 		s.prevReq = requestID
 	}
-	if messageID != "" {
+	if messageID != "" && diagnosedClass(t.class) {
 		s.prevMsg = messageID
 	}
 }
