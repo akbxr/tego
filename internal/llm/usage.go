@@ -166,6 +166,12 @@ func anthropicUsage(ctx context.Context, token string) (*UsageReport, error) {
 	if seven == nil {
 		seven = find("weekly_all")
 	}
+	if five != nil && five.Utilization == nil && five.ResetsAt == "" {
+		// Reported without a number or a reset: no 5-hour window has
+		// started since the last one ended, so none of it is used.
+		zero := 0.0
+		five = &claudeBucket{Utilization: &zero}
+	}
 	r := &UsageReport{Email: profile.Account.Email, Org: profile.Organization.Name}
 	add := func(b *claudeBucket, label, window, tier string) {
 		if l, ok := b.limit(label, window, tier); ok {

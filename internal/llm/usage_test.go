@@ -66,6 +66,28 @@ func TestAnthropicUsage(t *testing.T) {
 	}
 }
 
+// Between 5-hour windows the bucket comes without a number or a reset, in
+// the named bucket or only in the limits list: it shows as unused instead
+// of disappearing.
+func TestAnthropicUsageNoFiveHourWindow(t *testing.T) {
+	for _, body := range []string{
+		`{"five_hour":{"utilization":null,"resets_at":null},"limits":[]}`,
+		`{"five_hour":null,"limits":[{"kind":"session","percent":null,"resets_at":null}]}`,
+	} {
+		srv := serve(t, map[string]string{"/api/oauth/usage": body, "/api/oauth/profile": `{}`})
+		old := anthropicOAuthAPI
+		anthropicOAuthAPI = srv.URL + "/api/oauth"
+		r, err := FetchUsage(context.Background(), "anthropic", "tok", "")
+		anthropicOAuthAPI = old
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(r.Limits) != 1 || r.Limits[0].Window != "5h" || r.Limits[0].Used != 0 || !r.Limits[0].ResetsAt.IsZero() {
+			t.Fatalf("%s: limits = %+v", body, r.Limits)
+		}
+	}
+}
+
 func TestAntigravityUsage(t *testing.T) {
 	srv := serve(t, map[string]string{
 		"/quota": `{"groups":[
