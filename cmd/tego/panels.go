@@ -40,32 +40,32 @@ func todoMark(c palette, status string) (mark, color string) {
 	return "○", c.dim
 }
 
-// panel is the lineedit Panel callback: TODO then Subagents. It runs with
-// the TUI lock held, so it only reads snapshots.
+// panel is the lineedit Panel callback: the live box of the running call,
+// then TODO, Subagents and Queued. The live box comes first because it
+// stands where the finished box will be printed, right after the
+// transcript, so it doesn't jump above the TODO panel when it lands. It
+// runs with the TUI lock held, so it only reads snapshots.
 func (a *app) panel(width int) []string {
 	ag := a.footerAgent.Load()
 	if ag == nil {
 		return nil
 	}
 	c := a.status.c
-	todos, rev := ag.TodoState()
-	out := todoPanel(c, todos, a.todoThisTurn(a.status.snapshot().busy, rev))
-	out = append(out, agentsPanel(c, append(ag.Subagents(), a.runningBackground()...), width, a.cwd)...)
-	out = append(out, a.pendingPanel(c, width)...)
 	live := a.ui.writingBox(width) // an edit or write being written
 	if cmd, since, tail := a.ui.runningBash(); cmd != "" {
 		live = a.ui.runningBox(cmd, time.Since(since), tail, width)
 	}
 	if box := a.ui.approvalLive(width); box != nil {
-		live = box // a call waiting for the user: what it would do, above the picker
+		live = box // a call waiting for the user: what it would do
 	}
+	var out []string
 	if live != nil {
-		if len(out) > 0 {
-			out = append(out, "")
-		}
-		out = append(out, live...)
-		out = append(out, "") // a gap before the Working… line
+		out = append(live, "") // a gap before the panels or the Working… line
 	}
+	todos, rev := ag.TodoState()
+	out = append(out, todoPanel(c, todos, a.todoThisTurn(a.status.snapshot().busy, rev))...)
+	out = append(out, agentsPanel(c, append(ag.Subagents(), a.runningBackground()...), width, a.cwd)...)
+	out = append(out, a.pendingPanel(c, width)...)
 	return out
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"strings"
@@ -37,6 +38,26 @@ func TestTodoPanel(t *testing.T) {
 	}
 	if p := todoPanel(palette{}, todos, true); len(p) == 0 {
 		t.Fatal("list hidden in the turn that finished it")
+	}
+}
+
+// The box of a call being written stands above the TODO panel, where the
+// finished box will be printed.
+func TestLiveBoxAboveTodoPanel(t *testing.T) {
+	u, _ := boxUI(80)
+	ag := &agent.Agent{}
+	in, _ := json.Marshal(map[string]any{"todos": []agent.Todo{{Content: "fix it", Status: "in_progress"}}})
+	if _, err := (&agent.TodoTool{Parent: ag}).Run(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	a := &app{ui: u, status: newStatusBar(palette{}, "/p", iconPresets["unicode"])}
+	a.footerAgent.Store(ag)
+	stream(u, "w1", "write", `{"path":"/p/main.go","content":"package main\n`)
+	aged(u)
+	got := strings.Join(a.panel(80), "\n")
+	box, todo := strings.Index(got, "Write: main.go"), strings.Index(got, "TODO")
+	if box < 0 || todo < 0 || box > todo {
+		t.Fatalf("live box not above the TODO panel:\n%s", got)
 	}
 }
 
