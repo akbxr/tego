@@ -120,20 +120,20 @@ func startServer(ctx context.Context, spec Spec, root string, logw io.Writer) (*
 		},
 	})
 	if err != nil {
-		s.kill()
+		s.abort()
 		return nil, err
 	}
 	var res response
 	select {
 	case res = <-ch:
 	case <-ctx.Done():
-		s.kill()
+		s.abort()
 		return nil, ctx.Err()
 	case <-s.done:
 		return nil, errors.New("exited while starting")
 	}
 	if res.err != nil {
-		s.kill()
+		s.abort()
 		return nil, res.err
 	}
 	var init struct {
@@ -145,10 +145,24 @@ func startServer(ctx context.Context, spec Spec, root string, logw io.Writer) (*
 	dp := string(init.Capabilities.DiagnosticProvider)
 	s.pull = dp != "" && dp != "null" && dp != "false"
 	if err := s.conn.notifyServer("initialized", map[string]any{}); err != nil {
-		s.kill()
+		s.abort()
 		return nil, err
 	}
 	return s, nil
+}
+
+// stopWait bounds how long a server that failed to start is waited for.
+const stopWait = 2 * time.Second
+
+// abort kills a server that failed to start and waits for it to be gone,
+// so what it wrote to stderr (why it failed, for the error) is all read:
+// its stdout can end before that.
+func (s *server) abort() {
+	s.kill()
+	select {
+	case <-s.done:
+	case <-time.After(stopWait):
+	}
 }
 
 func (s *server) onNotify(method string, params json.RawMessage) {
