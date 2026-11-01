@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 )
 
 // The protocol is JSON-RPC 2.0, one message per line, both ways: tego asks
@@ -46,6 +47,10 @@ type conn struct {
 	handle func(method string, params json.RawMessage) (any, error)
 	notify func(method string, params json.RawMessage)
 	done   chan struct{} // closed when the read loop ends
+
+	noteMu   sync.Mutex
+	notes    int           // notifications being handled
+	noteIdle chan struct{} // closed when notes falls back to 0
 }
 
 func newConn(w io.Writer) *conn {
@@ -62,6 +67,24 @@ func (c *conn) write(m *message) error {
 	defer c.wmu.Unlock()
 	_, err = c.w.Write(append(data, '\n'))
 	return err
+}
+
+// settle waits, up to d, for the notifications read so far to be handled:
+// those the extension sent before an answer just received, say.
+func (c *conn) settle(d time.Duration) {
+	c.noteMu.Lock()
+	idle := c.noteIdle
+	busy := c.notes > 0
+	c.noteMu.Unlock()
+	if !busy {
+		return
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-idle:
+	case <-t.C:
+	}
 }
 
 // call sends a request and waits for its answer, or ctx, or the end.
@@ -184,7 +207,20 @@ func (c *conn) dispatch(line []byte) {
 		}()
 	case m.Method != "":
 		if c.notify != nil {
-			go c.notify(m.Method, m.Params)
+			c.noteMu.Lock()
+			if c.notes == 0 {
+				c.noteIdle = make(chan struct{})
+			}
+			c.notes++
+			c.noteMu.Unlock()
+			go func() {
+				c.notify(m.Method, m.Params)
+				c.noteMu.Lock()
+				if c.notes--; c.notes == 0 {
+					close(c.noteIdle)
+				}
+				c.noteMu.Unlock()
+			}()
 		}
 	case m.ID != nil:
 		var id int64

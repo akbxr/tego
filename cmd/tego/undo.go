@@ -20,11 +20,21 @@ func (a *app) snapshotFiles(ctx context.Context, prompt string) {
 	tree, err := a.undo.Snapshot(ctx)
 	if err != nil {
 		if why := a.undo.Off(); why != "" {
-			a.ui.Dim("/undo is off for this session: %s", why)
+			a.dim("/undo is off for this session: %s", why)
 		}
 		return
 	}
 	_ = a.undo.Add(a.undoKey(), undo.Entry{Tree: tree, Prompt: session.Oneline(prompt, 70), Time: time.Now()})
+}
+
+// dim shows a line for the user: dim in the terminal, a notice in an
+// editor (tego acp).
+func (a *app) dim(format string, args ...any) {
+	if a.notice != nil {
+		a.notice(fmt.Sprintf(format, args...))
+		return
+	}
+	a.ui.Dim(format, args...)
 }
 
 // undoKey names this session's snapshots.
@@ -38,6 +48,61 @@ func (a *app) undoKey() string {
 type undoChoice struct {
 	e               undo.Entry
 	restore, remove []string
+}
+
+// label names the moment a choice goes back to.
+func (c undoChoice) label() string {
+	if c.e.Prompt == "" {
+		return "before the /undo at " + c.e.Time.Format("15:04")
+	}
+	return "before: " + c.e.Prompt
+}
+
+// when names it after "before": the prompt "fix the test".
+func (c undoChoice) when() string {
+	if c.e.Prompt == "" {
+		return "the /undo at " + c.e.Time.Format("15:04")
+	}
+	return fmt.Sprintf("the prompt %q", c.e.Prompt)
+}
+
+// undoChoices are the session's snapshots that restoring would change
+// something for, newest first, and the snapshot of the files now (cur).
+// A message instead says why there are none.
+func (a *app) undoChoices(ctx context.Context) (cur string, choices []undoChoice, msg string, err error) {
+	entries := a.undo.Entries(a.undoKey())
+	if len(entries) == 0 {
+		return "", nil, "nothing to undo yet: tego snapshots the files before each prompt", nil
+	}
+	if cur, err = a.undo.Snapshot(ctx); err != nil {
+		return "", nil, "", fmt.Errorf("snapshot: %w", err)
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		e := entries[i]
+		restore, remove, err := a.undo.Changes(ctx, e.Tree, cur)
+		if err != nil || len(restore)+len(remove) == 0 {
+			continue // nothing would change
+		}
+		choices = append(choices, undoChoice{e, restore, remove})
+	}
+	if len(choices) == 0 {
+		return cur, nil, "nothing to undo: no file changed since the first prompt of this session", nil
+	}
+	return cur, choices, "", nil
+}
+
+// restoreUndo puts the files back as they were at c, keeping cur so /undo
+// can undo itself, and tells the agent. It returns what it did.
+func (a *app) restoreUndo(ctx context.Context, cur string, c undoChoice) (string, error) {
+	_ = a.undo.Add(a.undoKey(), undo.Entry{Tree: cur, Time: time.Now()})
+	restored, removed, err := a.undo.Restore(ctx, c.e.Tree, cur)
+	if err != nil {
+		return "", err
+	}
+	a.ag.Notice(fmt.Sprintf("The user used /undo: the project files are back to how they were before %s. "+
+		"Every file change since then is undone, yours and any by commands (%s). Read files again before editing them.",
+		c.when(), quoteFiles(append(restored, removed...), 8)))
+	return fileCounts(restored, removed), nil
 }
 
 // undoFiles is /undo: pick a prompt of this session and put the files back
@@ -56,35 +121,19 @@ func (a *app) undoFiles() {
 		a.ui.Errorf("/undo is off: %s", a.undo.Off())
 		return
 	}
-	entries := a.undo.Entries(a.undoKey())
-	if len(entries) == 0 {
-		a.ui.Dim("nothing to undo yet: tego snapshots the files before each prompt")
-		return
-	}
 	ctx := context.Background()
-	cur, err := a.undo.Snapshot(ctx)
-	if err != nil {
-		a.ui.Errorf("snapshot: %v", err)
+	cur, choices, msg, err := a.undoChoices(ctx)
+	switch {
+	case err != nil:
+		a.ui.Errorf("%v", err)
+		return
+	case msg != "":
+		a.ui.Dim("%s", msg)
 		return
 	}
-	var choices []undoChoice
-	var items []lineedit.PickItem
-	for i := len(entries) - 1; i >= 0; i-- {
-		e := entries[i]
-		restore, remove, err := a.undo.Changes(ctx, e.Tree, cur)
-		if err != nil || len(restore)+len(remove) == 0 {
-			continue // nothing would change
-		}
-		label := "before: " + e.Prompt
-		if e.Prompt == "" {
-			label = "before the /undo at " + e.Time.Format("15:04")
-		}
-		choices = append(choices, undoChoice{e, restore, remove})
-		items = append(items, lineedit.PickItem{Label: label, Detail: ago(e.Time) + " · " + fileCounts(restore, remove)})
-	}
-	if len(choices) == 0 {
-		a.ui.Dim("nothing to undo: no file changed since the first prompt of this session")
-		return
+	items := make([]lineedit.PickItem, len(choices))
+	for i, c := range choices {
+		items[i] = lineedit.PickItem{Label: c.label(), Detail: ago(c.e.Time) + " · " + fileCounts(c.restore, c.remove)}
 	}
 	idx, err := a.tui.Pick("Undo file changes: put the files back as they were", items, "", 0)
 	if err != nil {
@@ -97,20 +146,12 @@ func (a *app) undoFiles() {
 	if err != nil || ok != 0 {
 		return
 	}
-	_ = a.undo.Add(a.undoKey(), undo.Entry{Tree: cur, Time: time.Now()})
-	restored, removed, err := a.undo.Restore(ctx, c.e.Tree, cur)
+	done, err := a.restoreUndo(ctx, cur, c)
 	if err != nil {
 		a.ui.Errorf("undo: %v", err)
 		return
 	}
-	a.ui.Dim("%s; /undo again to put them back", fileCounts(restored, removed))
-	when := "the /undo at " + c.e.Time.Format("15:04")
-	if c.e.Prompt != "" {
-		when = fmt.Sprintf("the prompt %q", c.e.Prompt)
-	}
-	a.ag.Notice(fmt.Sprintf("The user used /undo: the project files are back to how they were before %s. "+
-		"Every file change since then is undone, yours and any by commands (%s). Read files again before editing them.",
-		when, quoteFiles(append(restored, removed...), 8)))
+	a.ui.Dim("%s; /undo again to put them back", done)
 }
 
 // fileCounts says what a restore does: "3 files back, 1 removed".

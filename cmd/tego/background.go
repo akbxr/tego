@@ -35,22 +35,8 @@ func (a *app) setupBackground(task *agent.TaskTool) {
 // backgroundDone says that a background task ended and wakes the REPL,
 // which hands the report to the agent if nothing else does.
 func (a *app) backgroundDone(id string) {
-	for _, s := range a.bg.Statuses() {
-		if s.ID != id {
-			continue
-		}
-		mark, state := "✓", "done"
-		if s.State == agent.SubFailed {
-			mark, state = "✗", "failed"
-			if s.Err != "" {
-				state += ": " + s.Err
-			}
-		}
-		line := fmt.Sprintf("%s [%s] %s %s in the background · %s", mark, s.Name, id, state, fmtElapsed(s.Ended.Sub(s.Started)))
-		if s.Started.IsZero() {
-			line = fmt.Sprintf("%s [%s] %s %s in the background", mark, s.Name, id, state)
-		}
-		if s.State == agent.SubFailed {
+	if line, failed, ok := backgroundLine(a.bg, id); ok {
+		if failed {
 			a.ui.OnInfo(line)
 		} else {
 			a.ui.Dim("%s", line)
@@ -63,6 +49,29 @@ func (a *app) backgroundDone(id string) {
 	case a.bgDone <- struct{}{}:
 	default:
 	}
+}
+
+// backgroundLine says how background task id ended: "✓ [Digger] t1 done
+// in the background · 12s". ok is false when there is no such task.
+func backgroundLine(bg *agent.Background, id string) (line string, failed, ok bool) {
+	for _, s := range bg.Statuses() {
+		if s.ID != id {
+			continue
+		}
+		mark, state := "✓", "done"
+		if s.State == agent.SubFailed {
+			mark, state = "✗", "failed"
+			if s.Err != "" {
+				state += ": " + s.Err
+			}
+		}
+		line = fmt.Sprintf("%s [%s] %s %s in the background · %s", mark, s.Name, id, state, fmtElapsed(s.Ended.Sub(s.Started)))
+		if s.Started.IsZero() {
+			line = fmt.Sprintf("%s [%s] %s %s in the background", mark, s.Name, id, state)
+		}
+		return line, s.State == agent.SubFailed, true
+	}
+	return "", false, false
 }
 
 func fmtElapsed(d time.Duration) string {

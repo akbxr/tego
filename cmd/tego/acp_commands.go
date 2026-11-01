@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,8 +17,8 @@ import (
 )
 
 // Slash commands in an editor: those of the terminal that make sense
-// there. Session handling (new, resume, fork, rewind) is the editor's, and
-// login needs a terminal.
+// there, and the extensions'. Session handling (new, resume, fork, rewind)
+// is the editor's, and login needs a terminal.
 
 type acpCommand struct {
 	name, help, hint string
@@ -30,6 +31,8 @@ type slashResult struct {
 	reply  string
 	prompt string
 	job    func(context.Context) error
+	// newCommands: the commands on offer changed; the editor is told.
+	newCommands bool
 }
 
 var acpCommands = []acpCommand{
@@ -160,6 +163,28 @@ var acpCommands = []acpCommand{
 		}
 		return slashResult{reply: fence(b.String())}
 	}},
+	{"undo", "Put the files back as they were before the latest prompt; N: before the Nth latest", "N | list", acpUndo},
+	{"tasks", "Background tasks and shells; stop one by its id", "stop <id>", acpTasks},
+	{"extensions", "The extensions and what they add; trust runs the project's untrusted ones", "trust",
+		func(sess *acpSession, _ context.Context, args string) slashResult {
+			a := sess.app
+			var r slashResult
+			if args == "trust" {
+				if names := a.ext.Trust(); len(names) == 0 {
+					r.reply = "No untrusted extensions.\n\n"
+				} else {
+					a.ext.Wait(10 * time.Second)
+					r.reply = fmt.Sprintf("Trusted and started %s (until their files change).\n\n", strings.Join(names, ", "))
+					r.newCommands = true // theirs
+				}
+			}
+			st := a.ext.Status()
+			if len(st) == 0 {
+				return slashResult{reply: strings.ToUpper(noExtensions[:1]) + noExtensions[1:] + "."}
+			}
+			r.reply += fence(extensionRows(palette{}, st))
+			return r
+		}},
 	{"skills", "List the skills", "", func(sess *acpSession, _ context.Context, _ string) slashResult {
 		if len(sess.skills) == 0 {
 			return slashResult{reply: "No skills found (.agents/skills, .claude/skills, .tego/skills)."}
@@ -176,7 +201,7 @@ var acpCommands = []acpCommand{
 func fence(s string) string { return "```\n" + strings.TrimRight(s, "\n") + "\n```\n" }
 
 // commandList is what the editor offers after "/": tego's commands, the
-// project's custom commands, and one per skill.
+// extensions', the project's custom commands, and one per skill.
 func (sess *acpSession) commandList() []acp.Command {
 	var cmds []acp.Command
 	for _, c := range acpCommands {
@@ -185,6 +210,10 @@ func (sess *acpSession) commandList() []acp.Command {
 			cmd.Input = &acp.CommandInput{Hint: c.hint}
 		}
 		cmds = append(cmds, cmd)
+	}
+	for _, c := range sess.app.ext.Commands() {
+		cmds = append(cmds, acp.Command{Name: c.Name, Description: firstNonEmpty(c.Description, "From extension "+c.Ext),
+			Input: &acp.CommandInput{Hint: "arguments"}})
 	}
 	names := make([]string, 0, len(sess.commands))
 	for n := range sess.commands {
@@ -220,6 +249,14 @@ func (sess *acpSession) slash(ctx context.Context, text string) (slashResult, bo
 			return c.run(sess, ctx, args), true
 		}
 	}
+	if sess.app.ext.HasCommand(name) {
+		return slashResult{job: func(ctx context.Context) error {
+			if err := sess.app.ext.RunCommand(ctx, name, args); err != nil && ctx.Err() == nil {
+				sess.OnText(fmt.Sprintf("/%s failed: %v", name, err))
+			}
+			return nil
+		}}, true
+	}
 	if c, ok := sess.commands[name]; ok {
 		return slashResult{prompt: c.Expand(args)}, true
 	}
@@ -243,4 +280,75 @@ func (sess *acpSession) slash(ctx context.Context, text string) (slashResult, bo
 // notifyMode tells the editor the mode changed (by a command, not its picker).
 func (sess *acpSession) notifyMode() {
 	sess.notify(acp.ModeUpdate{SessionUpdate: "current_mode_update", CurrentModeID: sess.mode()})
+}
+
+// acpUndo is /undo in an editor: the terminal's (undo.go) without its
+// picker. /undo goes back to before the latest prompt that changed files,
+// /undo N to before the Nth latest, and /undo list shows them.
+func acpUndo(sess *acpSession, ctx context.Context, args string) slashResult {
+	a := sess.app
+	if why := a.undo.Off(); why != "" {
+		return slashResult{reply: "/undo is off: " + why + "."}
+	}
+	cur, choices, msg, err := a.undoChoices(ctx)
+	switch {
+	case err != nil:
+		return slashResult{reply: "undo: " + err.Error()}
+	case msg != "":
+		return slashResult{reply: strings.ToUpper(msg[:1]) + msg[1:] + "."}
+	}
+	if args == "list" {
+		var b strings.Builder
+		for i, c := range choices {
+			fmt.Fprintf(&b, "%d. %s · %s · %s\n", i+1, c.label(), ago(c.e.Time), fileCounts(c.restore, c.remove))
+		}
+		return slashResult{reply: fence(b.String()) + "`/undo N` puts the files back as they were at N."}
+	}
+	n := 1
+	if args != "" {
+		if n, err = strconv.Atoi(args); err != nil || n < 1 || n > len(choices) {
+			return slashResult{reply: fmt.Sprintf("Use `/undo`, `/undo N` (1 to %d) or `/undo list`.", len(choices))}
+		}
+	}
+	c := choices[n-1]
+	done, err := a.restoreUndo(ctx, cur, c)
+	if err != nil {
+		return slashResult{reply: "undo: " + err.Error()}
+	}
+	files := append(append([]string{}, c.restore...), c.remove...)
+	return slashResult{reply: fmt.Sprintf("The files are back to how they were before %s: %s (%s). `/undo` again puts them back.",
+		c.when(), done, quoteFiles(files, 8))}
+}
+
+// acpTasks is /tasks: the background tasks and shells, or /tasks stop <id>.
+func acpTasks(sess *acpSession, _ context.Context, args string) slashResult {
+	a := sess.app
+	if id, ok := strings.CutPrefix(args, "stop "); ok {
+		id = strings.TrimSpace(id)
+		for _, s := range a.bg.Statuses() {
+			if s.ID == id && a.bg.Stop(id) {
+				a.ag.Notice(fmt.Sprintf("The user stopped background task %s %s; it won't report.", s.ID, s.Name))
+				return slashResult{reply: "Stopped " + id + " " + s.Name + "."}
+			}
+		}
+		for _, s := range a.env.Shells() {
+			if s.ID == id && a.env.StopShell(id) {
+				a.ag.Notice(fmt.Sprintf("The user stopped background shell %s (%s).", s.ID, oneLineCut(s.Command, 60)))
+				return slashResult{reply: "Stopped " + id + "."}
+			}
+		}
+		return slashResult{reply: "Nothing running is called `" + id + "` (see /tasks)."}
+	}
+	subs, shells := a.bg.Statuses(), a.env.Shells()
+	if len(subs) == 0 && len(shells) == 0 {
+		return slashResult{reply: "Nothing runs in the background (subagents started with background: true, and shells such as a dev server, show here)."}
+	}
+	var b strings.Builder
+	for _, s := range subs {
+		fmt.Fprintf(&b, "%s\n    %s\n", subRow(palette{}, s, false), oneLineCut(s.Prompt, 100))
+	}
+	for _, s := range shells {
+		b.WriteString(shellRow(s) + "\n")
+	}
+	return slashResult{reply: fence(b.String()) + "`/tasks stop <id>` stops one."}
 }

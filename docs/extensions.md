@@ -188,6 +188,10 @@ for line in sys.stdin:
         break
 ```
 
+## In an editor
+
+Extensions run in `tego acp` sessions too, with the same hooks and events, and their commands show in the editor's `/` menu. What they ask of the user goes through the editor: `notify` shows in the thread, `confirm` and `select` become a permission prompt, and `input` returns cancelled, since ACP can't ask for text. A message sent with `sendMessage` runs right after the running prompt; when the session is idle, after your next prompt. `/extensions` lists them and `/extensions trust` runs a project's.
+
 ## Not yet
 
-These are not supported yet: extensions in `tego acp`, status line widgets, custom rendering of tools, and new providers.
+These are not supported yet: status line widgets, custom rendering of tools, and new providers.

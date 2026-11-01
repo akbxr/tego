@@ -24,7 +24,7 @@ import (
 	"github.com/akbxr/tego/internal/session"
 	"github.com/akbxr/tego/internal/stats"
 	"github.com/akbxr/tego/internal/tools"
-	"github.com/akbxr/tego/internal/web"
+	"github.com/akbxr/tego/internal/undo"
 )
 
 // tego acp: tego as an Agent Client Protocol agent, for editors that run
@@ -36,6 +36,13 @@ import (
 // When the editor offers it, files are read and written through its buffers
 // (unsaved changes included, edits show up as they are made) and commands
 // run in its terminals.
+//
+// A session runs what the terminal's does around the agent: extensions,
+// file snapshots for /undo, background tasks and the prompt cache
+// keep-alive. ACP has no turn the agent starts by itself, so what would
+// start one in the terminal (a background task's report, a prompt an
+// extension sends) runs right after the running prompt, or else with the
+// next one.
 
 func cmdACP(cfg *config.Config, store *auth.Store, in io.Reader, out io.Writer) error {
 	s := newACPServer(cfg, store, out)
@@ -249,14 +256,25 @@ type acpSession struct {
 	id   string // the tego session's id
 	cwd  string
 	ag   *agent.Agent
-	app  *app // the session's model choices (small model, web search)
+	app  *app // what the session shares with the terminal: models, extensions, undo, background tasks
 	env  *tools.Env
 	mcp  *mcp.Manager
 	lsp  *lsp.Manager // nil when off
 	plan atomic.Bool
 
+	// life ends when the session closes: the keep-alive stops, and the
+	// extensions' questions to the editor are dropped.
+	life      context.Context
+	stop      context.CancelFunc
+	kaStopped chan struct{} // closed when the keep-alive loop ended; nil: none
+	asks      atomic.Int64  // the extensions' questions, for their ids
+	announced chan struct{} // closed once the editor was told about the session
+	announce1 sync.Once
+
 	mu        sync.Mutex
-	cancel    context.CancelFunc // the running prompt's
+	run       *acpRun       // the running prompt; nil when idle
+	kaDone    chan struct{} // closed when the keep-alive in flight ends; nil: none
+	queued    []string      // prompts extensions sent, run after the running prompt
 	mcpWaited bool
 	titling   bool
 	title     string // the session's (its Session.Title is written from the titling goroutine)
@@ -278,6 +296,8 @@ func (s *acpServer) open(cwd string, servers []acp.MCPServer, id string) (*acpSe
 	}
 	sess := &acpSession{srv: s, cwd: cwd, before: map[string]*string{}, terms: map[string]string{},
 		commands: agent.LoadCommands(cfg.Dir, cwd)}
+	sess.life, sess.stop = context.WithCancel(context.Background())
+	sess.announced = make(chan struct{})
 	env := &tools.Env{Cwd: cwd}
 	if s.caps.FS.ReadTextFile && s.caps.FS.WriteTextFile {
 		env.Files = sess
@@ -310,17 +330,15 @@ func (s *acpServer) open(cwd string, servers []acp.MCPServer, id string) (*acpSe
 		Plan:              &sess.plan,
 		Perms:             agent.NewPermissions(firstNonEmpty(cfg.Permissions, agent.PermYolo)),
 		CacheWritePremium: statsPrices(cfg).CacheWritePremium,
+		CacheReadRatio:    statsPrices(cfg).CacheReadRatio,
 	}
 	ag.Approve = sess.approve
-	ap := &app{cfg: cfg, store: s.store, cwd: cwd, ag: ag, agentDefs: agent.LoadAgents(cfg.Dir, cwd)}
-	task := &agent.TaskTool{Parent: ag, System: agent.SystemPrompt(cwd, files, skills, agent.SubagentMode), Env: env,
-		Concurrency: cfg.Subagents, MaxTurns: cfg.SubagentMaxTurns(), Watchdog: cfg.SubagentWatchdog(), Small: ap.small, Models: ap.subagentModels, Agents: ap.agents, ResolveModel: ap.resolveModel,
-		Isolate: isolator(cfg.Dir, cwd)}
-	ag.Tools = append(tools.Builtins(env), task,
-		&agent.TodoTool{Parent: ag},
-		&agent.CheckpointTool{Parent: ag},
-		&agent.RewindTool{Parent: ag},
-		web.NewSearchTool(ap.nativeSearch))
+	// Kept warm between prompts as in the terminal (keepAlive below).
+	ag.KeepAlive, ag.KeepAliveAuto = cfg.CacheKeepAlive()
+	ap := &app{cfg: cfg, store: s.store, cwd: cwd, ag: ag, env: env, skills: skills, agentDefs: agent.LoadAgents(cfg.Dir, cwd),
+		undo: undo.Open(cfg.Dir, cwd), notice: sess.OnInfo}
+	ap.setupTools(files)
+	ap.bg.OnDone = sess.backgroundDone
 	log := stats.OpenLog(cfg.Dir)
 	ag.ToolStat = func(name string, isErr, subagent bool) {
 		class := llm.ClassMain
@@ -362,6 +380,9 @@ func (s *acpServer) open(cwd string, servers []acp.MCPServer, id string) (*acpSe
 	}
 	sess.mcp = mcp.StartWith(mergeMCP(cfgs, servers), cwd, filepath.Join(cfg.Dir, "logs"), mcpOptions(cfg))
 	ag.Dynamic = sess.mcp.Tools
+	if untrusted := ap.loadExtensions(acpExtHost{sess}); ap.ext != nil {
+		go sess.watchExtensions(untrusted)
+	}
 	switch cfg.MCPTools {
 	case "eager":
 		ag.LazyThreshold = -1
@@ -378,6 +399,10 @@ func (s *acpServer) open(cwd string, servers []acp.MCPServer, id string) (*acpSe
 	s.sessions[sess.id] = sess
 	s.folders[ag.SessionID] = cwd
 	s.mu.Unlock()
+	if ag.KeepAlive > 0 {
+		sess.kaStopped = make(chan struct{})
+		go sess.keepAlive()
+	}
 	return sess, nil
 }
 
@@ -413,8 +438,14 @@ func mergeMCP(own []mcp.ServerConfig, servers []acp.MCPServer) []mcp.ServerConfi
 
 func (sess *acpSession) close() {
 	sess.cancelPrompt()
+	sess.stop()
+	if sess.kaStopped != nil {
+		<-sess.kaStopped
+	}
+	sess.app.bg.Close(10 * time.Second)
 	sess.env.KillShells() // a dev server must not outlive the thread
 	sess.lsp.Close()
+	sess.app.ext.Close() // session_end, then they stop
 	if sess.mcp != nil {
 		sess.mcp.Close()
 	}
@@ -431,7 +462,7 @@ func (sess *acpSession) notify(update any) {
 
 // announce tells the editor what the session offers beyond the prompt.
 func (sess *acpSession) announce() {
-	sess.notify(acp.CommandsUpdate{SessionUpdate: "available_commands_update", AvailableCommands: sess.commandList()})
+	sess.announceCommands()
 	sess.mu.Lock()
 	t := sess.title
 	sess.mu.Unlock()
@@ -439,6 +470,7 @@ func (sess *acpSession) announce() {
 		sess.notify(acp.SessionInfoUpdate{SessionUpdate: "session_info_update", Title: t})
 	}
 	sess.sendPlan()
+	sess.announce1.Do(func() { close(sess.announced) })
 }
 
 // Modes: tego's permission modes, and plan mode.
@@ -526,6 +558,8 @@ func cachedModels(cfg *config.Config, store *auth.Store) []string {
 }
 
 func (sess *acpSession) setConfig(id, value string) error {
+	sess.mu.Lock() // not while the keep-alive reads the model
+	defer sess.mu.Unlock()
 	switch id {
 	case "model":
 		if err := sess.app.setModel(value); err != nil {
@@ -542,42 +576,64 @@ func (sess *acpSession) setConfig(id, value string) error {
 	return nil
 }
 
+// acpRun is a running prompt.
+type acpRun struct{ cancel context.CancelFunc }
+
 func (sess *acpSession) cancelPrompt() {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	if sess.cancel != nil {
-		sess.cancel()
+	if sess.run != nil {
+		sess.run.cancel()
 	}
 }
 
-// prompt is session/prompt: one turn, streamed as updates.
+// prompt is session/prompt: one turn, streamed as updates, and what came
+// for the session meanwhile (followUps).
 func (sess *acpSession) prompt(ctx context.Context, blocks []acp.ContentBlock) (any, error) {
 	sess.mu.Lock()
-	if sess.cancel != nil {
+	if sess.run != nil {
 		sess.mu.Unlock()
 		return nil, &acp.Error{Code: acp.CodeInvalidRequest, Message: "a prompt is already running in this session"}
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	sess.cancel = cancel
+	run := &acpRun{cancel: cancel}
+	sess.run = run
+	keepAlive := sess.kaDone
 	sess.mu.Unlock()
 	defer func() {
 		sess.mu.Lock()
-		sess.cancel = nil
+		if sess.run == run {
+			sess.run = nil
+		}
 		sess.mu.Unlock()
 		cancel()
 	}()
+	if keepAlive != nil {
+		<-keepAlive // the agent is the turn's once the keep-alive in flight ended
+	}
 
 	text, images := promptContent(blocks)
+	resp, err := sess.runPrompt(ctx, text, images)
+	if err != nil {
+		return nil, err
+	}
+	if resp, err = sess.followUps(ctx, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// runPrompt runs what the editor sent: a command, or a prompt for the agent.
+func (sess *acpSession) runPrompt(ctx context.Context, text string, images []llm.Block) (acp.PromptResponse, error) {
 	if strings.HasPrefix(text, "/") {
 		r, ok := sess.slash(ctx, text)
+		if r.newCommands {
+			sess.announceCommands()
+		}
 		switch {
 		case !ok: // not a command: an ordinary prompt
 		case r.job != nil:
-			err := r.job(ctx)
-			if ctx.Err() == nil && err != nil && !strings.HasPrefix(err.Error(), "stopped after") {
-				return nil, err
-			}
-			return acp.PromptResponse{StopReason: stopReason(ctx, err)}, nil
+			return result(ctx, r.job(ctx))
 		case r.prompt != "":
 			text = r.prompt
 		default:
@@ -585,16 +641,121 @@ func (sess *acpSession) prompt(ctx context.Context, blocks []acp.ContentBlock) (
 			return acp.PromptResponse{StopReason: "end_turn"}, nil
 		}
 	}
+	return sess.turn(ctx, text, images)
+}
+
+// turn sends a prompt to the agent as the terminal's runTurn does: through
+// the extensions, with the files snapshotted for /undo.
+func (sess *acpSession) turn(ctx context.Context, text string, images []llm.Block) (acp.PromptResponse, error) {
 	if strings.TrimSpace(text) == "" && len(images) == 0 {
 		return acp.PromptResponse{StopReason: "end_turn"}, nil
 	}
 	sess.waitMCP()
 	sess.maybeTitle(text)
-	err := sess.ag.Run(ctx, text, images...)
+	err := sess.app.extTurn(ctx, text, func(ctx context.Context, prompt string) error {
+		return sess.ag.Run(ctx, prompt, images...)
+	})
+	return result(ctx, err)
+}
+
+// followUps runs, once a prompt ended well, what would start a turn of its
+// own in the terminal: the reports of background tasks that ended after
+// its last request, and prompts extensions sent. The session is idle (and
+// what comes later waits for the next prompt) only when none is left.
+func (sess *acpSession) followUps(ctx context.Context, resp acp.PromptResponse) (acp.PromptResponse, error) {
+	for resp.StopReason == "end_turn" {
+		sess.mu.Lock()
+		var reports, next string
+		switch {
+		case sess.app.bg.Pending():
+			reports = sess.app.bg.Take()
+		case len(sess.queued) > 0:
+			next, sess.queued = sess.queued[0], sess.queued[1:]
+		default:
+			sess.run = nil
+			sess.mu.Unlock()
+			return resp, nil
+		}
+		sess.mu.Unlock()
+		var err error
+		if reports != "" {
+			resp, err = result(ctx, sess.ag.Run(ctx, backgroundPrompt(reports)))
+		} else {
+			sess.notify(acp.Chunk{SessionUpdate: "user_message_chunk", Content: acp.Text(next)})
+			resp, err = sess.turn(ctx, next, nil)
+		}
+		if err != nil {
+			return resp, err
+		}
+	}
+	return resp, nil
+}
+
+// result is the response to a prompt that ended with err; an error that is
+// not the prompt's end (cancelled, out of turns) fails the request.
+func result(ctx context.Context, err error) (acp.PromptResponse, error) {
 	if ctx.Err() == nil && err != nil && !strings.HasPrefix(err.Error(), "stopped after") {
-		return nil, err
+		return acp.PromptResponse{}, err
 	}
 	return acp.PromptResponse{StopReason: stopReason(ctx, err)}, nil
+}
+
+// keepAlive keeps the prompt cache warm between prompts, as the terminal's
+// REPL does (keepalive.go): each second, while no prompt runs, it asks the
+// agent whether a refresh is due and sends it. A prompt that starts waits
+// for the refresh in flight.
+func (sess *acpSession) keepAlive() {
+	defer close(sess.kaStopped)
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-sess.life.Done():
+			return
+		case <-tick.C:
+		}
+		sess.mu.Lock()
+		if sess.run != nil {
+			sess.mu.Unlock()
+			continue
+		}
+		req := sess.ag.KeepAliveDue()
+		if req == nil {
+			sess.mu.Unlock()
+			continue
+		}
+		done := make(chan struct{})
+		sess.kaDone = done
+		p := sess.ag.Provider
+		sess.mu.Unlock()
+
+		start := time.Now()
+		ctx, cancel := context.WithTimeout(sess.life, keepAliveTimeout)
+		u, err := llm.Prewarm(ctx, p, req)
+		cancel()
+		sess.mu.Lock()
+		sess.ag.KeepAliveDone(req, start, u, err)
+		sess.kaDone = nil
+		sess.mu.Unlock()
+		close(done)
+	}
+}
+
+// backgroundDone says in the thread that a background task ended. Its
+// report goes with the running prompt's next request, or right after it
+// (followUps); when idle, with the next prompt.
+func (sess *acpSession) backgroundDone(id string) {
+	line, _, ok := backgroundLine(sess.app.bg, id)
+	if !ok {
+		return
+	}
+	sess.mu.Lock()
+	idle := sess.run == nil
+	sess.mu.Unlock()
+	if idle {
+		line += "; the agent gets its report with your next prompt"
+	}
+	sess.OnInfo(line)
 }
 
 func stopReason(ctx context.Context, err error) string {
