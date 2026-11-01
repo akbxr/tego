@@ -42,6 +42,37 @@ func TestSystemPromptIsStable(t *testing.T) {
 	}
 }
 
+func TestFindTools(t *testing.T) {
+	on := func(names ...string) func(string) (string, error) {
+		return func(n string) (string, error) {
+			for _, m := range names {
+				if m == n {
+					return "/bin/" + n, nil
+				}
+			}
+			return "", exec.ErrNotFound
+		}
+	}
+	for _, c := range []struct {
+		have []string
+		want string
+	}{
+		{[]string{"go", "python3", "uv"}, "python3, uv, go (no `python`: use python3)"},
+		{[]string{"python", "python3", "node"}, "python3, python, node"},
+		{[]string{"node", "bun"}, "node, bun"},
+		{nil, ""},
+	} {
+		if got := findTools(on(c.have...)); got != c.want {
+			t.Errorf("%v: %q, want %q", c.have, got, c.want)
+		}
+	}
+	// The section lists what this machine has, once.
+	p := SystemPrompt(t.TempDir(), nil, nil, Interactive)
+	if tools := pathTools(); tools != "" && !strings.Contains(p, "- On PATH: "+tools+"\n") {
+		t.Fatalf("tools line missing:\n%s", p)
+	}
+}
+
 func TestEnvReportedWhenItChanges(t *testing.T) {
 	env := "today is 2026-10-14 (Wednesday); git branch: main."
 	a := &Agent{Env: func() string { return env }}

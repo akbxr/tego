@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/akbxr/tego/internal/llm"
@@ -307,6 +308,9 @@ func SystemPrompt(cwd string, files []ContextFile, skills []Skill, mode PromptMo
 	b.WriteString("\n\n# Environment\n")
 	fmt.Fprintf(&b, "- Working directory: %s\n", cwd)
 	fmt.Fprintf(&b, "- Platform: %s/%s\n", runtime.GOOS, runtime.GOARCH)
+	if t := pathTools(); t != "" {
+		b.WriteString("- On PATH: " + t + "\n")
+	}
 	// The date and git branch change during a session's life (a resume on
 	// another day, a checkout). Here they would change the cached prefix and
 	// invalidate every thinking block after it, so they are reported in
@@ -324,6 +328,33 @@ func SystemPrompt(cwd string, files []ContextFile, skills []Skill, mode PromptMo
 		}
 	}
 	return b.String()
+}
+
+// toolCandidates are the interpreters, package managers and build tools
+// the environment section lists when they are on PATH, so the model
+// doesn't guess (`python` on a Mac that has only python3).
+var toolCandidates = []string{"python3", "python", "uv", "pip3", "node", "npm", "pnpm", "bun", "deno",
+	"go", "cargo", "java", "ruby", "php", "make", "docker", "gh", "jq"}
+
+// pathTools lists the toolCandidates on PATH, once per process: bash runs
+// with tego's own environment, so this is what its commands find. A
+// missing `python` beside python3 is said, as it is the usual wrong guess.
+var pathTools = sync.OnceValue(func() string { return findTools(exec.LookPath) })
+
+func findTools(look func(string) (string, error)) string {
+	var found []string
+	has := map[string]bool{}
+	for _, name := range toolCandidates {
+		if _, err := look(name); err == nil {
+			found = append(found, name)
+			has[name] = true
+		}
+	}
+	s := strings.Join(found, ", ")
+	if has["python3"] && !has["python"] {
+		s += " (no `python`: use python3)"
+	}
+	return s
 }
 
 // envPrefix starts the reminder that reports the date and git branch.
