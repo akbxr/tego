@@ -20,13 +20,34 @@ import (
 // background; their tools join after MCP's. It returns a note for the
 // user when some of the project's are not trusted yet.
 func (a *app) startExtensions() string {
-	cands := ext.Discover(a.cfg.Dir, a.cwd)
-	if len(cands) == 0 {
+	a.extMsgs = make(chan string, 16)
+	untrusted := a.loadExtensions(extHost{a})
+	if a.ext == nil {
 		return ""
 	}
-	a.extMsgs = make(chan string, 16)
+	go a.reportExtensionFailures()
+	if len(untrusted) == 0 {
+		return ""
+	}
+	if !a.interactive {
+		return fmt.Sprintf("this project has %s not trusted yet (%s), which don't run: trust them in an interactive tego with /extensions trust",
+			plural(len(untrusted), "extension"), strings.Join(untrusted, ", "))
+	}
+	return fmt.Sprintf("this project has %s not trusted yet (%s): /extensions shows them, /extensions trust runs them",
+		plural(len(untrusted), "extension"), strings.Join(untrusted, ", "))
+}
+
+// loadExtensions starts the extensions found for the session with host
+// answering them (a.ext stays nil when there are none), hooks them into
+// the agent and adds their tools after MCP's. It returns the project's
+// extensions not trusted yet. The terminal and tego acp share it.
+func (a *app) loadExtensions(host ext.Host) (untrusted []string) {
+	cands := ext.Discover(a.cfg.Dir, a.cwd)
+	if len(cands) == 0 {
+		return nil
+	}
 	a.ext = ext.Start(cands, ext.Options{Home: a.cfg.Dir, Cwd: a.cwd, SessionID: a.ag.SessionID, Version: version,
-		Model: a.extModel(), Host: extHost{a}})
+		Model: a.extModel(), Host: host})
 	a.ag.Hooks = a.ext
 	mcpTools := a.ag.Dynamic
 	a.ag.Dynamic = func() []tools.Tool {
@@ -43,22 +64,12 @@ func (a *app) startExtensions() string {
 		}
 		return append(ts[:len(ts):len(ts)], a.ext.Tools(func(n string) bool { return taken[n] })...)
 	}
-	go a.reportExtensionFailures()
-	var untrusted []string
 	for _, s := range a.ext.Status() {
 		if s.State == ext.StateUntrusted {
 			untrusted = append(untrusted, s.Name)
 		}
 	}
-	if len(untrusted) == 0 {
-		return ""
-	}
-	if !a.interactive {
-		return fmt.Sprintf("this project has %s not trusted yet (%s), which don't run: trust them in an interactive tego with /extensions trust",
-			plural(len(untrusted), "extension"), strings.Join(untrusted, ", "))
-	}
-	return fmt.Sprintf("this project has %s not trusted yet (%s): /extensions shows them, /extensions trust runs them",
-		plural(len(untrusted), "extension"), strings.Join(untrusted, ", "))
+	return untrusted
 }
 
 // extStartWait bounds how long startup failures are waited for: a Go
@@ -68,12 +79,7 @@ var extStartWait = 3 * time.Minute
 // reportExtensionFailures says which extensions failed to start, once
 // they all tried: otherwise one that doesn't run goes unnoticed.
 func (a *app) reportExtensionFailures() {
-	a.ext.Wait(extStartWait)
-	for _, s := range a.ext.Status() {
-		if s.State != ext.StateFailed {
-			continue
-		}
-		msg := fmt.Sprintf("extension %s did not start: %s", s.Name, s.Err)
+	for _, msg := range a.extensionFailures() {
 		if a.interactive {
 			a.ui.Errorf("%s", msg)
 			if a.tui != nil {
@@ -83,6 +89,19 @@ func (a *app) reportExtensionFailures() {
 			fmt.Fprintln(os.Stderr, "tego:", msg)
 		}
 	}
+}
+
+// extensionFailures waits for the extensions to start and says which
+// did not.
+func (a *app) extensionFailures() []string {
+	a.ext.Wait(extStartWait)
+	var out []string
+	for _, s := range a.ext.Status() {
+		if s.State == ext.StateFailed {
+			out = append(out, fmt.Sprintf("extension %s did not start: %s", s.Name, s.Err))
+		}
+	}
+	return out
 }
 
 // extModel is the session's model, for extensions.
@@ -110,10 +129,18 @@ func (a *app) extensionsCommand(args string) {
 	}
 	st := a.ext.Status()
 	if len(st) == 0 {
-		a.ui.Dim("no extensions: put them in ~/.tego/extensions/ or the project's .tego/extensions/ (.ts, .js, .py or an executable)")
+		a.ui.Dim("%s", noExtensions)
 		return
 	}
-	c := a.ui.c
+	a.ui.Finish()
+	fmt.Fprint(a.out, extensionRows(a.ui.c, st))
+}
+
+const noExtensions = "no extensions: put them in ~/.tego/extensions/ or the project's .tego/extensions/ (.ts, .js, .py or an executable)"
+
+// extensionRows lists the extensions, two rows each: state, then what
+// they add.
+func extensionRows(c palette, st []ext.Status) string {
 	var b strings.Builder
 	for _, s := range st {
 		color := c.dim
@@ -147,8 +174,7 @@ func (a *app) extensionsCommand(args string) {
 			fmt.Fprintf(&b, "    %s%s%s\n", c.dim, strings.Join(parts, " · "), c.reset)
 		}
 	}
-	a.ui.Finish()
-	fmt.Fprint(a.out, b.String())
+	return b.String()
 }
 
 // extHost answers what extensions ask of tego.

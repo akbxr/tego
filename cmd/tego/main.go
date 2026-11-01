@@ -571,6 +571,9 @@ type app struct {
 	extMsgs   chan string  // prompts extensions send (sendMessage), taken by the REPL
 	bg        *agent.Background
 	bgDone    chan struct{} // a background task ended: the REPL may hand its report over
+	// notice, when set (tego acp), shows the shared helpers' lines for the
+	// user instead of the terminal.
+	notice func(msg string)
 
 	files fileIndex // project paths for the @ picker
 
@@ -648,24 +651,31 @@ func (a *app) init(spec, thinking string) error {
 		// The REPL keeps the prompt cache warm while the user is away.
 		a.ag.KeepAlive, a.ag.KeepAliveAuto = a.cfg.CacheKeepAlive()
 	}
-	task := &agent.TaskTool{Parent: a.ag, System: agent.SystemPrompt(a.cwd, files, a.skills, agent.SubagentMode), Env: a.env, Concurrency: a.cfg.Subagents,
-		MaxTurns: a.cfg.SubagentMaxTurns(), Watchdog: a.cfg.SubagentWatchdog(), Small: a.small, Models: a.subagentModels, Agents: a.agents, ResolveModel: a.resolveModel, Isolate: isolator(a.cfg.Dir, a.cwd)}
-	a.setupBackground(task)
+	a.setupTools(files)
 	if a.tui != nil {
 		// Shells a prompt left running get a word before the turn ends.
 		a.ag.Shells = func(since time.Time) []tools.ShellInfo { return a.env.ShellsSince(since, "") }
 	}
-	a.ag.Tools = append(tools.Builtins(a.env), task, &agent.TaskStatusTool{BG: a.bg},
-		&agent.TodoTool{Parent: a.ag},
-		&agent.CheckpointTool{Parent: a.ag},
-		&agent.RewindTool{Parent: a.ag},
-		web.NewSearchTool(a.nativeSearch))
 	if spec != "" {
 		if err := a.setModel(spec); err != nil {
 			return err
 		}
 	}
 	return a.newSession()
+}
+
+// setupTools gives the agent tego's tools: the builtins, task (with
+// background tasks and task_status), todo, checkpoint, rewind and web
+// search. The terminal and tego acp share it.
+func (a *app) setupTools(files []agent.ContextFile) {
+	task := &agent.TaskTool{Parent: a.ag, System: agent.SystemPrompt(a.cwd, files, a.skills, agent.SubagentMode), Env: a.env, Concurrency: a.cfg.Subagents,
+		MaxTurns: a.cfg.SubagentMaxTurns(), Watchdog: a.cfg.SubagentWatchdog(), Small: a.small, Models: a.subagentModels, Agents: a.agents, ResolveModel: a.resolveModel, Isolate: isolator(a.cfg.Dir, a.cwd)}
+	a.setupBackground(task)
+	a.ag.Tools = append(tools.Builtins(a.env), task, &agent.TaskStatusTool{BG: a.bg},
+		&agent.TodoTool{Parent: a.ag},
+		&agent.CheckpointTool{Parent: a.ag},
+		&agent.RewindTool{Parent: a.ag},
+		web.NewSearchTool(a.nativeSearch))
 }
 
 func (a *app) setModel(spec string) error {
@@ -738,6 +748,16 @@ func (a *app) closeSession() {
 // through the agent.
 func (a *app) runTurn(ctx context.Context, prompt string) error {
 	a.waitMCP()
+	return a.extTurn(ctx, prompt, func(ctx context.Context, prompt string) error {
+		blocks := a.userBlocks(prompt)
+		return a.ag.Run(ctx, blocks[0].Text, blocks[1:]...)
+	})
+}
+
+// extTurn runs a prompt the way every front end does: the extensions'
+// input hook may change or take it, the files are snapshotted for /undo,
+// run sends it, and the extensions hear the answer (turn_end).
+func (a *app) extTurn(ctx context.Context, prompt string, run func(ctx context.Context, prompt string) error) error {
 	if a.ext != nil {
 		a.waitExtensions()
 		p, handled := a.ext.Input(ctx, prompt)
@@ -747,8 +767,7 @@ func (a *app) runTurn(ctx context.Context, prompt string) error {
 		prompt = p
 	}
 	a.snapshotFiles(ctx, prompt)
-	blocks := a.userBlocks(prompt)
-	err := a.ag.Run(ctx, blocks[0].Text, blocks[1:]...)
+	err := run(ctx, prompt)
 	if a.ext != nil {
 		a.ext.Emit(ext.EventTurnEnd, map[string]any{"text": a.ag.LastText()})
 	}

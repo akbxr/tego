@@ -71,6 +71,7 @@ func useTool(id, name string, input map[string]any) func(context.Context) *llm.M
 type editor struct {
 	t    *testing.T
 	conn *acp.Conn
+	srv  *acpServer // tego's side
 
 	mu       sync.Mutex
 	updates  []map[string]any
@@ -158,7 +159,7 @@ func startACP(t *testing.T, dir string, model llm.Provider) *editor {
 	toEditor, fromAgent := io.Pipe()
 	srv := newACPServer(cfg, store, fromAgent)
 	srv.provider = model
-	ed := &editor{t: t, buffers: map[string]string{}, answer: "allow"}
+	ed := &editor{t: t, srv: srv, buffers: map[string]string{}, answer: "allow"}
 	ed.conn = acp.NewConn(fromEditor, ed.handle)
 	done := make(chan struct{})
 	go func() {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/akbxr/tego/internal/llm"
 	"github.com/akbxr/tego/internal/tools"
@@ -154,7 +155,8 @@ func (m *Manager) HasCommand(name string) bool {
 	return false
 }
 
-// RunCommand runs /name args in its extension.
+// RunCommand runs /name args in its extension. What the extension sent
+// while it ran (a notice, a message to send) is handled when it returns.
 func (m *Manager) RunCommand(ctx context.Context, name, args string) error {
 	for _, e := range m.running() {
 		e.mu.Lock()
@@ -170,7 +172,9 @@ func (m *Manager) RunCommand(ctx context.Context, name, args string) error {
 		if err != nil {
 			return err
 		}
-		return c.call(ctx, "command/execute", map[string]any{"name": name, "args": args}, nil)
+		err = c.call(ctx, "command/execute", map[string]any{"name": name, "args": args}, nil)
+		c.settle(time.Second)
+		return err
 	}
 	return fmt.Errorf("no extension has /%s", name)
 }
