@@ -93,8 +93,9 @@ func (t *TaskTool) Def() llm.Tool {
 		Name: "task",
 		Description: fmt.Sprintf("Run subagents for independent subtasks (broad research, changes in separate areas). Any number of tasks; up to %d run at once, the rest queue. ", t.concurrency()) +
 			"Each starts with an empty context and the read/write/edit/bash/grep/glob (and MCP) tools, and returns its final report. " +
-			"Prompts must be complete and self-contained: goal, relevant files, constraints, expected output. Never give two subagents overlapping files to edit.",
-		Schema: json.RawMessage(`{"type":"object","properties":{"tasks":{"type":"array","minItems":1,"items":{"type":"object","properties":{"name":{"type":"string","description":"short CamelCase label"},"prompt":{"type":"string"}` +
+			"Prompts must be complete and self-contained: goal, relevant files, constraints, expected output. Never give two subagents overlapping files to edit. " +
+			"A subagent that ended (stopped at a limit, interrupted, or done) can be resumed with its context: resume it rather than start over.",
+		Schema: json.RawMessage(`{"type":"object","properties":{"tasks":{"type":"array","minItems":1,"items":{"type":"object","properties":{"name":{"type":"string","description":"short CamelCase label"},"prompt":{"type":"string"}` + resumeProperty +
 			t.agentProperty() + t.modelProperty() + t.isolationProperty() + `},"required":["name","prompt"]}}` + t.backgroundProperty() + `},"required":["tasks"]}`),
 	}
 }
@@ -249,6 +250,10 @@ func (t *TaskTool) pickModels(asked []string) []taskModel {
 	return out
 }
 
+// resumeProperty is the tasks' "resume" property (resume.go).
+const resumeProperty = `,"resume":{"type":"string","description":"Resume a subagent of this session that ended, by its name or task id (t3), ` +
+	`instead of starting a new one: it keeps its context, and prompt says what to do next. Its model, agent and folder stay its own. Worktree subagents can't be resumed."}`
+
 // taskSpec is one task of a task call.
 type taskSpec struct {
 	Name   string `json:"name"`
@@ -257,6 +262,9 @@ type taskSpec struct {
 	Agent  string `json:"agent"` // a defined agent, or "" for a general subagent
 	// Isolation "worktree": in a worktree of its own.
 	Isolation string `json:"isolation"`
+	Resume    string `json:"resume"` // an ended subagent to go on with
+
+	resumed *endedSub // the one Resume names, taken out of the kept ones
 }
 
 func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, error) {
@@ -272,6 +280,23 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 	}
 	if in.Background && t.Background == nil {
 		return "", errors.New("background tasks are not available here; omit background")
+	}
+	p := t.Parent
+	for i, task := range in.Tasks {
+		if task.Resume == "" {
+			continue
+		}
+		e, err := p.takeEnded(task.Resume)
+		if err != nil {
+			for _, done := range in.Tasks[:i] { // give back the ones taken
+				if done.resumed != nil {
+					p.keepEnded(done.resumed)
+				}
+			}
+			return "", err
+		}
+		// It goes on as what it was: its own name, agent and model.
+		in.Tasks[i] = taskSpec{Name: e.sub.Name, Prompt: task.Prompt, Resume: task.Resume, resumed: e}
 	}
 	defs := make([]*AgentDef, len(in.Tasks))
 	anyAgent := false
@@ -297,7 +322,6 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 			}
 		}
 	}
-	p := t.Parent
 	limit := t.concurrency()
 	live := liveUI(p.UI)
 	if len(in.Tasks) > limit && !live && !in.Background {
@@ -322,7 +346,9 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 		if defs[i] != nil {
 			states[i].Agent = defs[i].Name
 		}
-		if m := models[i]; m.Provider != nil {
+		if e := task.resumed; e != nil {
+			states[i].Agent, states[i].Model, states[i].Window = e.agent, e.sub.Model, e.sub.ContextWindow
+		} else if m := models[i]; m.Provider != nil {
 			states[i].Model, states[i].Window = m.Model, m.Window
 		} else if m.note != "" {
 			p.UI.OnInfo(fmt.Sprintf("  [%s] %s; it runs on %s", name, m.note, p.Model))
@@ -371,52 +397,40 @@ func (t *TaskTool) runOne(ctx context.Context, task taskSpec, def *AgentDef, mod
 		})
 		return "cancelled before it started", ""
 	}
-	sub := &Agent{
-		Provider: p.Provider, ProviderName: p.ProviderName, Model: p.Model, Thinking: p.Thinking, Fast: p.Fast,
-		System: t.System, Tools: tools.Builtins(t.Env), Dynamic: p.Dynamic, LazyThreshold: p.LazyThreshold, SessionID: p.SessionID + "-" + name,
-		ContextWindow: p.ContextWindow, AutoCompact: true, MaxTurns: t.MaxTurns, Subagent: true, ToolStat: p.ToolStat,
-		CacheWritePremium: p.CacheWritePremium, Env: p.Env, Plan: p.Plan, MaxOutputTokens: p.MaxOutputTokens,
-		Perms: p.Perms, Approve: p.Approve, Name: name, declined: p.declined, Hooks: p.Hooks,
-	}
-	if m := model; m.Provider != nil {
-		sub.Provider, sub.ProviderName, sub.Model, sub.ContextWindow = m.Provider, m.ProviderName, m.Model, m.Window
-		sub.Fast = false // fast mode is the session model's
-		if m.thinking != "" {
-			sub.Thinking = m.thinking
-		}
-	}
 	failed := func(why, status string) (string, string) {
 		p.setSub(st, func(s *SubagentStatus) { s.State, s.Err, s.Ended = SubFailed, why, time.Now() })
 		return status, ""
 	}
+	var sub *Agent
 	var finish func() string
-	if task.Isolation == "worktree" || def != nil && def.Worktree {
-		if t.Isolate == nil {
-			return failed("no worktrees here", "failed: it can't have a worktree here: not a git repository, or worktrees are off")
+	asked := task.Prompt // all it was asked, for its watchdog
+	prompt := task.Prompt
+	if e := task.resumed; e != nil {
+		sub, asked = e.sub, e.task+"\n\nThen: "+task.Prompt
+		// Its history may end with "your last response, no tools".
+		prompt = resumedNote + task.Prompt
+	} else {
+		sub, finish, status = t.newSub(task, def, model, failed)
+		if sub == nil {
+			return status, ""
 		}
-		dir, note, fin, err := t.Isolate(name)
-		if err != nil {
-			return failed(err.Error(), fmt.Sprintf("failed: no worktree for it: %v", err))
-		}
-		// Its own tools, on the worktree on disk (not an editor's buffers).
-		sub.Tools = tools.Builtins(t.Env.At(dir)) // its background shells are the session's to see and clean up
-		sub.System += "\n\n# Worktree\n" + note
-		finish = fin
-	}
-	if def != nil {
-		def.apply(sub)
 	}
 	if t.Watchdog > 0 {
-		w := &Watchdog{Every: t.Watchdog, Provider: sub.Provider, Model: sub.Model, Task: task.Prompt}
+		w := &Watchdog{Every: t.Watchdog, Provider: sub.Provider, Model: sub.Model, Task: asked, from: len(sub.Messages)}
 		if s, ok := t.small(); ok {
 			w.Provider, w.Model = s.Provider, s.Model
 		}
 		sub.Watchdog = w
 	}
 	sub.UI = &subUI{name: name, parent: p, st: st, sub: sub, live: quiet}
+	sub.noteInterrupted() // calls cut off when it was stopped, if resumed
 	p.setSub(st, func(s *SubagentStatus) { s.State, s.Started = SubRunning, time.Now() })
 	if !quiet {
-		p.UI.OnInfo(fmt.Sprintf("  ⇢ [%s] started", name))
+		verb := "started"
+		if task.resumed != nil {
+			verb = "resumed"
+		}
+		p.UI.OnInfo(fmt.Sprintf("  ⇢ [%s] %s", name, verb))
 	}
 	// The shells it starts are its own, and stop when it finishes: nothing
 	// could read or stop them after.
@@ -425,9 +439,12 @@ func (t *TaskTool) runOne(ctx context.Context, task taskSpec, def *AgentDef, mod
 	if t.Env != nil {
 		sub.Notices = func() string { return t.Env.ShellNoticesFor(owner) }
 	}
-	err := sub.Run(ctx, task.Prompt)
+	before := sub.Usage()
+	err := sub.Run(ctx, prompt)
 	left := t.Env.StopShells(owner)
-	p.addUsage(&sub.Total)
+	after := sub.Usage()
+	p.addUsage(&llm.Usage{Input: after.Input - before.Input, Output: after.Output - before.Output,
+		CacheRead: after.CacheRead - before.CacheRead, CacheWrite: after.CacheWrite - before.CacheWrite})
 	report = strings.TrimSpace(sub.LastText())
 	if len(left) > 0 {
 		report += "\n\n[background shells it left running were stopped: " + strings.Join(left, ", ") + "]"
@@ -453,8 +470,61 @@ func (t *TaskTool) runOne(ctx context.Context, task taskSpec, def *AgentDef, mod
 	}
 	if finish != nil {
 		report += "\n\n[worktree: " + finish() + "]"
+		return status, report
+	}
+	agentName := ""
+	if def != nil {
+		agentName = def.Name
+	} else if task.resumed != nil {
+		agentName = task.resumed.agent
+	}
+	e := &endedSub{sub: sub, id: st.ID, agent: agentName, task: asked}
+	sub.Watchdog, sub.Notices = nil, nil
+	p.keepEnded(e)
+	if err != nil {
+		report += fmt.Sprintf("\n\n[resume: %q goes on with its context]", e.ref())
 	}
 	return status, report
+}
+
+// newSub makes a new task's subagent, in its worktree if it has one
+// (finish then commits or removes it). nil: it can't run (status says why).
+func (t *TaskTool) newSub(task taskSpec, def *AgentDef, model taskModel,
+	failed func(why, status string) (string, string)) (sub *Agent, finish func() string, status string) {
+	p, name := t.Parent, task.Name
+	sub = &Agent{
+		Provider: p.Provider, ProviderName: p.ProviderName, Model: p.Model, Thinking: p.Thinking, Fast: p.Fast,
+		System: t.System, Tools: tools.Builtins(t.Env), Dynamic: p.Dynamic, LazyThreshold: p.LazyThreshold, SessionID: p.SessionID + "-" + name,
+		ContextWindow: p.ContextWindow, AutoCompact: true, MaxTurns: t.MaxTurns, Subagent: true, ToolStat: p.ToolStat,
+		CacheWritePremium: p.CacheWritePremium, Env: p.Env, Plan: p.Plan, MaxOutputTokens: p.MaxOutputTokens,
+		Perms: p.Perms, Approve: p.Approve, Name: name, declined: p.declined, Hooks: p.Hooks,
+	}
+	if m := model; m.Provider != nil {
+		sub.Provider, sub.ProviderName, sub.Model, sub.ContextWindow = m.Provider, m.ProviderName, m.Model, m.Window
+		sub.Fast = false // fast mode is the session model's
+		if m.thinking != "" {
+			sub.Thinking = m.thinking
+		}
+	}
+	if task.Isolation == "worktree" || def != nil && def.Worktree {
+		if t.Isolate == nil {
+			status, _ = failed("no worktrees here", "failed: it can't have a worktree here: not a git repository, or worktrees are off")
+			return nil, nil, status
+		}
+		dir, note, fin, err := t.Isolate(name)
+		if err != nil {
+			status, _ = failed(err.Error(), fmt.Sprintf("failed: no worktree for it: %v", err))
+			return nil, nil, status
+		}
+		// Its own tools, on the worktree on disk (not an editor's buffers).
+		sub.Tools = tools.Builtins(t.Env.At(dir)) // its background shells are the session's to see and clean up
+		sub.System += "\n\n# Worktree\n" + note
+		finish = fin
+	}
+	if def != nil {
+		def.apply(sub)
+	}
+	return sub, finish, ""
 }
 
 // Subagent states.

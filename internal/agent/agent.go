@@ -147,6 +147,9 @@ type Agent struct {
 	subMu sync.Mutex
 	subs  []*SubagentStatus // subagents of the latest task call
 
+	endedMu sync.Mutex
+	ended   []*endedSub // ended subagents a task can resume (resume.go)
+
 	toolMu    sync.Mutex
 	activated map[string]bool // deferred MCP tools loaded into the request
 }

@@ -215,6 +215,7 @@ func (a *Agent) SetHistory(msgs []llm.Message) {
 	a.ctxRewrite, a.ctxRewriteAt = 0, 0
 	a.lastReply = a.Session.LeafTime() // a resumed session's cache may have expired
 	a.activateFromHistory(msgs)
+	a.forgetEnded() // their reports may not be in this history
 	todos := latestTodos(msgs)
 	a.todoMu.Lock()
 	a.todos = todos
