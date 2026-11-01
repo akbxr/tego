@@ -106,6 +106,8 @@ In my benchmarks, 3 runs per task, tego cost 44% less than oh-my-pi with Sonnet 
   "model": "anthropic/claude-sonnet-5-5",
   "thinking": "medium",
   "subagents": 8,
+  "subagent_max_turns": 150,
+  "subagent_watchdog": 40,
   "small_model": "anthropic/claude-haiku-5-5",
   "subagent_models": {
     "gpt": { "model": "openai-codex/gpt-5.6-terra", "use": "code review and debugging" },
@@ -122,6 +124,10 @@ In my benchmarks, 3 runs per task, tego cost 44% less than oh-my-pi with Sonnet 
   }
 }
 ```
+
+`subagent_max_turns` is how many requests a subagent may make, 150 by default. `0` means no limit. The last request has no tool calls: the subagent writes its report (what is done, what is left), so the session's model can go on from there. An agent file's `maxTurns` overrides it, up or down.
+
+`subagent_watchdog` checks on a subagent every 40 requests by default (`0` turns it off). The small model reads its task and what it did since the last check, and says whether it is getting somewhere. The first time it is stuck (the same failure again and again, going in circles, or working on something else), the subagent is told and changes course. The second time in a row, it writes its report and stops. The check runs beside the subagent, so it never waits for it, and costs about one small request per 40.
 
 `subagent_models` names more models for subagents, from other subscriptions too. The session's model picks one per task from its name and `use`, or you can ask for one ("review it with gpt"). `thinking` sets one's thinking level. Only models you are logged in for are offered, and a subagent whose model fails to start runs on the session's model and says so.
 

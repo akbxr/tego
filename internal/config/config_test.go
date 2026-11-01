@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -8,6 +9,30 @@ import (
 	"github.com/akbxr/tego/internal/auth"
 	"github.com/akbxr/tego/internal/llm"
 )
+
+func TestSubagentMaxTurns(t *testing.T) {
+	for raw, want := range map[string]int{`{}`: 150, `{"subagent_max_turns":0}`: 0, `{"subagent_max_turns":500}`: 500, `{"subagent_max_turns":-1}`: 150} {
+		var c Config
+		if err := json.Unmarshal([]byte(raw), &c); err != nil {
+			t.Fatal(err)
+		}
+		if got := c.SubagentMaxTurns(); got != want {
+			t.Errorf("%s: %d, want %d", raw, got, want)
+		}
+	}
+}
+
+func TestSubagentWatchdog(t *testing.T) {
+	for raw, want := range map[string]int{`{}`: 40, `{"subagent_watchdog":0}`: 0, `{"subagent_watchdog":25}`: 25} {
+		var c Config
+		if err := json.Unmarshal([]byte(raw), &c); err != nil {
+			t.Fatal(err)
+		}
+		if got := c.SubagentWatchdog(); got != want {
+			t.Errorf("%s: %d, want %d", raw, got, want)
+		}
+	}
+}
 
 func TestContextWindowFor(t *testing.T) {
 	c := &Config{}

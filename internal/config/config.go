@@ -23,22 +23,24 @@ import (
 )
 
 type Config struct {
-	Model         string                         `json:"model,omitempty"`         // provider/model-id
-	Thinking      string                         `json:"thinking,omitempty"`      // off|low|medium|high|xhigh|max
-	Fast          bool                           `json:"fast,omitempty"`          // fast mode on models that have it (/fast)
-	Permissions   string                         `json:"permissions,omitempty"`   // yolo (default) | edits | ask: which tool calls wait for approval
-	WebModel      string                         `json:"web_model,omitempty"`     // model for native web_search (default: provider-specific)
-	SmallModel    string                         `json:"small_model,omitempty"`   // cheaper model for side work: titles, web search, subagents given "small" (provider/model, a model of the session's provider, or "off"; default per provider)
-	Subagents     int                            `json:"subagents,omitempty"`     // subagents running at once (default 8); more tasks queue
-	MCPTools      string                         `json:"mcp_tools,omitempty"`     // "auto" (default: deferred behind tool_search above 10 tools), "lazy", "eager"
-	MCPIdle       string                         `json:"mcp_idle,omitempty"`      // local MCP servers stop after this long unused and start at their next call (default "10m"; "off": run all session)
-	Accounts      string                         `json:"accounts,omitempty"`      // with several logins per provider: "fallback" (default: switch on limits) or "round-robin"
-	Icons         string                         `json:"icons,omitempty"`         // status-line icons: "nerd" (Nerd Font glyphs) or "unicode" (default)
-	Notify        string                         `json:"notify,omitempty"`        // "off" disables the notification (sound) when a turn finishes
-	UpdateCheck   string                         `json:"update_check,omitempty"`  // "off" stops the daily check for a newer release
-	Gzip          *bool                          `json:"gzip_requests,omitempty"` // compress large request bodies to the hosts known to take that (default on)
-	LSP           *bool                          `json:"lsp,omitempty"`           // check edits with the installed language servers (default on)
-	LSPServers    map[string]json.RawMessage     `json:"lsp_servers,omitempty"`   // add or change servers by name; false turns a built-in one off (lsp.Specs)
+	Model         string                         `json:"model,omitempty"`              // provider/model-id
+	Thinking      string                         `json:"thinking,omitempty"`           // off|low|medium|high|xhigh|max
+	Fast          bool                           `json:"fast,omitempty"`               // fast mode on models that have it (/fast)
+	Permissions   string                         `json:"permissions,omitempty"`        // yolo (default) | edits | ask: which tool calls wait for approval
+	WebModel      string                         `json:"web_model,omitempty"`          // model for native web_search (default: provider-specific)
+	SmallModel    string                         `json:"small_model,omitempty"`        // cheaper model for side work: titles, web search, subagents given "small" (provider/model, a model of the session's provider, or "off"; default per provider)
+	Subagents     int                            `json:"subagents,omitempty"`          // subagents running at once (default 8); more tasks queue
+	SubagentTurns *int                           `json:"subagent_max_turns,omitempty"` // requests a subagent may make (default 150; 0: no limit); on the last it writes its report
+	SubagentCheck *int                           `json:"subagent_watchdog,omitempty"`  // requests between checks that a subagent is getting somewhere (default 40; 0: none)
+	MCPTools      string                         `json:"mcp_tools,omitempty"`          // "auto" (default: deferred behind tool_search above 10 tools), "lazy", "eager"
+	MCPIdle       string                         `json:"mcp_idle,omitempty"`           // local MCP servers stop after this long unused and start at their next call (default "10m"; "off": run all session)
+	Accounts      string                         `json:"accounts,omitempty"`           // with several logins per provider: "fallback" (default: switch on limits) or "round-robin"
+	Icons         string                         `json:"icons,omitempty"`              // status-line icons: "nerd" (Nerd Font glyphs) or "unicode" (default)
+	Notify        string                         `json:"notify,omitempty"`             // "off" disables the notification (sound) when a turn finishes
+	UpdateCheck   string                         `json:"update_check,omitempty"`       // "off" stops the daily check for a newer release
+	Gzip          *bool                          `json:"gzip_requests,omitempty"`      // compress large request bodies to the hosts known to take that (default on)
+	LSP           *bool                          `json:"lsp,omitempty"`                // check edits with the installed language servers (default on)
+	LSPServers    map[string]json.RawMessage     `json:"lsp_servers,omitempty"`        // add or change servers by name; false turns a built-in one off (lsp.Specs)
 	ContextWindow int                            `json:"context_window,omitempty"`
 	MaxOutput     int                            `json:"max_output_tokens,omitempty"` // a response's limit, thinking included (default by model; at most the model's)
 	AutoCompact   *bool                          `json:"auto_compact,omitempty"`
@@ -100,6 +102,31 @@ var defaultSmallModels = map[string]string{
 
 // DefaultSmallModelFor is a provider's default small model ("" if none).
 func DefaultSmallModelFor(provider string) string { return defaultSmallModels[provider] }
+
+// DefaultSubagentTurns is the requests a subagent may make unless
+// subagent_max_turns says otherwise.
+const DefaultSubagentTurns = 150
+
+// SubagentMaxTurns is the requests a subagent may make; 0: no limit.
+func (c *Config) SubagentMaxTurns() int {
+	if c.SubagentTurns == nil || *c.SubagentTurns < 0 {
+		return DefaultSubagentTurns
+	}
+	return *c.SubagentTurns
+}
+
+// DefaultSubagentWatchdog is the requests between a subagent's progress
+// checks unless subagent_watchdog says otherwise.
+const DefaultSubagentWatchdog = 40
+
+// SubagentWatchdog is the requests between a subagent's progress checks;
+// 0: none.
+func (c *Config) SubagentWatchdog() int {
+	if c.SubagentCheck == nil || *c.SubagentCheck < 0 {
+		return DefaultSubagentWatchdog
+	}
+	return *c.SubagentCheck
+}
 
 // SmallModelSpec is the provider/model spec of the cheaper model for side
 // work in a session on provider, "" for none (the session's model does it).

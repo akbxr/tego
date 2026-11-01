@@ -314,7 +314,7 @@ func (s *acpServer) open(cwd string, servers []acp.MCPServer, id string) (*acpSe
 	ag.Approve = sess.approve
 	ap := &app{cfg: cfg, store: s.store, cwd: cwd, ag: ag, agentDefs: agent.LoadAgents(cfg.Dir, cwd)}
 	task := &agent.TaskTool{Parent: ag, System: agent.SystemPrompt(cwd, files, skills, agent.SubagentMode), Env: env,
-		Concurrency: cfg.Subagents, Small: ap.small, Models: ap.subagentModels, Agents: ap.agents, ResolveModel: ap.resolveModel,
+		Concurrency: cfg.Subagents, MaxTurns: cfg.SubagentMaxTurns(), Watchdog: cfg.SubagentWatchdog(), Small: ap.small, Models: ap.subagentModels, Agents: ap.agents, ResolveModel: ap.resolveModel,
 		Isolate: isolator(cfg.Dir, cwd)}
 	ag.Tools = append(tools.Builtins(env), task,
 		&agent.TodoTool{Parent: ag},

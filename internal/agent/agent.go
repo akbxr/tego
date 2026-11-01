@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -96,10 +97,11 @@ type Agent struct {
 
 	ContextWindow  int
 	AutoCompact    bool
-	CompactPercent int // auto-compact above this % of the window; 0 = default (window - max(15%, 16k))
-	KeepRecent     int // tokens kept verbatim when compacting; 0 = 20k
-	IdleCompactAt  int // after a break the cache did not survive, compact above this many tokens (idle.go); 0 = never
-	MaxTurns       int // 0 = unlimited
+	CompactPercent int       // auto-compact above this % of the window; 0 = default (window - max(15%, 16k))
+	KeepRecent     int       // tokens kept verbatim when compacting; 0 = 20k
+	IdleCompactAt  int       // after a break the cache did not survive, compact above this many tokens (idle.go); 0 = never
+	MaxTurns       int       // 0 = unlimited
+	Watchdog       *Watchdog // a subagent's progress checks (watchdog.go); nil: none
 	UI             UI
 
 	mu      sync.Mutex
@@ -296,6 +298,13 @@ func (a *Agent) Continue(ctx context.Context) error {
 // ErrNoModel is returned when no provider/model is configured yet.
 var ErrNoModel = errors.New("no model configured: use /login to sign in or add a key, then /model")
 
+// lastResponseNote goes before a subagent's last request.
+const lastResponseNote = "This is your last response. Don't call tools; calls in this response will not run. " +
+	"Write your report for the agent that started you, so it can go on without you: what is done, the files you changed, what is left and how you would go on, and anything that failed or is unverified."
+
+// lastTurnNote: the last request at the turn limit.
+const lastTurnNote = "You have reached your limit of requests. " + lastResponseNote
+
 func (a *Agent) loop(ctx context.Context) error {
 	a.stuck = stuckState{} // streaks count within one prompt (or /retry)
 	_, rev := a.TodoState()
@@ -313,6 +322,17 @@ func (a *Agent) loop(ctx context.Context) error {
 	for turn := 1; ; turn++ {
 		if a.MaxTurns > 0 && turn > a.MaxTurns {
 			return fmt.Errorf("stopped after %d turns", a.MaxTurns)
+		}
+		// A subagent's last request writes its report instead of stopping
+		// mid-work with whatever it said last: at its turn limit, or when
+		// the watchdog found it stuck twice in a row.
+		var final error
+		if a.Subagent && a.MaxTurns > 0 && turn == a.MaxTurns {
+			final = fmt.Errorf("stopped at its limit of %d turns; its report says what is left", a.MaxTurns)
+			a.remind(lastTurnNote)
+		} else if stop, why := a.watchdogTurn(ctx, turn); stop {
+			final = fmt.Errorf("stopped by the watchdog, no progress: %s; its report says what is left", why)
+			a.remind("A second check found no real progress: " + why + ". " + lastResponseNote)
 		}
 		if a.Notices != nil {
 			if n := a.Notices(); n != "" {
@@ -403,6 +423,15 @@ func (a *Agent) loop(ctx context.Context) error {
 			a.UI.OnInfo(note)
 		}
 		calls := sanitizeCalls(msg)
+		if final != nil {
+			// Calls it made anyway don't run: the report is all that is left.
+			msg.Blocks = slices.DeleteFunc(msg.Blocks, func(b llm.Block) bool { return b.Type == llm.BlockToolUse })
+			if len(msg.Blocks) > 0 {
+				a.append(*msg)
+			}
+			a.UI.OnTurnEnd(msg)
+			return final
+		}
 		a.append(*msg)
 		a.UI.OnTurnEnd(msg)
 		if len(calls) == 0 {

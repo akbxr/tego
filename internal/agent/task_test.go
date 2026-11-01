@@ -74,6 +74,81 @@ func TestTaskRunsMoreThanLimitInQueue(t *testing.T) {
 	}
 }
 
+// busyProvider calls a tool in every response until stopAt requests, then
+// answers; it notes what the requests ended with.
+type busyProvider struct {
+	mu       sync.Mutex
+	requests int
+	stopAt   int // 0: never stops by itself
+	lastSeen []string
+}
+
+func (p *busyProvider) Name() string { return "fake" }
+
+func (p *busyProvider) Stream(_ context.Context, req *llm.Request, _ func(llm.Event)) (*llm.Message, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.requests++
+	last := req.Messages[len(req.Messages)-1]
+	p.lastSeen = append(p.lastSeen, last.Blocks[len(last.Blocks)-1].Text)
+	if p.stopAt > 0 && p.requests >= p.stopAt {
+		return &llm.Message{Role: llm.RoleAssistant, StopReason: "end_turn", Blocks: []llm.Block{{Type: llm.BlockText, Text: "all done"}}}, nil
+	}
+	in, _ := json.Marshal(map[string]string{"pattern": fmt.Sprintf("*.x%d", p.requests)}) // varied: not a stuck loop
+	return &llm.Message{Role: llm.RoleAssistant, StopReason: "tool_use", Blocks: []llm.Block{
+		{Type: llm.BlockText, Text: fmt.Sprintf("REPORT after %d", p.requests)},
+		{Type: llm.BlockToolUse, ID: fmt.Sprintf("c%d", p.requests), Name: "glob", Input: in},
+	}}, nil
+}
+
+// A subagent's last allowed request is told to report, its calls don't run,
+// and the parent gets that report with the reason it stopped.
+func TestSubagentTurnLimitReports(t *testing.T) {
+	prov := &busyProvider{}
+	parent := &Agent{Provider: prov, UI: nopUI{}}
+	tool := &TaskTool{Parent: parent, Env: &tools.Env{Cwd: t.TempDir()}, MaxTurns: 3}
+	in, _ := json.Marshal(map[string]any{"tasks": []map[string]string{{"name": "Worker", "prompt": "work"}}})
+	out, err := tool.Run(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prov.requests != 3 {
+		t.Fatalf("%d requests, want 3", prov.requests)
+	}
+	if !strings.Contains(prov.lastSeen[2], "This is your last response") || strings.Contains(prov.lastSeen[1], "last response") {
+		t.Fatalf("last-turn note: %q", prov.lastSeen)
+	}
+	if !strings.Contains(out, "failed: stopped at its limit of 3 turns") || !strings.Contains(out, "REPORT after 3") {
+		t.Fatalf("report:\n%s", out)
+	}
+}
+
+// subagent_max_turns 0: no limit.
+func TestSubagentNoTurnLimit(t *testing.T) {
+	prov := &busyProvider{stopAt: 200}
+	parent := &Agent{Provider: prov, UI: nopUI{}}
+	tool := &TaskTool{Parent: parent, Env: &tools.Env{Cwd: t.TempDir()}}
+	in, _ := json.Marshal(map[string]any{"tasks": []map[string]string{{"name": "Worker", "prompt": "work"}}})
+	out, err := tool.Run(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prov.requests != 200 || !strings.Contains(out, "(done)\nall done") {
+		t.Fatalf("%d requests:\n%s", prov.requests, out)
+	}
+}
+
+// An agent definition's maxTurns overrides subagent_max_turns, up or down.
+func TestAgentDefMaxTurns(t *testing.T) {
+	for _, c := range []struct{ base, def, want int }{{150, 400, 400}, {150, 20, 20}, {0, 20, 20}, {0, 0, 0}, {150, 0, 150}} {
+		sub := &Agent{MaxTurns: c.base}
+		(&AgentDef{MaxTurns: c.def}).apply(sub)
+		if sub.MaxTurns != c.want {
+			t.Fatalf("base %d, def %d: %d, want %d", c.base, c.def, sub.MaxTurns, c.want)
+		}
+	}
+}
+
 func TestTodoPhases(t *testing.T) {
 	list, err := ParseTodos(json.RawMessage(`{"todos":[
 		{"content":"read","status":"completed","phase":" Review "},

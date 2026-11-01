@@ -25,6 +25,13 @@ type TaskTool struct {
 	System      string // subagent system prompt
 	Env         *tools.Env
 	Concurrency int // max subagents running at once; <= 0 means DefaultSubagentConcurrency
+	// MaxTurns is the requests a subagent may make (an agent definition's
+	// maxTurns overrides it); 0: no limit. The last one writes its report.
+	MaxTurns int
+	// Watchdog is how many requests a subagent makes between checks that
+	// it is getting somewhere (watchdog.go), on the small model if there is
+	// one; 0: no checks.
+	Watchdog int
 	// Small is the cheaper model a task can ask for with "model": "small"
 	// (ok false: there is none, and every task runs on the parent's model).
 	Small func() (SmallModel, bool)
@@ -367,7 +374,7 @@ func (t *TaskTool) runOne(ctx context.Context, task taskSpec, def *AgentDef, mod
 	sub := &Agent{
 		Provider: p.Provider, ProviderName: p.ProviderName, Model: p.Model, Thinking: p.Thinking, Fast: p.Fast,
 		System: t.System, Tools: tools.Builtins(t.Env), Dynamic: p.Dynamic, LazyThreshold: p.LazyThreshold, SessionID: p.SessionID + "-" + name,
-		ContextWindow: p.ContextWindow, AutoCompact: true, MaxTurns: 150, Subagent: true, ToolStat: p.ToolStat,
+		ContextWindow: p.ContextWindow, AutoCompact: true, MaxTurns: t.MaxTurns, Subagent: true, ToolStat: p.ToolStat,
 		CacheWritePremium: p.CacheWritePremium, Env: p.Env, Plan: p.Plan, MaxOutputTokens: p.MaxOutputTokens,
 		Perms: p.Perms, Approve: p.Approve, Name: name, declined: p.declined, Hooks: p.Hooks,
 	}
@@ -398,6 +405,13 @@ func (t *TaskTool) runOne(ctx context.Context, task taskSpec, def *AgentDef, mod
 	}
 	if def != nil {
 		def.apply(sub)
+	}
+	if t.Watchdog > 0 {
+		w := &Watchdog{Every: t.Watchdog, Provider: sub.Provider, Model: sub.Model, Task: task.Prompt}
+		if s, ok := t.small(); ok {
+			w.Provider, w.Model = s.Provider, s.Model
+		}
+		sub.Watchdog = w
 	}
 	sub.UI = &subUI{name: name, parent: p, st: st, sub: sub, live: quiet}
 	p.setSub(st, func(s *SubagentStatus) { s.State, s.Started = SubRunning, time.Now() })

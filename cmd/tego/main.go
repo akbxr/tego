@@ -649,7 +649,7 @@ func (a *app) init(spec, thinking string) error {
 		a.ag.KeepAlive, a.ag.KeepAliveAuto = a.cfg.CacheKeepAlive()
 	}
 	task := &agent.TaskTool{Parent: a.ag, System: agent.SystemPrompt(a.cwd, files, a.skills, agent.SubagentMode), Env: a.env, Concurrency: a.cfg.Subagents,
-		Small: a.small, Models: a.subagentModels, Agents: a.agents, ResolveModel: a.resolveModel, Isolate: isolator(a.cfg.Dir, a.cwd)}
+		MaxTurns: a.cfg.SubagentMaxTurns(), Watchdog: a.cfg.SubagentWatchdog(), Small: a.small, Models: a.subagentModels, Agents: a.agents, ResolveModel: a.resolveModel, Isolate: isolator(a.cfg.Dir, a.cwd)}
 	a.setupBackground(task)
 	if a.tui != nil {
 		// Shells a prompt left running get a word before the turn ends.

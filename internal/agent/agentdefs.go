@@ -178,7 +178,7 @@ func (d *AgentDef) apply(sub *Agent) {
 	if dyn := sub.Dynamic; dyn != nil && (d.Tools != nil || d.Disallowed != nil) {
 		sub.Dynamic = func() []tools.Tool { return d.filterTools(dyn()) }
 	}
-	if d.MaxTurns > 0 && d.MaxTurns < sub.MaxTurns {
+	if d.MaxTurns > 0 { // above or below subagent_max_turns
 		sub.MaxTurns = d.MaxTurns
 	}
 	if d.Thinking != "" {
