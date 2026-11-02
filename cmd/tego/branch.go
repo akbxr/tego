@@ -143,7 +143,7 @@ func (a *app) treeCommand() {
 		var label string
 		var p pick
 		switch {
-		case n.Replace != nil:
+		case n.IsCompaction():
 			label = "⇊ compacted"
 		case promptText(n.Message) != "":
 			p.prompt = promptText(n.Message)
@@ -187,11 +187,12 @@ func (a *app) treeCommand() {
 // starts a new branch); for anything else it continues right after it.
 func (a *app) jumpTo(n *session.Node, prompt string) {
 	s := a.ag.Session
-	if n.Replace != nil {
+	if n.IsCompaction() {
 		// The compaction as a whole (/tree): continue after it, unless it ends
 		// with the prompt it was made for, which goes back into the editor.
-		p := replPoint{keep: n.Replace, whole: true}
-		if pts := replacementPoints(n.Replace); len(pts) > 0 && pts[len(pts)-1].prompt != "" && promptText(&n.Replace[len(n.Replace)-1]) != "" {
+		repl := s.Replacement(n)
+		p := replPoint{keep: repl, whole: true}
+		if pts := replacementPoints(repl); len(pts) > 0 && pts[len(pts)-1].prompt != "" && promptText(&repl[len(repl)-1]) != "" {
 			p = pts[len(pts)-1]
 		}
 		a.jumpInside(n, p)
@@ -255,9 +256,9 @@ func (a *app) rewindCommand() {
 	turn := 0
 	for _, n := range s.ActivePath() {
 		switch {
-		case n.Replace != nil:
+		case n.IsCompaction():
 			// What the compaction kept verbatim can be rewound to as well.
-			for _, p := range replacementPoints(n.Replace) {
+			for _, p := range replacementPoints(s.Replacement(n)) {
 				var label, detail string
 				switch {
 				case p.prompt != "":

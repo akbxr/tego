@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -42,14 +43,29 @@ type entry struct {
 }
 
 // Node is one message (or compaction) in the session tree.
+//
+// Nodes stay small whatever the session holds: Message is an outline of
+// the message (its role, text blocks and the types of the others), enough
+// to show it. The whole message, and a compaction's history, are read from
+// the file when History or Replacement asks for them.
 type Node struct {
 	ID       string
 	Parent   string
 	Time     time.Time
-	Message  *llm.Message  // message node
-	Replace  []llm.Message // compaction node: complete history at this point
+	Message  *llm.Message // message node: outline (role, text blocks, block types)
 	Children []*Node
+
+	compaction bool
+	off        int64 // where the node's line starts in the file; -1 = not written
+	size       int   // its length, without the newline
+	// What could not be written (the file was closed) is kept here.
+	full *llm.Message
+	repl []llm.Message
 }
+
+// IsCompaction reports whether n replaces the history before it
+// (Session.Replacement holds what with).
+func (n *Node) IsCompaction() bool { return n.compaction }
 
 type Session struct {
 	ID   string
@@ -105,12 +121,15 @@ func create(base, cwd, forkOf string) (*Session, error) {
 	}
 	id := time.Now().Format("20060102-150405") + "-" + randHex(3)
 	path := filepath.Join(dir, id+".jsonl")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	// Read as well: History reads the messages back (and still can once the
+	// file is moved or deleted).
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, err
 	}
 	s := &Session{ID: id, Path: path, f: f, nodes: map[string]*Node{}, Cwd: cwd}
-	return s, s.write(entry{Type: "header", ID: id, Cwd: cwd, Created: time.Now().Format(time.RFC3339), ForkOf: forkOf})
+	_, _, err = s.write(entry{Type: "header", ID: id, Cwd: cwd, Created: time.Now().Format(time.RFC3339), ForkOf: forkOf})
+	return s, err
 }
 
 // NewFrom starts a new session holding history (fork/clone of forkOf).
@@ -135,12 +154,66 @@ func Open(path string) (*Session, []llm.Message, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, nil, err
 	}
 	s.f = f
 	return s, s.History(s.leaf), nil
+}
+
+// lightEntry is what load reads of an entry: no compaction history, and
+// of a message only its outline. The rest is skipped without being kept.
+type lightEntry struct {
+	Type    string        `json:"type"`
+	ID      string        `json:"id"`
+	Parent  string        `json:"parent"`
+	Time    int64         `json:"ts"`
+	Cwd     string        `json:"cwd"`
+	Title   string        `json:"title"`
+	Message *outlineEntry `json:"message"`
+}
+
+type outlineEntry struct {
+	Role   llm.Role `json:"role"`
+	Blocks []struct {
+		Type llm.BlockType `json:"type"`
+		Text string        `json:"text"`
+		ID   string        `json:"id"`
+		Name string        `json:"name"`
+	} `json:"content"`
+}
+
+func (o *outlineEntry) message() *llm.Message {
+	if o == nil {
+		return nil
+	}
+	m := &llm.Message{Role: o.Role, Blocks: make([]llm.Block, len(o.Blocks))}
+	for i, b := range o.Blocks {
+		m.Blocks[i] = outlineBlock(llm.Block{Type: b.Type, Text: b.Text, ID: b.ID, Name: b.Name})
+	}
+	return m
+}
+
+// outline is what a node keeps of m: its role, text blocks, and the type
+// (and tool call id and name) of every other block.
+func outline(m *llm.Message) *llm.Message {
+	if m == nil {
+		return nil
+	}
+	o := &llm.Message{Role: m.Role, Blocks: make([]llm.Block, len(m.Blocks))}
+	for i, b := range m.Blocks {
+		o.Blocks[i] = outlineBlock(b)
+	}
+	return o
+}
+
+func outlineBlock(b llm.Block) llm.Block {
+	o := llm.Block{Type: b.Type, ID: b.ID, Name: b.Name}
+	if b.Type == llm.BlockText {
+		o.Text = b.Text
+	}
+	return o
 }
 
 func load(path string) (*Session, error) {
@@ -151,12 +224,16 @@ func load(path string) (*Session, error) {
 	defer f.Close()
 	s := &Session{ID: strings.TrimSuffix(filepath.Base(path), ".jsonl"), Path: path, nodes: map[string]*Node{}}
 	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 64*1024*1024)
+	sc.Buffer(make([]byte, 0, 64*1024), 256*1024*1024)
 	legacy := 0
+	var pos int64
 	for sc.Scan() {
-		var e entry
-		if json.Unmarshal(sc.Bytes(), &e) != nil {
-			continue // tolerate a torn final line
+		line := sc.Bytes()
+		off := pos
+		pos += int64(len(line)) + 1 // tego writes \n line ends
+		var e lightEntry
+		if json.Unmarshal(line, &e) != nil {
+			continue // tolerate a torn line
 		}
 		switch e.Type {
 		case "header":
@@ -166,7 +243,8 @@ func load(path string) (*Session, error) {
 				legacy++
 				e.ID, e.Parent = fmt.Sprintf("legacy-%d", legacy), s.leaf
 			}
-			s.add(e)
+			s.add(&Node{ID: e.ID, Parent: e.Parent, Time: time.Unix(e.Time, 0), Message: e.Message.message(),
+				compaction: e.Type == "compaction", off: off, size: len(line)})
 		case "title":
 			s.Title = e.Title
 		case "leaf":
@@ -178,11 +256,7 @@ func load(path string) (*Session, error) {
 	return s, sc.Err()
 }
 
-func (s *Session) add(e entry) *Node {
-	n := &Node{ID: e.ID, Parent: e.Parent, Time: time.Unix(e.Time, 0), Message: e.Message, Replace: e.Messages}
-	if e.Type == "compaction" && n.Replace == nil {
-		n.Replace = []llm.Message{}
-	}
+func (s *Session) add(n *Node) *Node {
 	s.nodes[n.ID] = n
 	if p, ok := s.nodes[n.Parent]; ok {
 		p.Children = append(p.Children, n)
@@ -194,21 +268,114 @@ func (s *Session) add(e entry) *Node {
 	return n
 }
 
-func (s *Session) write(e entry) error {
+// write appends e and says where its line is: off -1 when the session has
+// no file open.
+func (s *Session) write(e entry) (off int64, size int, err error) {
 	if s == nil {
-		return nil
+		return -1, 0, nil
 	}
 	data, err := json.Marshal(e)
 	if err != nil {
-		return err
+		return -1, 0, err
 	}
 	s.mu.Lock() // titles are written from another goroutine than messages
 	defer s.mu.Unlock()
 	if s.f == nil {
+		return -1, 0, nil
+	}
+	if _, err := s.f.Write(append(data, '\n')); err != nil {
+		return -1, 0, err
+	}
+	// The file is opened for appending: the offset is now the end of this
+	// line, even when another process appended to the file.
+	end, err := s.f.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return -1, 0, nil
+	}
+	return end - int64(len(data)) - 1, len(data), nil
+}
+
+// fileReader reads the session file back: through the open file, or
+// (closed, or loaded only) the file opened again until the reader is
+// closed.
+type fileReader struct {
+	s *Session
+	g *os.File
+}
+
+func (s *Session) reader() *fileReader { return &fileReader{s: s} }
+
+func (r *fileReader) readAt(buf []byte, off int64) error {
+	if r.g == nil {
+		r.s.mu.Lock()
+		f := r.s.f
+		r.s.mu.Unlock()
+		if f != nil {
+			if _, err := f.ReadAt(buf, off); err == nil {
+				return nil
+			}
+		}
+		g, err := os.Open(r.s.Path)
+		if err != nil {
+			return err
+		}
+		r.g = g
+	}
+	_, err := r.g.ReadAt(buf, off)
+	return err
+}
+
+func (r *fileReader) close() {
+	if r.g != nil {
+		r.g.Close()
+	}
+}
+
+// read reads n's entry back from the file.
+func (r *fileReader) read(n *Node) (entry, bool) {
+	var e entry
+	if n.off < 0 {
+		return e, false
+	}
+	buf := make([]byte, n.size)
+	if r.readAt(buf, n.off) != nil {
+		return e, false
+	}
+	if json.Unmarshal(buf, &e) != nil || (e.ID != "" && e.ID != n.ID) {
+		return entry{}, false
+	}
+	return e, true
+}
+
+// message is n's whole message.
+func (r *fileReader) message(n *Node) llm.Message {
+	if n.full != nil {
+		return *n.full
+	}
+	if e, ok := r.read(n); ok && e.Message != nil {
+		return *e.Message
+	}
+	return *n.Message // the file is gone: its outline is all there is
+}
+
+func (r *fileReader) replacement(n *Node) []llm.Message {
+	if n.repl != nil {
+		return n.repl
+	}
+	if e, ok := r.read(n); ok && e.Messages != nil {
+		return e.Messages
+	}
+	return []llm.Message{}
+}
+
+// Replacement is the history compaction node n replaced the path's with.
+func (s *Session) Replacement(n *Node) []llm.Message {
+	if s == nil || n == nil || !n.compaction {
 		return nil
 	}
-	_, err = s.f.Write(append(data, '\n'))
-	return err
+	r := s.reader()
+	defer r.close()
+	return r.replacement(n)
 }
 
 // SetTitle records a (generated) session title; the last one wins.
@@ -227,7 +394,8 @@ func (s *Session) SetTitle(title string) error {
 		return nil
 	}
 	s.Title = title
-	return s.write(entry{Type: "title", Title: title, Time: time.Now().Unix()})
+	_, _, err := s.write(entry{Type: "title", Title: title, Time: time.Now().Unix()})
+	return err
 }
 
 func (s *Session) appendNode(e entry) error {
@@ -238,10 +406,19 @@ func (s *Session) appendNode(e entry) error {
 	for s.nodes[e.ID] != nil {
 		e.ID = randHex(4)
 	}
-	if err := s.write(e); err != nil {
+	off, size, err := s.write(e)
+	if err != nil {
 		return err
 	}
-	s.add(e)
+	n := &Node{ID: e.ID, Parent: e.Parent, Time: time.Unix(e.Time, 0), Message: outline(e.Message),
+		compaction: e.Type == "compaction", off: off, size: size}
+	if off < 0 { // not in a file: kept whole
+		n.full = e.Message
+		if n.compaction {
+			n.repl = append([]llm.Message{}, e.Messages...)
+		}
+	}
+	s.add(n)
 	return nil
 }
 
@@ -280,11 +457,19 @@ func (s *Session) History(id string) []llm.Message {
 	if s == nil {
 		return nil
 	}
+	return s.history(id, false)
+}
+
+// history is History, or with outlines only the messages after the last
+// compaction (the compaction is still read whole).
+func (s *Session) history(id string, outlines bool) []llm.Message {
+	r := s.reader()
+	defer r.close()
 	var rev []*Node
 	var base []llm.Message
 	for n := s.nodes[id]; n != nil; n = s.nodes[n.Parent] {
-		if n.Replace != nil {
-			base = n.Replace
+		if n.compaction {
+			base = r.replacement(n)
 			break
 		}
 		rev = append(rev, n)
@@ -292,7 +477,11 @@ func (s *Session) History(id string) []llm.Message {
 	out := make([]llm.Message, 0, len(base)+len(rev))
 	out = append(out, base...)
 	for i := len(rev) - 1; i >= 0; i-- {
-		out = append(out, *rev[i].Message)
+		if outlines {
+			out = append(out, *rev[i].Message)
+		} else {
+			out = append(out, r.message(rev[i]))
+		}
 	}
 	return out
 }
@@ -305,7 +494,7 @@ func (s *Session) Checkout(id string) ([]llm.Message, error) {
 			return nil, fmt.Errorf("no node %q in session", id)
 		}
 	}
-	if err := s.write(entry{Type: "leaf", ID: id}); err != nil {
+	if _, _, err := s.write(entry{Type: "leaf", ID: id}); err != nil {
 		return nil, err
 	}
 	s.leaf = id
@@ -330,7 +519,7 @@ func (s *Session) ActivePath() []*Node {
 	var rev []*Node
 	for n := s.nodes[s.leaf]; n != nil; n = s.nodes[n.Parent] {
 		rev = append(rev, n)
-		if n.Replace != nil {
+		if n.compaction {
 			break
 		}
 	}
@@ -532,7 +721,7 @@ func preview(path string) (string, int, string) {
 	if err != nil {
 		return "", 0, ""
 	}
-	msgs := s.History(s.leaf)
+	msgs := s.history(s.leaf, true) // a count and the first prompt: outlines do
 	if s.Title != "" {
 		return Oneline(s.Title, 70), len(msgs), s.Cwd
 	}

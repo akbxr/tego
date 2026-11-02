@@ -109,7 +109,7 @@ func TestCheckoutInsideCompaction(t *testing.T) {
 		t.Fatal("the active path does not start at the compaction")
 	}
 
-	pts := replacementPoints(nodes[0].Replace)
+	pts := replacementPoints(s.Replacement(nodes[0]))
 	last := pts[len(pts)-1]
 	if last.prompt != "find e2e tests" {
 		t.Fatalf("last point %+v", last)
