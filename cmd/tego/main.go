@@ -824,7 +824,11 @@ func listSessions(cfg *config.Config, cwd string) error {
 		if i >= 20 {
 			break
 		}
-		fmt.Printf("%s  %s  %3d msgs  %s\n", s.ID, s.Modified.Format("Jan 02 15:04"), s.Count, s.Preview)
+		fork := ""
+		if s.ForkOf != "" {
+			fork = "  (fork of " + s.ForkOf + ")"
+		}
+		fmt.Printf("%s  %s  %3d msgs  %s%s\n", s.ID, s.Modified.Format("Jan 02 15:04"), s.Count, s.Preview, fork)
 	}
 	return nil
 }

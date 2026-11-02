@@ -76,9 +76,10 @@ type Session struct {
 	roots []*Node
 	leaf  string // "" = before the first node
 
-	mu    sync.Mutex // serialises writes
-	Title string     // generated title ("" = none yet)
-	Cwd   string     // working directory the session was started in ("" in files without a header)
+	mu     sync.Mutex // serialises writes
+	Title  string     // generated title ("" = none yet)
+	Cwd    string     // working directory the session was started in ("" in files without a header)
+	ForkOf string     // id of the session this one was forked or cloned from ("" = none)
 }
 
 type Info struct {
@@ -89,6 +90,7 @@ type Info struct {
 	Count    int
 	Cwd      string // working directory the session was started in
 	Size     int64  // file size in bytes
+	ForkOf   string // id of the session this one was forked or cloned from
 }
 
 // Dir is the per-project session directory. The cwd is symlink-resolved so
@@ -127,7 +129,7 @@ func create(base, cwd, forkOf string) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Session{ID: id, Path: path, f: f, nodes: map[string]*Node{}, Cwd: cwd}
+	s := &Session{ID: id, Path: path, f: f, nodes: map[string]*Node{}, Cwd: cwd, ForkOf: forkOf}
 	_, _, err = s.write(entry{Type: "header", ID: id, Cwd: cwd, Created: time.Now().Format(time.RFC3339), ForkOf: forkOf})
 	return s, err
 }
@@ -170,6 +172,7 @@ type lightEntry struct {
 	Parent  string        `json:"parent"`
 	Time    int64         `json:"ts"`
 	Cwd     string        `json:"cwd"`
+	ForkOf  string        `json:"fork_of"`
 	Title   string        `json:"title"`
 	Message *outlineEntry `json:"message"`
 }
@@ -237,7 +240,7 @@ func load(path string) (*Session, error) {
 		}
 		switch e.Type {
 		case "header":
-			s.Cwd = e.Cwd
+			s.Cwd, s.ForkOf = e.Cwd, e.ForkOf
 		case "message", "compaction":
 			if e.ID == "" { // pre-tree files: a linear chain
 				legacy++
@@ -659,7 +662,7 @@ func listDir(dir string) ([]Info, error) {
 			continue
 		}
 		info := Info{ID: strings.TrimSuffix(e.Name(), ".jsonl"), Path: filepath.Join(dir, e.Name()), Modified: fi.ModTime(), Size: fi.Size()}
-		info.Preview, info.Count, info.Cwd = preview(info.Path)
+		info.Preview, info.Count, info.Cwd, info.ForkOf = preview(info.Path)
 		if info.Count == 0 {
 			continue
 		}
@@ -716,16 +719,21 @@ func moveToTrash(path string) bool {
 	return exec.Command(bin, path).Run() == nil
 }
 
-func preview(path string) (string, int, string) {
+// preview is what a session list shows of the file at path: its title (or
+// first prompt), message count, folder and the session it was forked from.
+func preview(path string) (label string, count int, cwd, forkOf string) {
 	s, err := load(path)
 	if err != nil {
-		return "", 0, ""
+		return "", 0, "", ""
 	}
 	msgs := s.history(s.leaf, true) // a count and the first prompt: outlines do
-	if s.Title != "" {
-		return Oneline(s.Title, 70), len(msgs), s.Cwd
+	label = s.Title
+	if label != "" {
+		label = Oneline(label, 70)
+	} else {
+		label = FirstPrompt(msgs, 70)
 	}
-	return FirstPrompt(msgs, 70), len(msgs), s.Cwd
+	return label, len(msgs), s.Cwd, s.ForkOf
 }
 
 // FirstPrompt is the first user text in msgs, whitespace-collapsed and

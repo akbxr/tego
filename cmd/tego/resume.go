@@ -142,6 +142,9 @@ func (a *app) sessionItems(list []session.Info, all bool, keep string) ([]lineed
 			label = "(no prompt)"
 		}
 		parts := []string{ago(s.Modified), fmt.Sprintf("%d msgs", s.Count), fmtBytes(int(s.Size))}
+		if s.ForkOf != "" {
+			parts = append(parts, forkLabel(list, s.ForkOf))
+		}
 		if all {
 			parts = append(parts, shortHome(s.Cwd))
 		}
@@ -155,6 +158,17 @@ func (a *app) sessionItems(list []session.Info, all bool, keep string) ([]lineed
 		}
 	}
 	return items, sel
+}
+
+// forkLabel names the session a fork or clone came from: by its title when
+// it is in list, else by its id (deleted, or in another project).
+func forkLabel(list []session.Info, id string) string {
+	for _, s := range list {
+		if s.ID == id && s.Preview != "" {
+			return "fork of “" + session.Oneline(s.Preview, 30) + "”"
+		}
+	}
+	return "fork of " + id
 }
 
 func (a *app) isCurrent(path string) bool {

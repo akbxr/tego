@@ -40,6 +40,44 @@ func TestOpenSessionFromAnotherProjectRestartsThere(t *testing.T) {
 	}
 }
 
+// A fork or clone says which session it came from: by title when that one
+// is listed, else by id.
+func TestSessionItemsShowForkOf(t *testing.T) {
+	base, here := t.TempDir(), t.TempDir()
+	orig := newSessionIn(t, base, here, "build the parser")
+	hist := []llm.Message{{Role: llm.RoleUser, Blocks: []llm.Block{{Type: llm.BlockText, Text: "build the parser"}}}}
+	clone, err := session.NewFrom(base, here, hist, orig.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone.Close()
+	orphan, _ := session.NewFrom(base, here, hist, "20260101-000000-gone00")
+	orphan.Close()
+	list, err := session.List(base, here)
+	if err != nil || len(list) != 3 {
+		t.Fatalf("list %v %v", list, err)
+	}
+	a := &app{cwd: here, ag: &agent.Agent{}}
+	items, _ := a.sessionItems(list, false, "")
+	for i, s := range list {
+		d := items[i].Detail
+		switch s.ID {
+		case orig.ID:
+			if strings.Contains(d, "fork of") {
+				t.Fatalf("original: %s", d)
+			}
+		case clone.ID:
+			if s.ForkOf != orig.ID || !strings.Contains(d, "fork of “build the parser”") {
+				t.Fatalf("clone: %s", d)
+			}
+		case orphan.ID:
+			if !strings.Contains(d, "fork of 20260101-000000-gone00") {
+				t.Fatalf("orphan: %s", d)
+			}
+		}
+	}
+}
+
 func TestSessionItemsShowProjectAndCurrent(t *testing.T) {
 	base, here, there := t.TempDir(), t.TempDir(), t.TempDir()
 	cur := newSessionIn(t, base, here, "this one")
