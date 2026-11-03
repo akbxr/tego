@@ -75,15 +75,10 @@ type Message struct {
 	// with, so a resumed session sends the same one (any change moves what
 	// the server clears, and so rewrites the prompt cache).
 	ClearTrigger int `json:"clear_trigger,omitempty"`
-	// DroppedThinking locates the dropped blocks in Request.Messages, so
-	// the caller can remove them from its history: otherwise they are sent,
-	// and dropped, again on every request.
-	DroppedThinking []BlockRef `json:"-"`
 	// GenOutput is the part of Usage.Output generated after the stream
 	// started, for providers that send nothing until hidden thinking is
 	// done (Antigravity): output speed is timed over it. 0 = all of Output.
-	GenOutput    int      `json:"-"`
-	droppedPaths []string // wire paths of the dropped blocks (Anthropic)
+	GenOutput int `json:"-"`
 	// FastNote says why a request that asked for fast mode ran at standard
 	// speed (rate limited, not enabled for the account); "" otherwise. Set
 	// on the request where that started, not on every one after.

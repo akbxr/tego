@@ -3,7 +3,6 @@ package llm
 import (
 	"context"
 	"encoding/json"
-	"reflect"
 	"strings"
 	"testing"
 )
@@ -142,27 +141,8 @@ data: {"type":"message_stop"}
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(m.droppedPaths, []string{"messages.1.content.0", ""}) {
-		t.Fatalf("paths %q", m.droppedPaths)
-	}
 	if m.ThinkingDropped != 2 || m.ClearedToolUses != 16 || m.ClearedTokens != 340641 {
 		t.Fatalf("edits not recorded: dropped=%d cleared=%d/%d", m.ThinkingDropped, m.ClearedToolUses, m.ClearedTokens)
-	}
-}
-
-func TestDroppedRefsMapWirePaths(t *testing.T) {
-	th := func(s string) Block { return Block{Type: BlockThinking, Text: s, Signature: "sig"} }
-	msgs := []Message{
-		{Role: RoleUser, Blocks: []Block{{Type: BlockText, Text: "q"}}},
-		{Role: RoleAssistant, Blocks: []Block{{Type: BlockText, Text: " "}, th("t1"), {Type: BlockToolUse, ID: "u1", Name: "read"}}},
-		{Role: RoleUser, Blocks: []Block{{Type: BlockToolResult, ToolUseID: "u1", Content: "r"}}},
-		{Role: RoleUser, Blocks: []Block{{Type: BlockText, Text: "steer"}}}, // merged into the previous wire message
-		{Role: RoleAssistant, Blocks: []Block{{Type: BlockThinking, Text: "foreign"}, th("t2"), {Type: BlockText, Text: "ok"}}},
-	}
-	got := droppedRefs(msgs, true, []string{"messages.1.content.0", "messages.3.content.0", "messages.2.content.1", "messages.9.content.0", "junk"})
-	want := []BlockRef{{1, 1}, {4, 1}, {3, 0}}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("refs %v, want %v", got, want)
 	}
 }
 

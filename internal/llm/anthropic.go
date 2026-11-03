@@ -88,9 +88,6 @@ func (p *anthropicProvider) Stream(ctx context.Context, req *Request, onEvent fu
 		} else {
 			p.notePrevMessage(p.sessionID(req), req.Class, msgID)
 		}
-		if msg != nil && len(msg.droppedPaths) > 0 {
-			msg.DroppedThinking = droppedRefs(req.Messages, p.oauth != nil, msg.droppedPaths)
-		}
 		return msg, err
 	})
 }
@@ -885,23 +882,6 @@ type aInputTransformation struct {
 	Reason string `json:"reason"`
 }
 
-// droppedRefs maps wire paths ("messages.M.content.C") of dropped thinking
-// blocks back to msgs, whose consecutive same-role messages and skipped
-// blocks make wire indices differ from history indices.
-func droppedRefs(msgs []Message, oauth bool, paths []string) []BlockRef {
-	var origins [][]BlockRef
-	anthropicMessages(msgs, oauth, nil, nil, &origins)
-	var refs []BlockRef
-	for _, p := range paths {
-		var m, c int
-		if _, err := fmt.Sscanf(p, "messages.%d.content.%d", &m, &c); err != nil || m >= len(origins) || c >= len(origins[m]) {
-			continue
-		}
-		refs = append(refs, origins[m][c])
-	}
-	return refs
-}
-
 type aAppliedEdits struct {
 	AppliedEdits []struct {
 		Type               string `json:"type"`
@@ -915,7 +895,6 @@ func noteEdits(msg *Message, ts []aInputTransformation, cm *aAppliedEdits) {
 	for _, t := range ts {
 		if t.Type == "thinking_dropped" {
 			msg.ThinkingDropped++
-			msg.droppedPaths = append(msg.droppedPaths, t.Path)
 		}
 	}
 	if cm == nil {

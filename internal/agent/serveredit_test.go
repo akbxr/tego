@@ -186,28 +186,19 @@ func TestServerEditsReportedOnce(t *testing.T) {
 	}
 }
 
-func TestDroppedThinkingIsRemovedOnce(t *testing.T) {
+// Thinking the provider dropped stays in the history: removing it would
+// change the prefix the request had just cached, and write it all again.
+func TestDroppedThinkingStays(t *testing.T) {
 	think := func(s string) llm.Block { return llm.Block{Type: llm.BlockThinking, Text: s, Signature: "sig"} }
-	shared := []llm.Block{think("a"), text("x"), think("b")}
 	ui := &infoUI{}
 	a := &Agent{UI: ui, Messages: []llm.Message{
 		{Role: llm.RoleUser, Blocks: []llm.Block{text("q")}},
-		{Role: llm.RoleAssistant, Blocks: shared},
+		{Role: llm.RoleAssistant, Blocks: []llm.Block{think("a"), text("x"), think("b")}},
 	}}
-	// Refs that don't point at thinking (stale indices) are ignored.
-	a.noteServerEdits(&llm.Message{ThinkingDropped: 2, DroppedThinking: []llm.BlockRef{{Msg: 1, Block: 0}, {Msg: 1, Block: 2}, {Msg: 1, Block: 1}, {Msg: 0, Block: 0}, {Msg: 9, Block: 9}}})
-	if got := a.Messages[1].Blocks; len(got) != 1 || got[0].Text != "x" {
-		t.Fatalf("blocks %+v", got)
-	}
-	if shared[0].Text != "a" || len(shared) != 3 {
-		t.Fatal("the session's blocks were modified in place")
-	}
-	if len(ui.infos) != 1 || !strings.Contains(ui.infos[0], "removed 2 thinking") {
-		t.Fatalf("infos %q", ui.infos)
-	}
-	a.noteServerEdits(&llm.Message{}) // nothing dropped any more: no line
-	if len(ui.infos) != 1 {
-		t.Fatalf("infos %q", ui.infos)
+	before := fmt.Sprint(a.Messages)
+	a.noteServerEdits(&llm.Message{ThinkingDropped: 2})
+	if fmt.Sprint(a.Messages) != before || len(ui.infos) != 0 {
+		t.Fatalf("history changed: %+v, infos %q", a.Messages, ui.infos)
 	}
 }
 

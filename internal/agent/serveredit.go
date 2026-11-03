@@ -99,40 +99,8 @@ func (a *Agent) noteServerEdits(m *llm.Message) {
 		a.cleared = m.ClearedToolUses
 		a.clearMark = len(a.Messages) // any result sent so far may be gone
 	}
-	if n := a.removeThinking(m.DroppedThinking); n > 0 {
-		a.UI.OnInfo(fmt.Sprintf("history changed since earlier turns: removed %d thinking block(s) that no longer match it", n))
-	}
-}
-
-// removeThinking deletes thinking blocks the provider dropped because the
-// history before them changed (elision, compaction, rewind, a resumed
-// session). Left in, they would be sent and dropped again on every request.
-// The provider drops a block and all thinking after it, so this removes
-// thinking from the end of the chain, which keeps later blocks valid. Only
-// the agent's history changes: the session keeps the blocks, and a resume
-// drops them once more.
-func (a *Agent) removeThinking(refs []llm.BlockRef) int {
-	byMsg := map[int][]int{}
-	for _, r := range refs {
-		if r.Msg < len(a.Messages) && r.Block < len(a.Messages[r.Msg].Blocks) && a.Messages[r.Msg].Blocks[r.Block].Type == llm.BlockThinking {
-			byMsg[r.Msg] = append(byMsg[r.Msg], r.Block)
-		}
-	}
-	n := 0
-	for i, drop := range byMsg {
-		skip := map[int]bool{}
-		for _, j := range drop {
-			skip[j] = true
-		}
-		old := a.Messages[i].Blocks
-		kept := make([]llm.Block, 0, len(old)) // a copy: the session tree shares the old slice
-		for j, b := range old {
-			if !skip[j] {
-				kept = append(kept, b)
-			}
-		}
-		n += len(old) - len(kept)
-		a.Messages[i].Blocks = kept
-	}
-	return n
+	// Thinking the provider dropped (the history before it changed) stays
+	// in the history: the provider drops it the same way on every request,
+	// at no token cost, while removing it would change the prefix the
+	// request just cached and write all of it again.
 }
