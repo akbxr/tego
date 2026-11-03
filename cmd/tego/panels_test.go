@@ -85,6 +85,30 @@ func TestAgentsPanel(t *testing.T) {
 	}
 }
 
+// A task call that has ended stays out of the panel: background tasks
+// started after it show alone (its finished subagents did come back, as if
+// part of them).
+func TestPanelSubagentsDropsAnEndedCall(t *testing.T) {
+	start := time.Now().Add(-time.Hour)
+	ended := []agent.SubagentStatus{{Name: "PFShotStamps", State: agent.SubDone, Started: start, Ended: start.Add(time.Minute)}}
+	bg := []agent.SubagentStatus{{Name: "LPDirectorRules", ID: "t26", State: agent.SubRunning, Started: time.Now()}}
+	got := strings.Join(agentsPanel(palette{}, panelSubagents(ended, bg), 100, "/w"), "\n")
+	if !strings.Contains(got, "LPDirectorRules") || strings.Contains(got, "PFShotStamps") {
+		t.Fatalf("panel:\n%s", got)
+	}
+	// While the call runs, its finished subagents show beside the running ones.
+	running := append(ended, agent.SubagentStatus{Name: "Other", State: agent.SubRunning, Started: time.Now()})
+	got = strings.Join(agentsPanel(palette{}, panelSubagents(running, bg), 100, "/w"), "\n")
+	for _, want := range []string{"PFShotStamps", "Other", "LPDirectorRules"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("panel lacks %q:\n%s", want, got)
+		}
+	}
+	if len(panelSubagents(ended, nil)) != 0 {
+		t.Fatal("an ended call alone shows")
+	}
+}
+
 func TestTaskBoxReplay(t *testing.T) {
 	u := &termUI{out: io.Discard, diag: io.Discard, atBOL: true, width: func() int { return 60 }}
 	// The live state belongs to a later call: the box must use the output.

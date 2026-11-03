@@ -112,7 +112,7 @@ func TestFooterShowsBackgroundTasks(t *testing.T) {
 	if n := a.runningAgents(); n != 1 {
 		t.Fatalf("running %d", n)
 	}
-	rows := agentsPanel(palette{}, append(a.ag.Subagents(), a.runningBackground()...), 80, a.cwd)
+	rows := agentsPanel(palette{}, panelSubagents(a.ag.Subagents(), a.runningBackground()), 80, a.cwd)
 	if len(rows) < 2 || !strings.Contains(rows[1], "Digger ⇢t1") {
 		t.Fatalf("panel %q", rows)
 	}

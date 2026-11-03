@@ -64,7 +64,7 @@ func (a *app) panel(width int) []string {
 	}
 	todos, rev := ag.TodoState()
 	out = append(out, todoPanel(c, todos, a.todoThisTurn(a.status.snapshot().busy, rev))...)
-	out = append(out, agentsPanel(c, append(ag.Subagents(), a.runningBackground()...), width, a.cwd)...)
+	out = append(out, agentsPanel(c, panelSubagents(ag.Subagents(), a.runningBackground()), width, a.cwd)...)
 	out = append(out, a.pendingPanel(c, width)...)
 	return out
 }
@@ -311,6 +311,21 @@ func subRow(c palette, s agent.SubagentStatus, live bool) string {
 		parts = append(parts, c.red+s.Err+c.reset)
 	}
 	return strings.Join(parts, c.dim+" · "+c.reset)
+}
+
+// panelSubagents is what the subagents panel shows: the latest task call's
+// subagents while that call runs (its finished ones too), and the background
+// tasks running. A call that has ended stays out: its finished subagents
+// would come back beside background tasks started long after it.
+func panelSubagents(call, background []agent.SubagentStatus) []agent.SubagentStatus {
+	var out []agent.SubagentStatus
+	for _, s := range call {
+		if s.State == agent.SubRunning || s.State == agent.SubQueued {
+			out = append(out, call...)
+			break
+		}
+	}
+	return append(out, background...)
 }
 
 // runningAgents counts subagents queued or running (for the header).
