@@ -61,7 +61,7 @@ func NewPool(name, strategy string, members []PoolMember) *Pool {
 	if strategy != StrategyRoundRobin && strategy != StrategyExpiring {
 		strategy = StrategyFallback
 	}
-	p := &Pool{name: name, strategy: strategy, sessions: map[string]int{}, lastUse: map[string]time.Time{}, now: time.Now}
+	p := &Pool{name: name, strategy: strategy, sessions: map[string]int{}, lastUse: map[string]time.Time{}, now: wallNow}
 	for _, m := range members {
 		p.members = append(p.members, &poolMember{PoolMember: m})
 	}
@@ -311,3 +311,7 @@ func (p *Pool) WebSearch(ctx context.Context, model, query string) (*WebResult, 
 	}
 	return nil, err
 }
+
+// wallNow is time.Now without its monotonic reading, which stops while a
+// Mac sleeps: cache lifetimes run on the provider's clock.
+func wallNow() time.Time { return time.Now().Round(0) }

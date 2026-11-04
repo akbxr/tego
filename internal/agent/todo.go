@@ -213,7 +213,8 @@ func (a *Agent) SetHistory(msgs []llm.Message) {
 	a.cp, a.pendingRewind, a.elideFloor, a.cleared, a.clearMark = checkpointState{}, nil, 0, 0, 0
 	a.restoreClearTrigger()
 	a.ctxRewrite, a.ctxRewriteAt = 0, 0
-	a.lastReply = a.Session.LeafTime() // a resumed session's cache may have expired
+	a.lastReply = a.historyCachedAt(msgs) // a resumed session's cache may have expired
+	a.ka.verified = -1                    // the keep-alive checks the new history against what it sends
 	a.activateFromHistory(msgs)
 	a.forgetEnded() // their reports may not be in this history
 	todos := latestTodos(msgs)

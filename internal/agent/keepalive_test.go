@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -192,4 +193,53 @@ func TestKeepAliveWhenNot(t *testing.T) {
 			t.Fatalf("infos %q", a.UI.(*infoUI).infos)
 		}
 	})
+}
+
+// Esc on a prompt puts the history back (SetHistory). The keep-alive's
+// last refresh still counts, so the cache isn't taken for 58 minutes old.
+// A history that differs from what was sent, as one read back from the
+// session file may, is checked again even with as many messages: a
+// keep-alive of it would write it all.
+func TestKeepAliveAfterTheHistoryIsPutBack(t *testing.T) {
+	a, prov, now := keptSession(t, 12*time.Hour, false)
+	start := *now
+	if warmFor(a, now, 52*time.Minute) != 1 {
+		t.Fatal("no first keep-alive")
+	}
+	*now = start.Add(58 * time.Minute)
+	a.SetHistory(slices.Clone(a.Messages))
+	if a.KeepAliveDue() != nil {
+		t.Fatal("due again right after the history was put back")
+	}
+	if !a.lastReply.Equal(start.Add(50 * time.Minute)) {
+		t.Fatalf("lastReply %v, want the refresh at +50m", a.lastReply.Sub(start))
+	}
+	*now = start.Add(99 * time.Minute)
+	if a.KeepAliveDue() != nil {
+		t.Fatal("due 49 minutes after the refresh")
+	}
+	*now = start.Add(101 * time.Minute)
+	if a.KeepAliveDue() == nil {
+		t.Fatal("not due 51 minutes after the refresh")
+	}
+
+	b, prov, now := keptSession(t, 12*time.Hour, false)
+	start = *now
+	warmFor(b, now, 52*time.Minute)
+	changed := slices.Clone(b.Messages)
+	changed[0].Blocks = []llm.Block{{Type: llm.BlockText, Text: "fix the bug, read back"}}
+	b.SetHistory(changed)
+	b.lastReply = now.Add(-51 * time.Minute) // the session's leaf time
+	warmFor(b, now, time.Hour)
+	if len(prov.warms) != 1 {
+		t.Fatalf("%d keep-alives, want only the one before", len(prov.warms))
+	}
+}
+
+// Spans are measured on the wall clock: the monotonic one leaves out the
+// time a Mac sleeps.
+func TestNowIsWallClock(t *testing.T) {
+	if s := (&Agent{}).now().String(); strings.Contains(s, " m=") {
+		t.Fatalf("monotonic reading in %s", s)
+	}
 }

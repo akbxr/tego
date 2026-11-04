@@ -127,7 +127,7 @@ func (a *Agent) KeepAliveDone(req *llm.Request, start time.Time, u llm.Usage, er
 	}
 	a.ka.n++
 	a.ka.read += u.CacheRead
-	a.lastReply = start // the cache's lifetime counts from the request's start
+	a.lastReply = start.Round(0) // the cache's lifetime counts from the request's start (wall clock: see now)
 }
 
 // keepAliveBudget is how many refreshes cost what a cold cache would: the

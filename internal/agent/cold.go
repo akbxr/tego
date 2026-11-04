@@ -24,11 +24,14 @@ func (a *Agent) cacheTTL() time.Duration {
 	return 5 * time.Minute
 }
 
+// now is wall-clock time. Go's monotonic clock stops while a Mac sleeps,
+// so a span measured with it leaves the sleep out: the cache, which
+// expires on the provider's clock, would look warm for hours after.
 func (a *Agent) now() time.Time {
 	if a.clock != nil {
 		return a.clock()
 	}
-	return time.Now()
+	return time.Now().Round(0)
 }
 
 // cacheIdle is how long ago the last reply arrived, if the prompt cache has
@@ -65,4 +68,16 @@ func (a *Agent) coldElide() {
 		a.UI.OnInfo(fmt.Sprintf("prompt cache expired (idle %s): elided %d old tool block(s) (~%.1fk → ~%.1fk tokens)",
 			idle.Round(time.Minute), n, float64(before)/1000, float64(a.LastCtx)/1000))
 	}
+}
+
+// historyCachedAt is when msgs were last read into the cache: the session's
+// leaf time, or the last request or keep-alive of this process when msgs
+// still start with what that sent (the history put back after an aborted
+// prompt). The leaf time alone would undo a keep-alive's refresh.
+func (a *Agent) historyCachedAt(msgs []llm.Message) time.Time {
+	leaf := a.Session.LeafTime()
+	if s := a.sent; s.n > 0 && a.lastReply.After(leaf) && len(msgs) >= s.n && hashMessages(msgs[:s.n]) == s.sum {
+		return a.lastReply
+	}
+	return leaf
 }
