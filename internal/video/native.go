@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"os/exec"
@@ -17,17 +18,23 @@ import (
 	"github.com/akbxr/tego/internal/llm"
 )
 
-// Models that take video (Gemini) get the clip itself, sound included:
-// re-encoded small, since they look at about one frame a second at a low
-// resolution anyway.
+// Models that take video (Gemini) get the clip itself, sound included: the
+// file as is when it is small and in a format Gemini reads, else
+// re-encoded. Gemini looks at about one frame a second and scales it down
+// itself (the tokens are the same either way), but the original's
+// sharpness still helps it read small text, so encoding keeps 1280px.
 const (
 	// MaxNative bounds the seconds sent as one video (about 100 tokens a
 	// second); longer spans go as frames.
-	MaxNative  = 20 * 60
-	nativeEdge = 640
-	nativeFPS  = 5
-	// MaxNativeBytes bounds an encoded clip: the request carries it inline.
+	MaxNative = 20 * 60
+	// MaxOriginalBytes: a whole file up to this size goes as is.
+	MaxOriginalBytes = 10 << 20
+	// MaxNativeBytes bounds an encoded clip. Every later request carries
+	// it again inline, as part of the history.
 	MaxNativeBytes = 16 << 20
+	nativeEdge     = 1280
+	smallEdge      = 640 // when 1280px comes out over MaxNativeBytes
+	nativeFPS      = 2
 )
 
 // ErrTooLong and ErrTooBig say a span can't go as one video.
@@ -76,20 +83,64 @@ func Encode(ctx context.Context, path, name string, o Options) (*Clip, llm.Block
 		return nil, llm.Block{}, ErrTooLong
 	}
 	c.Start, c.End = start, end
-	data, err := encode(ctx, path, start, end, c.Audio)
-	if err != nil {
-		return nil, llm.Block{}, err
-	}
-	if len(data) > MaxNativeBytes {
-		return nil, llm.Block{}, ErrTooBig
-	}
 	meta, _ := json.Marshal(Meta{Name: name, Duration: c.Duration, Start: start, End: end, Width: c.Width, Height: c.Height, FPS: c.FPS, Audio: c.Audio})
-	return c, llm.Block{Type: llm.BlockVideo, MediaType: "video/mp4", Data: base64.StdEncoding.EncodeToString(data), Input: meta}, nil
+	whole := start == 0 && (c.Duration <= 0 || end >= c.Duration)
+	if mt := c.originalType(); whole && mt != "" {
+		if data, err := os.ReadFile(path); err == nil && len(data) <= MaxOriginalBytes {
+			return c, llm.Block{Type: llm.BlockVideo, MediaType: mt, Data: base64.StdEncoding.EncodeToString(data), Input: meta}, nil
+		}
+	}
+	var data []byte
+	for _, size := range []int{nativeEdge, smallEdge} {
+		data, err = encode(ctx, path, start, end, c.Audio, size)
+		if err != nil {
+			return nil, llm.Block{}, err
+		}
+		if len(data) <= MaxNativeBytes {
+			return c, llm.Block{Type: llm.BlockVideo, MediaType: "video/mp4", Data: base64.StdEncoding.EncodeToString(data), Input: meta}, nil
+		}
+	}
+	return nil, llm.Block{}, ErrTooBig
+}
+
+// originalType is the MIME type to send the file as is with, or "" when
+// it needs encoding: too big, or a container or codec Gemini may not read.
+func (c *Clip) originalType() string {
+	if c.size <= 0 || c.size > MaxOriginalBytes {
+		return ""
+	}
+	switch c.codec {
+	case "h264", "hevc", "vp8", "vp9", "av1":
+	default:
+		return ""
+	}
+	f, err := os.Open(c.Path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	head := make([]byte, 64)
+	n, _ := io.ReadFull(f, head)
+	head = head[:n]
+	switch {
+	case len(head) >= 12 && string(head[4:8]) == "ftyp":
+		switch brand := string(head[8:12]); {
+		case brand == "qt  ":
+			return "video/mov"
+		case strings.HasPrefix(brand, "3g"):
+			return "video/3gpp"
+		default:
+			return "video/mp4"
+		}
+	case bytes.HasPrefix(head, []byte{0x1a, 0x45, 0xdf, 0xa3}) && bytes.Contains(head, []byte("webm")):
+		return "video/webm"
+	}
+	return ""
 }
 
 // encode writes start..end of path as H.264 (MPEG-4 Part 2 when ffmpeg has
-// no x264) at most 640px and 5 fps, with mono AAC sound.
-func encode(ctx context.Context, path string, start, end float64, audio bool) ([]byte, error) {
+// no x264) at most edge px and 2 fps, with mono AAC sound.
+func encode(ctx context.Context, path string, start, end float64, audio bool, edge int) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	tmp, err := os.CreateTemp("", "tego-video-*.mp4")
@@ -98,7 +149,7 @@ func encode(ctx context.Context, path string, start, end float64, audio bool) ([
 	}
 	tmp.Close()
 	defer os.Remove(tmp.Name())
-	scale := fmt.Sprintf("scale=w='min(%d,iw)':h='min(%d,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,fps='min(%d,source_fps)'", nativeEdge, nativeEdge, nativeFPS)
+	scale := fmt.Sprintf("scale=w='min(%d,iw)':h='min(%d,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,fps='min(%d,source_fps)'", edge, edge, nativeFPS)
 	args := []string{"-nostdin", "-v", "error", "-y", "-ss", strconv.FormatFloat(start, 'f', 3, 64)}
 	if end > 0 {
 		args = append(args, "-to", strconv.FormatFloat(end, 'f', 3, 64))
@@ -189,7 +240,13 @@ func ToFrames(ctx context.Context, b llm.Block) ([]llm.Block, error) {
 		return nil, err
 	}
 	m := ReadMeta(b)
-	c, err := Read(ctx, tmp.Name(), Options{})
+	// An encoded clip has 2 frames a second: a seek past the last one
+	// finds nothing, so the frames stop one frame short of the end.
+	o := Options{}
+	if p, err := probe(ctx, tmp.Name()); err == nil && p.Duration > 1 && p.FPS > 0 && p.FPS <= nativeFPS {
+		o.End = p.Duration - 1/p.FPS
+	}
+	c, err := Read(ctx, tmp.Name(), o)
 	if err != nil {
 		return nil, err
 	}

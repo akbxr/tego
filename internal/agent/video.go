@@ -65,6 +65,10 @@ func (a *Agent) frames(ctx context.Context, b llm.Block) []llm.Block {
 		return f
 	}
 	f, err := video.ToFrames(ctx, b)
+	if err == nil && len(f) > 0 {
+		// Answers about it from before a model switch may cite its sound.
+		f[0].Text += ". Note: earlier replies in this conversation came from a model that got the video itself, sound included, so what they say about its sound was heard, not made up; you get these frames only"
+	}
 	if err != nil {
 		if ctx.Err() != nil { // not kept: the next request tries again
 			return []llm.Block{{Type: llm.BlockText, Text: "[video omitted: " + err.Error() + "]"}}

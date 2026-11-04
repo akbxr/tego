@@ -84,6 +84,8 @@ type Clip struct {
 	Audio         bool
 	Start, End    float64 // the span the frames cover
 	Frames        []Frame
+	format, codec string // ffprobe's container and video codec names
+	size          int64  // bytes
 }
 
 // ErrNoFFmpeg is returned when ffmpeg or ffprobe is not on PATH.
@@ -204,9 +206,12 @@ func probe(ctx context.Context, path string) (*Clip, error) {
 	var p struct {
 		Format struct {
 			Duration string `json:"duration"`
+			Name     string `json:"format_name"`
+			Size     string `json:"size"`
 		} `json:"format"`
 		Streams []struct {
 			Type         string            `json:"codec_type"`
+			Codec        string            `json:"codec_name"`
 			Width        int               `json:"width"`
 			Height       int               `json:"height"`
 			AvgFrameRate string            `json:"avg_frame_rate"`
@@ -221,8 +226,9 @@ func probe(ctx context.Context, path string) (*Clip, error) {
 	if err := json.Unmarshal(out, &p); err != nil {
 		return nil, fmt.Errorf("ffprobe: %w", err)
 	}
-	c := &Clip{Path: path}
+	c := &Clip{Path: path, format: p.Format.Name}
 	c.Duration, _ = strconv.ParseFloat(p.Format.Duration, 64)
+	c.size, _ = strconv.ParseInt(p.Format.Size, 10, 64)
 	video := false
 	for _, s := range p.Streams {
 		switch s.Type {
@@ -235,6 +241,7 @@ func probe(ctx context.Context, path string) (*Clip, error) {
 			video = true
 			c.Width, c.Height = s.Width, s.Height
 			c.FPS = rate(s.AvgFrameRate)
+			c.codec = s.Codec
 			rot, _ := strconv.ParseFloat(s.Tags["rotate"], 64)
 			for _, sd := range s.SideData {
 				if sd.Rotation != 0 {
