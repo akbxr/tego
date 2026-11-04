@@ -11,7 +11,7 @@ import (
 // argument, sets how several accounts are used (saved to config.json).
 func (a *app) accountsCommand(args string) {
 	switch args {
-	case llm.StrategyFallback, llm.StrategyRoundRobin:
+	case llm.StrategyFallback, llm.StrategyRoundRobin, llm.StrategyExpiring:
 		a.cfg.Accounts = args
 		if err := a.cfg.Save(); err != nil {
 			a.ui.Errorf("saving config: %v", err)
@@ -26,15 +26,15 @@ func (a *app) accountsCommand(args string) {
 		return
 	case "":
 	default:
-		a.ui.Errorf("usage: /accounts [fallback|round-robin]")
+		a.ui.Errorf("usage: /accounts [fallback|round-robin|expiring]")
 		return
 	}
 	c := a.ui.c
 	mode := a.cfg.Accounts
-	if mode != llm.StrategyRoundRobin {
+	if mode != llm.StrategyRoundRobin && mode != llm.StrategyExpiring {
 		mode = llm.StrategyFallback
 	}
-	fmt.Fprintf(a.out, "mode: %s%s%s  (fallback = stay on one account, switch when it hits a limit · round-robin = next account for each new prompt)\n", c.bold, mode, c.reset)
+	fmt.Fprintf(a.out, "mode: %s%s%s  (fallback = stay on one account, switch when it hits a limit · round-robin = next account for each new prompt · expiring = a new prompt goes to the account whose weekly quota would go unused soonest)\n", c.bold, mode, c.reset)
 	var live []llm.AccountStatus
 	if pool, ok := a.ag.Provider.(*llm.Pool); ok {
 		live = pool.Status()
@@ -50,6 +50,9 @@ func (a *app) accountsCommand(args string) {
 				for _, st := range live {
 					if st.Label != acct.Label() {
 						continue
+					}
+					if st.Quota != "" {
+						line += c.dim + " · " + st.Quota + c.reset
 					}
 					if st.Active {
 						line += " " + c.green + "● in use" + c.reset

@@ -3,6 +3,7 @@ package config
 
 import (
 	"cmp"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -34,7 +35,7 @@ type Config struct {
 	SubagentCheck *int                           `json:"subagent_watchdog,omitempty"`  // requests between checks that a subagent is getting somewhere (default 40; 0: none)
 	MCPTools      string                         `json:"mcp_tools,omitempty"`          // "auto" (default: deferred behind tool_search above 10 tools), "lazy", "eager"
 	MCPIdle       string                         `json:"mcp_idle,omitempty"`           // local MCP servers stop after this long unused and start at their next call (default "10m"; "off": run all session)
-	Accounts      string                         `json:"accounts,omitempty"`           // with several logins per provider: "fallback" (default: switch on limits) or "round-robin"
+	Accounts      string                         `json:"accounts,omitempty"`           // with several logins per provider: "fallback" (default: switch on limits), "round-robin" or "expiring" (the account whose weekly quota runs out unused soonest)
 	Icons         string                         `json:"icons,omitempty"`              // status-line icons: "nerd" (Nerd Font glyphs) or "unicode" (default)
 	Notify        string                         `json:"notify,omitempty"`             // "off" disables the notification (sound) when a turn finishes
 	UpdateCheck   string                         `json:"update_check,omitempty"`       // "off" stops the daily check for a newer release
@@ -391,7 +392,8 @@ func (c *Config) DefaultModel(store *auth.Store) (string, error) {
 
 // NewProvider builds a provider instance with resolved credentials. With
 // several stored accounts it returns an *llm.Pool that switches accounts
-// on limits (and rotates them with "accounts": "round-robin").
+// on limits (and rotates them with "accounts": "round-robin", or picks by
+// weekly quota with "expiring").
 func (c *Config) NewProvider(name string, store *auth.Store) (llm.Provider, error) {
 	pc, ok := c.providerConfig(name)
 	if !ok {
@@ -413,7 +415,18 @@ func (c *Config) NewProvider(name string, store *auth.Store) (llm.Provider, erro
 			firstErr = cmp.Or(firstErr, err)
 			continue
 		}
-		members = append(members, llm.PoolMember{Label: accts[i].Label(), Provider: p})
+		m := llm.PoolMember{Label: accts[i].Label(), Provider: p}
+		if c.Accounts == llm.StrategyExpiring && accts[i].Type == "oauth" {
+			kind, cred := c.Kind(name), accts[i]
+			m.Usage = func(ctx context.Context) (*llm.UsageReport, error) {
+				token, err := store.TokenSource(name, cred.ID).Token(ctx)
+				if err != nil {
+					return nil, err
+				}
+				return llm.FetchUsage(ctx, kind, token, cred.ProjectID)
+			}
+		}
+		members = append(members, m)
 	}
 	switch len(members) {
 	case 0:

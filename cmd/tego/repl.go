@@ -40,7 +40,7 @@ var builtinCommands = []struct{ name, icon, help string }{
 	{"skills", "✧", "List discovered skills"},
 	{"login", "→", "Log in: Claude Pro/Max, ChatGPT, Google Antigravity, or an API key (/login <url> to paste a redirect)"},
 	{"logout", "←", "Remove stored credentials (one account or all)"},
-	{"accounts", "◎", "Logged-in accounts, limits, and switching mode: /accounts [fallback|round-robin]"},
+	{"accounts", "◎", "Logged-in accounts, limits, and switching mode: /accounts [fallback|round-robin|expiring]"},
 	{"usage", "▤", "Subscription usage and resets for every logged-in account"},
 	{"stats", "▦", "Requests, tokens and estimated cost: /stats [24h|7d|30d|90d|all]"},
 	{"mcp", "⌁", "MCP server status and tool counts"},

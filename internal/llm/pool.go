@@ -14,12 +14,19 @@ import (
 const (
 	StrategyFallback   = "fallback"    // stay on one account; switch only when it hits a limit
 	StrategyRoundRobin = "round-robin" // next account for every new user prompt; also switches on limits
+	// A new prompt whose cache has gone cold goes to the account whose
+	// weekly quota is lost fastest if unused (most left per hour until its
+	// reset); also switches on limits.
+	StrategyExpiring = "expiring"
 )
 
 // PoolMember is one account of a provider.
 type PoolMember struct {
 	Label    string // e.g. the account email
 	Provider Provider
+	// Usage reads the account's subscription limits (expiring strategy);
+	// nil when it has none to read (an API key).
+	Usage func(context.Context) (*UsageReport, error)
 }
 
 // Pool spreads requests for one provider over several accounts. When the
@@ -34,22 +41,27 @@ type Pool struct {
 	OnSwitch func(msg string) // optional: reports account switches
 
 	mu       sync.Mutex
-	current  int            // fallback: account in use; also the last account used
-	rr       int            // round-robin cursor
-	sessions map[string]int // session -> account for the turn in progress
+	current  int                  // fallback: account in use; also the last account used
+	rr       int                  // round-robin cursor
+	sessions map[string]int       // session -> account for the turn in progress
+	lastUse  map[string]time.Time // session -> its last answered request
+	fetching chan struct{}        // closed when the usage refresh in flight ends
+	now      func() time.Time
 }
 
 type poolMember struct {
 	PoolMember
 	coolUntil time.Time
 	reason    string
+	usage     *UsageReport // last read (expiring strategy)
+	usageAt   time.Time    // when it was read, or last failed to be
 }
 
 func NewPool(name, strategy string, members []PoolMember) *Pool {
-	if strategy != StrategyRoundRobin {
+	if strategy != StrategyRoundRobin && strategy != StrategyExpiring {
 		strategy = StrategyFallback
 	}
-	p := &Pool{name: name, strategy: strategy, sessions: map[string]int{}}
+	p := &Pool{name: name, strategy: strategy, sessions: map[string]int{}, lastUse: map[string]time.Time{}, now: time.Now}
 	for _, m := range members {
 		p.members = append(p.members, &poolMember{PoolMember: m})
 	}
@@ -116,23 +128,32 @@ func cooldown(err error) time.Duration {
 }
 
 // pick chooses the starting account for req: a new prompt in round-robin
-// mode takes the next account; otherwise the turn's account is reused.
-func (p *Pool) pick(req *Request) int {
+// mode takes the next account, in expiring mode the account chosen by
+// expiringPick; otherwise the turn's account is reused. note says why an
+// expiring pick moved to another account.
+func (p *Pool) pick(req *Request) (i int, note string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	newTurn := len(req.Messages) == 0 || isPromptMessage(req.Messages[len(req.Messages)-1])
+	newTurn := isNewTurn(req)
+	if p.strategy == StrategyExpiring {
+		return p.expiringPick(req, newTurn)
+	}
 	if p.strategy == StrategyRoundRobin {
 		if i, ok := p.sessions[req.SessionID]; ok && !newTurn {
-			return i
+			return i, ""
 		}
 		i := p.rr % len(p.members)
 		p.rr++
-		return i
+		return i, ""
 	}
 	if i, ok := p.sessions[req.SessionID]; ok && !newTurn {
-		return i
+		return i, ""
 	}
-	return p.current
+	return p.current, ""
+}
+
+func isNewTurn(req *Request) bool {
+	return len(req.Messages) == 0 || isPromptMessage(req.Messages[len(req.Messages)-1])
 }
 
 func (p *Pool) CanPrewarm(model string) bool {
@@ -164,7 +185,13 @@ func isPromptMessage(m Message) bool {
 }
 
 func (p *Pool) Stream(ctx context.Context, req *Request, onEvent func(Event)) (*Message, error) {
-	start := p.pick(req)
+	if p.strategy == StrategyExpiring && isNewTurn(req) {
+		p.refreshUsage(ctx)
+	}
+	start, note := p.pick(req)
+	if note != "" && p.OnSwitch != nil {
+		p.OnSwitch(note)
+	}
 	ctx = context.WithValue(ctx, failFastKey{}, true)
 	n := len(p.members)
 	var lastErr error
@@ -193,6 +220,7 @@ func (p *Pool) Stream(ctx context.Context, req *Request, onEvent func(Event)) (*
 		if err == nil {
 			p.mu.Lock()
 			p.current, p.sessions[req.SessionID] = i, i
+			p.lastUse[req.SessionID] = p.now()
 			if p.strategy == StrategyRoundRobin && i != start {
 				p.rr = i + 1 // continue the rotation after the account that answered
 			}
@@ -228,14 +256,21 @@ type AccountStatus struct {
 	Active    bool
 	CoolUntil time.Time
 	Reason    string
+	Quota     string // expiring strategy: its weekly quota, e.g. "80% of the week left, resets in 11h"
 }
 
 func (p *Pool) Status() []AccountStatus {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	out := make([]AccountStatus, len(p.members))
+	now := p.now()
 	for i, m := range p.members {
 		out[i] = AccountStatus{Label: m.Label, Active: i == p.current, CoolUntil: m.coolUntil, Reason: m.reason}
+		if p.strategy == StrategyExpiring && m.usage != nil {
+			if q, ok := weeklyQuota(m.usage, "", now); ok {
+				out[i].Quota = q.String(now)
+			}
+		}
 	}
 	return out
 }
