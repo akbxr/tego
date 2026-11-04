@@ -438,3 +438,34 @@ func TestAnthropicDropsAntigravitySignatures(t *testing.T) {
 		t.Errorf("antigravity signatures replayed to Anthropic: %s", got)
 	}
 }
+
+// Gemini gets video inline, attached or returned by a tool (in the next
+// user turn: a functionResponse takes no video); Claude on Antigravity
+// gets a placeholder.
+func TestAntigravityVideo(t *testing.T) {
+	p := &antigravityProvider{}
+	if !p.TakesVideo("gemini-3.8-flash") || !p.TakesVideo("gemini-2.5-flash") || p.TakesVideo("claude-sonnet-4-6") || p.TakesVideo("gpt-oss-120b") {
+		t.Fatal("TakesVideo")
+	}
+	vid := Block{Type: BlockVideo, MediaType: "video/mp4", Data: "dmlk", Input: []byte(`{"name":"a.mp4"}`)}
+	msgs := []Message{
+		{Role: RoleUser, Blocks: []Block{{Type: BlockText, Text: "watch"}, vid}},
+		{Role: RoleAssistant, Blocks: []Block{{Type: BlockToolUse, ID: "r1", Name: "read", Input: []byte(`{}`)}}},
+		{Role: RoleUser, Blocks: []Block{{Type: BlockToolResult, ToolUseID: "r1", Content: "Video a.mp4", Images: []Block{vid}}}},
+	}
+	r := agBuild(t, &Request{Model: "gemini-3.8-flash", Messages: msgs})["request"].(map[string]any)
+	got := jsonOf(r["contents"])
+	for _, want := range []string{
+		`{"parts":[{"text":"watch"},{"inlineData":{"data":"dmlk","mimeType":"video/mp4"}}],"role":"user"}`,
+		`"response":{"output":"Video a.mp4"}`,
+		`{"parts":[{"text":"Tool result video:"},{"inlineData":{"data":"dmlk","mimeType":"video/mp4"}}],"role":"user"}`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("gemini contents lack %s:\n%s", want, got)
+		}
+	}
+	r = agBuild(t, &Request{Model: "claude-sonnet-4-6", Messages: msgs})["request"].(map[string]any)
+	if got := jsonOf(r["contents"]); strings.Contains(got, "video/mp4") || strings.Count(got, videoOmittedText) != 2 {
+		t.Errorf("claude contents:\n%s", got)
+	}
+}

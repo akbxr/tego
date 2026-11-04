@@ -163,7 +163,7 @@ A response's output limit covers its thinking and its answer. On Claude it is 64
 | `/login`, `/accounts`, `/usage` | Accounts and subscription limits |
 | `/stats`, `/mcp`, `/skills` | Usage, MCP servers, skills |
 
-Type `/` for the full list. `@` attaches a file, `!cmd` runs a shell command yourself, and Ctrl+V pastes an image. Drag in an image or a video, or type its path. A video reaches the model as frames with their timestamps: 6 to 16 spread over its length. The model can read a stretch of it again more closely with `start`, `end` and `frames`. Video needs `ffmpeg` on PATH. Its sound is not included.
+Type `/` for the full list. `@` attaches a file, `!cmd` runs a shell command yourself, and Ctrl+V pastes an image. Drag in an image or a video, or type its path. Gemini models get the video itself with its sound, re-encoded small (640px, 5 fps), up to 20 minutes per read. Other models get frames with their timestamps: 6 to 16 spread over the video's length, without the sound. If you switch to such a model, earlier videos in the session are sent to it as frames. The model can look at part of a video again with `start` and `end` (and `frames`). Video needs `ffmpeg` on PATH.
 
 ## What tego leaves out
 

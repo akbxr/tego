@@ -1,7 +1,7 @@
-// Package video turns a video file into frames a model can look at: images
-// taken at even intervals with their timestamps. No provider tego talks to
-// takes video for every model, so frames are what works everywhere. It
-// needs ffmpeg and ffprobe on PATH.
+// Package video gets a video file to a model. Models that take video
+// (Gemini) get the clip itself, re-encoded small, sound included (native.go);
+// the rest get frames: images taken at even intervals with their
+// timestamps. It needs ffmpeg and ffprobe on PATH.
 package video
 
 import (

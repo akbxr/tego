@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -130,21 +131,48 @@ func (a *app) collectImages(prompt string) (string, []llm.Block) {
 	return prompt, blocks
 }
 
-// videoAttachment takes a video's frames: the reference that replaces its
-// token, and the blocks after the prompt (what they are, then the frames).
-// When they can't be taken, the model gets the path and why.
+// videoAttachment attaches a video: the reference that replaces its token,
+// and the blocks after the prompt (what it is, then the video or its
+// frames). When it can't be read, the model gets the path and why.
 func (a *app) videoAttachment(at attachment) (string, []llm.Block) {
 	ref := fmt.Sprintf("[Video #%d: %s]", at.n, at.video)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	clip, err := video.Read(ctx, at.video, video.Options{})
+	desc, blocks, summary, err := a.loadVideo(at.video, at.video)
 	if err != nil {
 		a.ui.Errorf("%s %s: %v", at.tag, filepath.Base(at.video), err)
 		return ref, []llm.Block{{Type: llm.BlockText, Text: fmt.Sprintf("[Video #%d could not be read: %v]", at.n, err)}}
 	}
-	a.ui.Dim("📎 %s %s · %s · %d frames", at.tag, filepath.Base(at.video), video.Stamp(clip.Duration), len(clip.Frames))
-	desc := fmt.Sprintf("[Video #%d] %s. Read it with start/end/frames for a closer look.", at.n, clip.Describe(at.video))
-	return ref, append([]llm.Block{{Type: llm.BlockText, Text: desc}}, clip.Blocks()...)
+	a.ui.Dim("📎 %s %s · %s", at.tag, filepath.Base(at.video), summary)
+	return ref, append([]llm.Block{{Type: llm.BlockText, Text: fmt.Sprintf("[Video #%d] %s", at.n, desc)}}, blocks...)
+}
+
+// loadVideo reads the video at path for the current model: the video
+// itself, sound included, when it takes video (Gemini), else its frames.
+// desc says what the blocks are; summary is for the user.
+func (a *app) loadVideo(path, name string) (desc string, blocks []llm.Block, summary string, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	note := ""
+	if a.ag != nil && llm.TakesVideo(a.ag.Provider, a.ag.Model) {
+		clip, blk, err := video.Encode(ctx, path, name, video.Options{})
+		if err == nil {
+			sound := "with sound"
+			if !clip.Audio {
+				sound = "no sound"
+			}
+			return clip.DescribeNative(name) + ". Read it with start/end to watch a part again.", []llm.Block{blk},
+				fmt.Sprintf("%s · video, %s · %s", video.Stamp(clip.Duration), sound, fmtBytes(len(blk.Data)/4*3)), nil
+		}
+		if !errors.Is(err, video.ErrTooLong) && !errors.Is(err, video.ErrTooBig) {
+			return "", nil, "", err
+		}
+		note = fmt.Sprintf(" Frames instead of the video: it is %v; read a part with start/end to watch it with sound.", err)
+	}
+	clip, err := video.Read(ctx, path, video.Options{})
+	if err != nil {
+		return "", nil, "", err
+	}
+	return clip.Describe(name) + ". Read it with start/end/frames for a closer look." + note, clip.Blocks(),
+		fmt.Sprintf("%s · %d frames", video.Stamp(clip.Duration), len(clip.Frames)), nil
 }
 
 // tokenIndex finds tag in s as a whole token ("#1" must not match "#12").

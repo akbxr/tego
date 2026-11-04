@@ -2,10 +2,14 @@ package video
 
 import (
 	"context"
+	"encoding/base64"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/akbxr/tego/internal/llm"
 )
 
 func TestSniff(t *testing.T) {
@@ -100,5 +104,57 @@ func ffmpeg(t *testing.T, args ...string) {
 	t.Helper()
 	if out, err := exec.Command("ffmpeg", append([]string{"-v", "error", "-y"}, args...)...).CombinedOutput(); err != nil {
 		t.Fatalf("ffmpeg: %v %s", err, out)
+	}
+}
+
+// A model that takes video gets the clip small with its sound; a part of
+// it says where it sits, and turns back into frames timed in the whole.
+func TestEncode(t *testing.T) {
+	if !Available() {
+		t.Skip("no ffmpeg")
+	}
+	dir := t.TempDir()
+	clip := filepath.Join(dir, "clip.mp4")
+	ffmpeg(t, "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30:duration=8", "-f", "lavfi", "-i", "sine=duration=8",
+		"-shortest", "-pix_fmt", "yuv420p", clip)
+	c, b, err := Encode(context.Background(), clip, "clip.mp4", Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Type != llm.BlockVideo || b.MediaType != "video/mp4" || len(b.Data) > 1<<20 {
+		t.Fatalf("block %s %s, %d bytes", b.Type, b.MediaType, len(b.Data))
+	}
+	if got := c.DescribeNative("clip.mp4"); got != "Video clip.mp4 (8.0 s, 1280x720, 30 fps, sound included): attached as a video" {
+		t.Fatalf("describe %q", got)
+	}
+	m := ReadMeta(b)
+	if m.Name != "clip.mp4" || m.End != 8 || !m.Audio || Seconds(b) != 8 {
+		t.Fatalf("meta %+v", m)
+	}
+	enc := filepath.Join(dir, "enc.mp4")
+	raw, _ := base64.StdEncoding.DecodeString(b.Data)
+	_ = os.WriteFile(enc, raw, 0o644)
+	e, err := probe(context.Background(), enc)
+	if err != nil || e.Width != 640 || e.Height != 360 || !e.Audio || e.FPS > 5 {
+		t.Fatalf("encoded: %v %dx%d %v fps, audio %v", err, e.Width, e.Height, e.FPS, e.Audio)
+	}
+
+	c, b, err = Encode(context.Background(), clip, "clip.mp4", Options{Start: 2, End: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.DescribeNative("clip.mp4"); !strings.HasSuffix(got, "attached as a video, the part 0:02.0 to 0:05.0; its own timestamps start at 0:00, which is 0:02.0 in the whole video") {
+		t.Fatalf("part: %q", got)
+	}
+	frames, err := ToFrames(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) != 7 || frames[1].Type != llm.BlockImage ||
+		frames[0].Text != "Video clip.mp4 (8.0 s, 1280x720, 30 fps, has audio (not included)): 6 frames in order, at 0:02.3, 0:02.8, 0:03.3, 0:03.8, 0:04.3, 0:04.8 (from the part 0:02.0 to 0:05.0)" {
+		t.Fatalf("%d blocks, %q", len(frames), frames[0].Text)
+	}
+	if _, _, err := Encode(context.Background(), clip, "c", Options{Start: 5, End: 5}); err == nil {
+		t.Fatal("empty part encoded")
 	}
 }

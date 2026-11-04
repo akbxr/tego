@@ -88,6 +88,10 @@ func (p *Pool) DefersTools(model string) bool {
 	return len(p.members) > 0 && DefersTools(p.members[0].Provider, model)
 }
 
+func (p *Pool) TakesVideo(model string) bool {
+	return len(p.members) > 0 && TakesVideo(p.members[0].Provider, model)
+}
+
 type failFastKey struct{}
 
 // failFastLimits reports whether rate-limit errors should be returned

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"image"
 	"image/png"
 	"io"
@@ -10,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/akbxr/tego/internal/agent"
 	"github.com/akbxr/tego/internal/llm"
 	"github.com/akbxr/tego/internal/video"
 )
@@ -73,5 +76,33 @@ func TestVideoPathsBecomeTokens(t *testing.T) {
 	}
 	if got := displayPrompt(prompt); got != "what happens in 🎞 #1?" {
 		t.Fatalf("display %q", got)
+	}
+}
+
+type watchingProvider struct{}
+
+func (watchingProvider) Name() string { return "fake" }
+func (watchingProvider) Stream(context.Context, *llm.Request, func(llm.Event)) (*llm.Message, error) {
+	return nil, errors.New("unused")
+}
+func (watchingProvider) TakesVideo(string) bool { return true }
+
+// For a model that takes video, an attached video goes whole, with sound.
+func TestVideoAttachedWhole(t *testing.T) {
+	if !video.Available() {
+		t.Skip("no ffmpeg")
+	}
+	dir := t.TempDir()
+	clip := filepath.Join(dir, "clip.mp4")
+	if out, err := exec.Command("ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=10:duration=3", "-f", "lavfi", "-i", "sine=duration=3",
+		"-shortest", "-pix_fmt", "yuv420p", clip).CombinedOutput(); err != nil {
+		t.Fatalf("ffmpeg: %v %s", err, out)
+	}
+	a := &app{cwd: dir, icons: iconPresets["unicode"], ui: &termUI{out: io.Discard, diag: io.Discard, atBOL: true},
+		ag: &agent.Agent{Provider: watchingProvider{}, Model: "gemini-3.8-flash"}}
+	prompt, blocks := a.collectImages("what happens in " + a.pasteText(clip) + "?")
+	if prompt != "what happens in [Video #1: "+clip+"]?" || len(blocks) != 2 || blocks[1].Type != llm.BlockVideo ||
+		!strings.Contains(blocks[0].Text, "sound included): attached as a video. Read it with start/end") {
+		t.Fatalf("prompt %q, %d blocks, %+v", prompt, len(blocks), blocks[0].Text)
 	}
 }

@@ -34,14 +34,14 @@ func (t *readTool) ReadOnly() bool { return true }
 func (t *readTool) Def() llm.Tool {
 	return llm.Tool{
 		Name:        "read",
-		Description: "Read a file (lines prefixed with 1-based line numbers), view an image file (png/jpeg/gif/webp) or a video's frames (mp4/mov/webm/mkv/…, with their timestamps), list a directory, or fetch an http(s) URL as readable text. For large files use offset/limit; for a closer look at part of a video, start/end and frames.",
+		Description: "Read a file (lines prefixed with 1-based line numbers), view an image file (png/jpeg/gif/webp) or a video (mp4/mov/webm/mkv/…: the video itself with its sound when you take video, else frames with their timestamps), list a directory, or fetch an http(s) URL as readable text. For large files use offset/limit; for part of a video, start/end.",
 		Schema: schema(`{"type":"object","properties":{` +
 			`"path":{"type":"string","description":"File or directory path, or http(s) URL"},` +
 			`"offset":{"type":"integer","description":"1-based start line"},` +
 			`"limit":{"type":"integer","description":"Max lines (default 2000)"},` +
 			`"start":{"type":"number","description":"Video: seconds to start at (default 0)"},` +
 			`"end":{"type":"number","description":"Video: seconds to end at (default: the end)"},` +
-			`"frames":{"type":"integer","description":"Video: frames to take, spread evenly (default 6-16 by length, max 48)"}},` +
+			`"frames":{"type":"integer","description":"Video: take this many frames, spread evenly, instead of the video itself (default 6-16 by length, max 48)"}},` +
 			`"required":["path"]}`),
 	}
 }
@@ -98,11 +98,23 @@ func (t *readTool) read(ctx context.Context, input json.RawMessage) (string, []l
 		return text, []llm.Block{blk}, nil
 	}
 	if isVideoFile(p) {
-		clip, err := video.Read(ctx, p, video.Options{Start: in.Start, End: in.End, Frames: in.Frames})
+		o := video.Options{Start: in.Start, End: in.End, Frames: in.Frames}
+		note := ""
+		if TakesVideo(ctx) && in.Frames == 0 {
+			clip, blk, err := video.Encode(ctx, p, t.env.rel(p), o)
+			if err == nil {
+				return clip.DescribeNative(t.env.rel(p)), []llm.Block{blk}, nil
+			}
+			if !errors.Is(err, video.ErrTooLong) && !errors.Is(err, video.ErrTooBig) {
+				return "", nil, err
+			}
+			note = fmt.Sprintf(". Frames instead of the video: it is %v; read a shorter part with start/end to watch it with sound", err)
+		}
+		clip, err := video.Read(ctx, p, o)
 		if err != nil {
 			return "", nil, err
 		}
-		return clip.Describe(t.env.rel(p)), clip.Blocks(), nil
+		return clip.Describe(t.env.rel(p)) + note, clip.Blocks(), nil
 	}
 	var sum [sha256.Size]byte
 	text, err := t.env.readFile(ctx, p, in.Offset, in.Limit, &sum)

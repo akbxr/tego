@@ -36,3 +36,17 @@ func (f progressWriter) Write(p []byte) (int, error) {
 	f(p)
 	return len(p), nil
 }
+
+type videoKey struct{}
+
+// WithVideo returns a context saying the model takes video files: tools
+// then return a video block (sound included) instead of frames.
+func WithVideo(ctx context.Context) context.Context {
+	return context.WithValue(ctx, videoKey{}, true)
+}
+
+// TakesVideo reports whether ctx came from WithVideo.
+func TakesVideo(ctx context.Context) bool {
+	v, _ := ctx.Value(videoKey{}).(bool)
+	return v
+}

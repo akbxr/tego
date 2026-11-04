@@ -260,6 +260,9 @@ func (a *Agent) run(ctx context.Context, t tools.Tool, call llm.Block) (res llm.
 		ctx = tools.WithProgress(ctx, func(b []byte) { pu.OnToolOutput(call.Name, b) })
 	}
 	if it, ok := t.(tools.ImageTool); ok {
+		if llm.TakesVideo(a.Provider, a.Model) {
+			ctx = tools.WithVideo(ctx)
+		}
 		out, res.Images, err = it.RunImages(ctx, call.Input)
 	} else if rt, ok := t.(refTool); ok {
 		out, res.ToolRefs, err = rt.RunRefs(ctx, call.Input)

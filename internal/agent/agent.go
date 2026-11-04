@@ -21,6 +21,7 @@ import (
 	"github.com/akbxr/tego/internal/llm"
 	"github.com/akbxr/tego/internal/session"
 	"github.com/akbxr/tego/internal/tools"
+	"github.com/akbxr/tego/internal/video"
 )
 
 // UI receives streaming output. Implementations must be goroutine-safe:
@@ -155,6 +156,9 @@ type Agent struct {
 
 	endedMu sync.Mutex
 	ended   []*endedSub // ended subagents a task can resume (resume.go)
+
+	videoMu     sync.Mutex
+	videoFrames map[[32]byte][]llm.Block // video blocks as frames, for models that can't watch (video.go)
 
 	toolMu    sync.Mutex
 	activated map[string]bool // deferred MCP tools loaded into the request
@@ -392,6 +396,7 @@ func (a *Agent) loop(ctx context.Context) error {
 		}
 		// idle: since the cache was last read (a keep-alive counts)
 		sent, prev, idle := a.noteSent(req), a.sent, a.now().Sub(a.lastReply)
+		req.Messages = a.videoAsFrames(ctx, req.Messages)
 		msg, err := a.Provider.Stream(ctx, req, a.onEvent)
 		if err == nil && req.ClearToolResults != nil {
 			msg.ClearTrigger = req.ClearToolResults.TriggerToolUses
@@ -611,6 +616,9 @@ const imageTokenChars = 1600 * 4
 // 750 tokens (what Anthropic bills), up to a full-size image when its size
 // can't be read from its header.
 func imageChars(b llm.Block) int {
+	if b.Type == llm.BlockVideo {
+		return videoChars(b)
+	}
 	head := b.Data[:min(len(b.Data), 4096)]
 	raw, err := base64.StdEncoding.DecodeString(head[:len(head)/4*4])
 	if err != nil && len(raw) == 0 {
@@ -628,7 +636,7 @@ func estimateTokens(msgs []llm.Message) int {
 	for _, m := range msgs {
 		for _, b := range m.Blocks {
 			n += len(b.Text) + len(b.Content) + len(b.Input) + 16
-			if b.Type == llm.BlockImage {
+			if b.Type == llm.BlockImage || b.Type == llm.BlockVideo {
 				n += imageChars(b)
 			}
 			for _, img := range b.Images {
@@ -710,6 +718,8 @@ func renderTranscript(msgs []llm.Message) string {
 				}
 			case llm.BlockImage:
 				b.WriteString("[user attached an image]\n")
+			case llm.BlockVideo:
+				fmt.Fprintf(&b, "[user attached a video: %s]\n", video.ReadMeta(bl).Name)
 			}
 		}
 	}
