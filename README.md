@@ -163,7 +163,7 @@ A response's output limit covers its thinking and its answer. On Claude it is 64
 | `/login`, `/accounts`, `/usage` | Accounts and subscription limits |
 | `/stats`, `/mcp`, `/skills` | Usage, MCP servers, skills |
 
-Type `/` for the full list. `@` attaches a file, `!cmd` runs a shell command yourself, and Ctrl+V pastes an image.
+Type `/` for the full list. `@` attaches a file, `!cmd` runs a shell command yourself, and Ctrl+V pastes an image. Drag in an image or a video, or type its path. A video reaches the model as frames with their timestamps: 6 to 16 spread over its length. The model can read a stretch of it again more closely with `start`, `end` and `frames`. Video needs `ffmpeg` on PATH. Its sound is not included.
 
 ## What tego leaves out
 

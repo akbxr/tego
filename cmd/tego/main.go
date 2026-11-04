@@ -322,7 +322,7 @@ func run() error {
 	if app.interactive {
 		app.undo = undo.Open(cfg.Dir, cwd)
 	}
-	imageIcon = app.icons.image
+	imageIcon, videoIcon = app.icons.image, app.icons.video
 	// Loaded before the TUI starts: its autocomplete reads them from another goroutine.
 	app.skills = agent.LoadSkills(cfg.Dir, cwd)
 	app.commands = agent.LoadCommands(cfg.Dir, cwd)

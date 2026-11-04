@@ -24,6 +24,12 @@ const maxJoin = 8
 // "double" quoted paths, backslash-escaped spaces as terminals paste dragged
 // files, and file:// URLs. Matches are ordered and never overlap.
 func FindPaths(text, cwd string) []PathMatch {
+	return FindPathsWith(text, cwd, HasExt)
+}
+
+// FindPathsWith is FindPaths for files whose names hasExt accepts (images
+// and videos, say).
+func FindPathsWith(text, cwd string, hasExt func(string) bool) []PathMatch {
 	var out []PathMatch
 	var words []int // starts of the last unquoted words since the last match
 	add := func(start, end int, p string) {
@@ -39,7 +45,7 @@ func FindPaths(text, cwd string) []PathMatch {
 		if c == '\'' || c == '"' {
 			if j := strings.IndexByte(text[i+1:], c); j >= 0 {
 				end := i + 2 + j
-				if inner := text[i+1 : end-1]; hasImageExt(inner) {
+				if inner := text[i+1 : end-1]; hasExt(inner) {
 					if p, ok := resolve(inner, cwd, false); ok {
 						add(i, end, p)
 						i = end
@@ -62,14 +68,14 @@ func FindPaths(text, cwd string) []PathMatch {
 			words = append(words[:0], words[1:]...)
 		}
 		words = append(words, i)
-		start, end := trimWord(text, i, j)
-		if start < end && hasImageExt(text[start:end]) {
+		start, end := trimWord(text, i, j, hasExt)
+		if start < end && hasExt(text[start:end]) {
 			if p, ok := resolve(text[start:end], cwd, true); ok {
 				add(start, end, p)
 			} else {
 				// Retry with preceding words for paths containing plain spaces.
 				for k := len(words) - 2; k >= 0; k-- {
-					s, _ := trimWord(text, words[k], end)
+					s, _ := trimWord(text, words[k], end, hasExt)
 					if p, ok := resolve(text[s:end], cwd, true); ok {
 						add(s, end, p)
 						break
@@ -87,17 +93,19 @@ func isSpace(c byte) bool {
 }
 
 // trimWord strips surrounding punctuation from text[i:j] (e.g. "(a.png),").
-func trimWord(text string, i, j int) (int, int) {
+func trimWord(text string, i, j int, hasExt func(string) bool) (int, int) {
 	for i < j && strings.IndexByte("([{<'\"", text[i]) >= 0 {
 		i++
 	}
-	for j > i && strings.IndexByte(")]}>,;:!?.'\"", text[j-1]) >= 0 && !hasImageExt(text[i:j]) {
+	for j > i && strings.IndexByte(")]}>,;:!?.'\"", text[j-1]) >= 0 && !hasExt(text[i:j]) {
 		j--
 	}
 	return i, j
 }
 
-func hasImageExt(s string) bool {
+// HasExt reports whether s ends in an image extension (png, jpg, jpeg,
+// gif, webp).
+func HasExt(s string) bool {
 	dot := strings.LastIndexByte(s, '.')
 	if dot < 0 {
 		return false

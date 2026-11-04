@@ -292,8 +292,8 @@ func (a *app) echoPrompt(line string) {
 	}
 	b.WriteString("\n")
 	row("")
-	// Image tokens ("🖼 #1") stand out in bold yellow.
-	tok := regexp.MustCompile(regexp.QuoteMeta(a.icons.image) + ` #\d+`)
+	// Image and video tokens ("🖼 #1", "🎞 #2") stand out in bold yellow.
+	tok := regexp.MustCompile(`(?:` + regexp.QuoteMeta(a.icons.image) + `|` + regexp.QuoteMeta(a.icons.video) + `) #\d+`)
 	for _, l := range wrapCells(strings.ReplaceAll(line, "\t", "    "), w-4) {
 		row("  " + tok.ReplaceAllString(l, c.yellow+c.bold+"$0"+c.reset+style))
 	}

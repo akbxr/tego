@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"io/fs"
 	"os"
@@ -12,10 +13,12 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/akbxr/tego/internal/images"
 	"github.com/akbxr/tego/internal/lineedit"
 	"github.com/akbxr/tego/internal/llm"
+	"github.com/akbxr/tego/internal/video"
 )
 
 const (
@@ -222,6 +225,20 @@ func (a *app) collectMentions(prompt string) []llm.Block {
 			listing := dirListing(abs)
 			blocks = append(blocks, llm.Block{Type: llm.BlockText, Text: fmt.Sprintf("%s%s\">\n%s</file>", mentionPrefix, ref, listing)})
 			a.ui.Dim("📎 @%s (directory, %d entries)", ref, strings.Count(listing, "\n"))
+			continue
+		}
+		if video.Sniff(readHead(abs, 16)) {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			clip, err := video.Read(ctx, abs, video.Options{})
+			cancel()
+			if err != nil {
+				a.ui.Errorf("@%s: %v", ref, err)
+				continue
+			}
+			desc := clip.Describe(ref) + ". Read it with start/end/frames for a closer look."
+			blocks = append(blocks, llm.Block{Type: llm.BlockText, Text: fmt.Sprintf("%s%s\" type=\"video\">%s</file>", mentionPrefix, ref, desc)})
+			blocks = append(blocks, clip.Blocks()...)
+			a.ui.Dim("📎 @%s · %s · %d frames", ref, video.Stamp(clip.Duration), len(clip.Frames))
 			continue
 		}
 		if head := readHead(abs, 16); images.MediaType(head) != "" {

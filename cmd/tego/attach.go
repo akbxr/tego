@@ -1,29 +1,35 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/akbxr/tego/internal/images"
 	"github.com/akbxr/tego/internal/llm"
+	"github.com/akbxr/tego/internal/video"
 )
 
 // Image attachments: an image dragged, pasted or typed as a path
 // (or pasted with Ctrl+V) becomes a short token such as "🖼 #1" in the
 // prompt instead of a long path like /var/folders/…/Screenshot….png. The
-// model still gets the image and its path ("[Image #1: /path]").
+// model still gets the image and its path ("[Image #1: /path]"). A video
+// path becomes "🎞 #2", and the model gets frames of it with their
+// timestamps, taken when the prompt is sent.
 
-// attachment is an image waiting to be sent, referenced in the prompt by
-// its token.
+// attachment is an image (or video) waiting to be sent, referenced in the
+// prompt by its token.
 type attachment struct {
 	n     int
 	tag   string // "<icon> #n"
 	block llm.Block
 	info  images.Info
+	video string // a video's path: frames are taken at send time
 }
 
 // pasteImage is the Ctrl+V hook: it grabs a clipboard image and returns the
@@ -57,14 +63,28 @@ func (a *app) newAttachment(blk llm.Block, info images.Info) attachment {
 	return at
 }
 
-// tokenizeImages replaces readable image paths in text with tokens (a path
-// that can't be loaded is left as typed). @mentions are left to
-// collectMentions.
+// newVideo registers a video and returns its token.
+func (a *app) newVideo(path string) attachment {
+	a.attachMu.Lock()
+	defer a.attachMu.Unlock()
+	a.imageSeq++
+	at := attachment{n: a.imageSeq, tag: fmt.Sprintf("%s #%d", a.icons.video, a.imageSeq), video: path}
+	a.pending = append(a.pending, at)
+	return at
+}
+
+// tokenizeImages replaces readable image and video paths in text with
+// tokens (a path that can't be loaded is left as typed). @mentions are
+// left to collectMentions.
 func (a *app) tokenizeImages(text string) string {
-	matches := images.FindPaths(text, a.cwd)
+	matches := images.FindPathsWith(text, a.cwd, func(s string) bool { return images.HasExt(s) || video.HasExt(s) })
 	for i := len(matches) - 1; i >= 0; i-- { // from the end: offsets stay valid
 		m := matches[i]
 		if m.Start > 0 && text[m.Start-1] == '@' {
+			continue
+		}
+		if video.HasExt(m.Path) {
+			text = text[:m.Start] + a.newVideo(m.Path).tag + text[m.End:]
 			continue
 		}
 		blk, info, err := images.Load(m.Path)
@@ -93,6 +113,12 @@ func (a *app) collectImages(prompt string) (string, []llm.Block) {
 		if i < 0 {
 			continue
 		}
+		if at.video != "" {
+			ref, blks := a.videoAttachment(at)
+			prompt = prompt[:i] + ref + prompt[i+len(at.tag):]
+			blocks = append(blocks, blks...)
+			continue
+		}
 		ref := fmt.Sprintf("[Image #%d]", at.n)
 		if src := at.info.Source; src != "" && src != "clipboard" {
 			ref = fmt.Sprintf("[Image #%d: %s]", at.n, src) // the model can still refer to the file
@@ -102,6 +128,23 @@ func (a *app) collectImages(prompt string) (string, []llm.Block) {
 		a.ui.Dim("📎 %s %s · %d×%d · %s", at.tag, filepath.Base(at.info.Source), at.info.Width, at.info.Height, fmtBytes(at.info.Bytes))
 	}
 	return prompt, blocks
+}
+
+// videoAttachment takes a video's frames: the reference that replaces its
+// token, and the blocks after the prompt (what they are, then the frames).
+// When they can't be taken, the model gets the path and why.
+func (a *app) videoAttachment(at attachment) (string, []llm.Block) {
+	ref := fmt.Sprintf("[Video #%d: %s]", at.n, at.video)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	clip, err := video.Read(ctx, at.video, video.Options{})
+	if err != nil {
+		a.ui.Errorf("%s %s: %v", at.tag, filepath.Base(at.video), err)
+		return ref, []llm.Block{{Type: llm.BlockText, Text: fmt.Sprintf("[Video #%d could not be read: %v]", at.n, err)}}
+	}
+	a.ui.Dim("📎 %s %s · %s · %d frames", at.tag, filepath.Base(at.video), video.Stamp(clip.Duration), len(clip.Frames))
+	desc := fmt.Sprintf("[Video #%d] %s. Read it with start/end/frames for a closer look.", at.n, clip.Describe(at.video))
+	return ref, append([]llm.Block{{Type: llm.BlockText, Text: desc}}, clip.Blocks()...)
 }
 
 // tokenIndex finds tag in s as a whole token ("#1" must not match "#12").
@@ -119,22 +162,29 @@ func tokenIndex(s, tag string) int {
 	}
 }
 
-// imageRefRe matches what the model got for an image (and the older
-// "path [Image #N]" form), so the transcript can show the token again.
-var imageRefRe = regexp.MustCompile(`(?:\S+\.(?i:png|jpe?g|gif|webp) )?\[Image #(\d+)(?:: [^\]\n]*)?\]`)
+// imageRefRe matches what the model got for an image or video (and the
+// older "path [Image #N]" form), so the transcript can show the token
+// again.
+var imageRefRe = regexp.MustCompile(`(?:\S+\.(?i:png|jpe?g|gif|webp) )?\[(Image|Video) #(\d+)(?:: [^\]\n]*)?\]`)
 
-// imageIcon is the glyph of image tokens in the transcript (set from the
-// icon preset at startup).
-var imageIcon = iconPresets["unicode"].image
+// imageIcon and videoIcon are the glyphs of attachment tokens in the
+// transcript (set from the icon preset at startup).
+var (
+	imageIcon = iconPresets["unicode"].image
+	videoIcon = iconPresets["unicode"].video
+)
 
 // showImageRefs turns "[Image #1: /path]" back into the token for display.
 func showImageRefs(s string) string {
 	return imageRefRe.ReplaceAllStringFunc(s, func(m string) string {
-		n := imageRefRe.FindStringSubmatch(m)[1]
-		if _, err := strconv.Atoi(n); err != nil {
+		sub := imageRefRe.FindStringSubmatch(m)
+		if _, err := strconv.Atoi(sub[2]); err != nil {
 			return m
 		}
-		return imageIcon + " #" + n
+		if sub[1] == "Video" {
+			return videoIcon + " #" + sub[2]
+		}
+		return imageIcon + " #" + sub[2]
 	})
 }
 

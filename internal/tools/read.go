@@ -15,6 +15,7 @@ import (
 
 	"github.com/akbxr/tego/internal/images"
 	"github.com/akbxr/tego/internal/llm"
+	"github.com/akbxr/tego/internal/video"
 	"github.com/akbxr/tego/internal/web"
 )
 
@@ -33,11 +34,14 @@ func (t *readTool) ReadOnly() bool { return true }
 func (t *readTool) Def() llm.Tool {
 	return llm.Tool{
 		Name:        "read",
-		Description: "Read a file (lines prefixed with 1-based line numbers), view an image file (png/jpeg/gif/webp), list a directory, or fetch an http(s) URL as readable text. For large files use offset/limit.",
+		Description: "Read a file (lines prefixed with 1-based line numbers), view an image file (png/jpeg/gif/webp) or a video's frames (mp4/mov/webm/mkv/…, with their timestamps), list a directory, or fetch an http(s) URL as readable text. For large files use offset/limit; for a closer look at part of a video, start/end and frames.",
 		Schema: schema(`{"type":"object","properties":{` +
 			`"path":{"type":"string","description":"File or directory path, or http(s) URL"},` +
 			`"offset":{"type":"integer","description":"1-based start line"},` +
-			`"limit":{"type":"integer","description":"Max lines (default 2000)"}},` +
+			`"limit":{"type":"integer","description":"Max lines (default 2000)"},` +
+			`"start":{"type":"number","description":"Video: seconds to start at (default 0)"},` +
+			`"end":{"type":"number","description":"Video: seconds to end at (default: the end)"},` +
+			`"frames":{"type":"integer","description":"Video: frames to take, spread evenly (default 6-16 by length, max 48)"}},` +
 			`"required":["path"]}`),
 	}
 }
@@ -57,9 +61,12 @@ func (t *readTool) RunImages(ctx context.Context, input json.RawMessage) (string
 
 func (t *readTool) read(ctx context.Context, input json.RawMessage) (string, []llm.Block, error) {
 	var in struct {
-		Path   string `json:"path"`
-		Offset int    `json:"offset"`
-		Limit  int    `json:"limit"`
+		Path   string  `json:"path"`
+		Offset int     `json:"offset"`
+		Limit  int     `json:"limit"`
+		Start  float64 `json:"start"`
+		End    float64 `json:"end"`
+		Frames int     `json:"frames"`
 	}
 	if err := decode(input, &in); err != nil {
 		return "", nil, err
@@ -89,6 +96,13 @@ func (t *readTool) read(ctx context.Context, input json.RawMessage) (string, []l
 		}
 		text := fmt.Sprintf("Image %s (%dx%d, %d KB)", t.env.rel(p), info.Width, info.Height, (info.Bytes+1023)/1024)
 		return text, []llm.Block{blk}, nil
+	}
+	if isVideoFile(p) {
+		clip, err := video.Read(ctx, p, video.Options{Start: in.Start, End: in.End, Frames: in.Frames})
+		if err != nil {
+			return "", nil, err
+		}
+		return clip.Describe(t.env.rel(p)), clip.Blocks(), nil
 	}
 	var sum [sha256.Size]byte
 	text, err := t.env.readFile(ctx, p, in.Offset, in.Limit, &sum)
@@ -143,6 +157,18 @@ func readURL(ctx context.Context, rawURL string, offset, limit int) (string, []l
 		b.WriteString("[page truncated at 5 MB]\n")
 	}
 	return strings.TrimSuffix(b.String(), "\n"), nil, nil
+}
+
+// isVideoFile reports whether p starts like a video container.
+func isVideoFile(p string) bool {
+	f, err := os.Open(p)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	head := make([]byte, 16)
+	n, _ := io.ReadFull(f, head)
+	return video.Sniff(head[:n])
 }
 
 // isImageFile reports whether p starts with PNG, JPEG, GIF or WebP magic bytes.

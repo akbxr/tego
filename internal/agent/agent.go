@@ -2,10 +2,16 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/gif" // image.DecodeConfig in imageChars
+	_ "image/jpeg"
+	_ "image/png"
 	"slices"
 	"strings"
 	"sync"
@@ -601,15 +607,33 @@ func (a *Agent) recordAborted(m *llm.Message) {
 // chars/4 estimate; counting its base64 length would overshoot ~10x.
 const imageTokenChars = 1600 * 4
 
+// imageChars is an image's share of the chars/4 estimate: its pixels over
+// 750 tokens (what Anthropic bills), up to a full-size image when its size
+// can't be read from its header.
+func imageChars(b llm.Block) int {
+	head := b.Data[:min(len(b.Data), 4096)]
+	raw, err := base64.StdEncoding.DecodeString(head[:len(head)/4*4])
+	if err != nil && len(raw) == 0 {
+		return imageTokenChars
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(raw))
+	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
+		return imageTokenChars
+	}
+	return min(cfg.Width*cfg.Height/750+1, 1600) * 4
+}
+
 func estimateTokens(msgs []llm.Message) int {
 	n := 0
 	for _, m := range msgs {
 		for _, b := range m.Blocks {
 			n += len(b.Text) + len(b.Content) + len(b.Input) + 16
 			if b.Type == llm.BlockImage {
-				n += imageTokenChars
+				n += imageChars(b)
 			}
-			n += len(b.Images) * imageTokenChars
+			for _, img := range b.Images {
+				n += imageChars(img)
+			}
 		}
 	}
 	return n / 4
