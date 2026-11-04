@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/akbxr/tego/internal/llm"
 	"github.com/akbxr/tego/internal/tools"
@@ -79,9 +80,24 @@ func TestWatchdogLetsProgressGoOn(t *testing.T) {
 	prov := &busyProvider{stopAt: 30}
 	j := &judge{answer: "PROGRESS"}
 	out := runWorker(t, watchedTask(t, prov, j, 5))
-	if prov.requests != 30 || !strings.Contains(out, "(done)\nall done") || len(j.prompts) == 0 {
-		t.Fatalf("%d requests, %d checks:\n%s", prov.requests, len(j.prompts), out)
+	if prov.requests != 30 || !strings.Contains(out, "(done)\nall done") {
+		t.Fatalf("%d requests:\n%s", prov.requests, out)
 	}
+	// Checks run beside the subagent: on a fast machine it can end before
+	// the first one has asked.
+	deadline := time.Now().Add(5 * time.Second)
+	for j.count() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if j.count() == 0 {
+		t.Fatal("never checked")
+	}
+}
+
+func (j *judge) count() int {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return len(j.prompts)
 }
 
 func TestParseVerdict(t *testing.T) {
