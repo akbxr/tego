@@ -155,6 +155,20 @@ func webSearchFee(model string) float64 {
 // cost without caching (every cached token billed as fresh input). 1-hour
 // cache writes cost twice the input price.
 func priceRequest(p Price, r *Record) (s Spend, uncached float64) {
+	p = billed(p, r)
+	s = Spend{
+		Input:      float64(r.Input) * p.Input / 1e6,
+		Output:     float64(r.Output) * p.Output / 1e6,
+		CacheRead:  float64(r.CacheRead) * p.CacheRead / 1e6,
+		CacheWrite: float64(r.CacheWrite) * p.CacheWrite / 1e6,
+		WebSearch:  float64(r.WebSearches) * webSearchFee(r.Model),
+	}
+	return s, float64(r.Input+r.CacheRead+r.CacheWrite) * p.Input / 1e6
+}
+
+// billed is p as r paid it: its prompt's tier, fast mode, and in
+// CacheWrite the rate r's cache writes cost.
+func billed(p Price, r *Record) Price {
 	p = p.forPrompt(r.Input + r.CacheRead + r.CacheWrite)
 	if r.Fast {
 		// Fast mode bills every token class at twice the standard rate
@@ -168,12 +182,6 @@ func priceRequest(p Price, r *Record) (s Spend, uncached float64) {
 	if r.LongCache && p.CacheWrite != 0 {
 		write = 2 * p.Input
 	}
-	s = Spend{
-		Input:      float64(r.Input) * p.Input / 1e6,
-		Output:     float64(r.Output) * p.Output / 1e6,
-		CacheRead:  float64(r.CacheRead) * p.CacheRead / 1e6,
-		CacheWrite: float64(r.CacheWrite) * write / 1e6,
-		WebSearch:  float64(r.WebSearches) * webSearchFee(r.Model),
-	}
-	return s, float64(r.Input+r.CacheRead+r.CacheWrite) * p.Input / 1e6
+	p.CacheWrite, p.Tiers = write, nil
+	return p
 }

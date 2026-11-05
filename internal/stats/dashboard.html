@@ -128,6 +128,7 @@ h2 span { margin-left: 6px; color: var(--graphite); font-size: 13px; font-weight
 .kinds small { grid-column: 2 / -1; color: var(--graphite); font-size: 12px; }
 .saved { display: flex; justify-content: space-between; align-items: baseline; margin-top: 6px; padding: 12px 14px; border-radius: 10px; background: var(--haze); font-size: 13px; }
 .saved b { font-family: var(--mono); font-stretch: 87.5%; font-weight: 500; color: var(--good); }
+.saved.wasted b { color: var(--bad); }
 
 /* Model cards */
 .models { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 16px; }
@@ -221,7 +222,7 @@ kbd { font-family: var(--mono); font-size: 11px; padding: 1px 5px; border-radius
 </style>
 </head>
 <body>
-{{$r := .R}}{{$o := .R.Overall}}{{$p := .P}}{{$hp := .HasPrev}}{{$priced := gt $o.Cost 0.0}}
+{{$r := .R}}{{$o := .R.Overall}}{{$p := .P}}{{$hp := .HasPrev}}{{$priced := gt $o.Cost 0.0}}{{$waste := .Waste}}
 <div class="page">
 <header class="top">
   <div>
@@ -304,6 +305,7 @@ kbd { font-family: var(--mono); font-size: 11px; padding: 1px 5px; border-radius
       <small class="static">{{pct $k.CostShare}} of cost · {{pct $k.TokenShare}} of tokens · {{compact $k.Tokens}}</small></li>{{end}}{{end}}
   </ul>
   {{if $priced}}<div class="saved"><span>Saved by the cache</span><b>{{money $o.CacheSaved}} · {{pct $o.CacheSavings}}</b></div>{{end}}
+  {{if $waste}}{{if $waste.Wasted.Requests}}<div class="saved wasted" title="Cache writes that could have been reads; tego stats cache -r {{$r.Range}} shows why"><span>Written to the cache again</span><b>{{if $priced}}{{money $waste.Wasted.Cost}} · {{end}}{{compact $waste.Wasted.Tokens}} tokens</b></div>{{end}}{{end}}
 </section>
 
 <section class="s12" aria-labelledby="h-models">

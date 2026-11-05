@@ -42,7 +42,7 @@ var builtinCommands = []struct{ name, icon, help string }{
 	{"logout", "←", "Remove stored credentials (one account or all)"},
 	{"accounts", "◎", "Logged-in accounts, limits, and switching mode: /accounts [fallback|round-robin|expiring]"},
 	{"usage", "▤", "Subscription usage and resets for every logged-in account"},
-	{"stats", "▦", "Requests, tokens and estimated cost: /stats [24h|7d|30d|90d|all]"},
+	{"stats", "▦", "Requests, tokens and estimated cost: /stats [cache] [24h|7d|30d|90d|all]"},
 	{"mcp", "⌁", "MCP server status and tool counts"},
 	{"exit", "×", "Quit (alias /quit, Ctrl+D)"},
 }

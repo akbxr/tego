@@ -63,16 +63,17 @@ func (d *Dashboard) prices() Prices {
 	return p
 }
 
-func (d *Dashboard) report(r *http.Request) (*Report, error) {
+func (d *Dashboard) report(r *http.Request) (*Report, []Record, error) {
 	rng := r.URL.Query().Get("range")
 	if rng == "" {
 		rng = "30d"
 	}
 	recs, err := Load(d.Dir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return Build(recs, rng, time.Now(), d.prices())
+	rep, err := Build(recs, rng, time.Now(), d.prices())
+	return rep, recs, err
 }
 
 var pageFuncs = template.FuncMap{
@@ -146,7 +147,7 @@ func (d *Dashboard) Handler() http.Handler {
 	page := template.Must(template.New("page").Funcs(pageFuncs).Parse(dashboardHTML))
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/stats", func(w http.ResponseWriter, r *http.Request) {
-		rep, err := d.report(r)
+		rep, _, err := d.report(r)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -166,18 +167,20 @@ func (d *Dashboard) Handler() http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		rep, err := d.report(r)
+		rep, recs, err := d.report(r)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		// One line in the cost panel; tego stats cache has the breakdown.
+		waste, _ := BuildCache(recs, rep.Range, time.UnixMilli(rep.To), d.prices())
 		prev := Totals{}
 		if rep.Previous != nil {
 			prev = *rep.Previous
 		}
 		var b strings.Builder
 		data := map[string]any{"R": rep, "P": prev, "HasPrev": rep.Previous != nil, "Ranges": Ranges,
-			"Now": time.Now(), "Dir": FolderLabel(d.Dir), "PriceSource": d.PriceSource()}
+			"Now": time.Now(), "Dir": FolderLabel(d.Dir), "PriceSource": d.PriceSource(), "Waste": waste}
 		if err := page.Execute(&b, data); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

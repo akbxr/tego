@@ -85,6 +85,7 @@ Usage:
   tego acp                        Agent Client Protocol agent on stdio, for editors (Zed, JetBrains, Neovim…)
   tego stats [-r 7d] [-j]         usage statistics in the terminal (-j: JSON)
   tego stats serve                usage dashboard in the browser
+  tego stats cache [-r 7d] [-j]   prompt-cache writes that could have been reads
   tego update [--check]           install the latest release
   tego worktree [rm <name>|prune] the git worktrees tego made for this repository
 

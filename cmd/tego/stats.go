@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"runtime"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	"github.com/akbxr/tego/internal/agent"
@@ -26,6 +27,8 @@ const statsUsage = `tego stats: usage statistics from every tego session
 Usage:
   tego stats [-r range] [-j]         summary in the terminal (-j, --json: as JSON)
   tego stats serve [-r range] [-p n] dashboard in the browser
+  tego stats cache [-r range] [-j]   prompt-cache writes that could have been reads:
+                                     misses by cause, the costliest ones
 Flags:
   -r, --range <24h|7d|30d|90d|all>  time range (default: all; the dashboard opens at 30d)
   -j, --json                        print the report as JSON
@@ -80,7 +83,8 @@ func statsFlags(args []string, serve bool) (rng string, asJSON bool, host string
 
 func cmdStats(cfg *config.Config, args []string) error {
 	serve := len(args) > 0 && args[0] == "serve"
-	if serve {
+	cache := len(args) > 0 && args[0] == "cache"
+	if serve || cache {
 		args = args[1:]
 	}
 	rng, asJSON, host, port, err := statsFlags(args, serve)
@@ -98,16 +102,32 @@ func cmdStats(cfg *config.Config, args []string) error {
 	if err != nil {
 		return err
 	}
-	rep, err := stats.Build(recs, rng, time.Now(), statsPrices(cfg))
-	if err != nil {
-		return err
+	color := newPalette(os.Stdout).reset != ""
+	var rep any
+	if cache {
+		crep, err := stats.BuildCache(recs, rng, time.Now(), statsPrices(cfg))
+		if err != nil {
+			return err
+		}
+		rep = crep
+		if !asJSON {
+			stats.CacheSummary(os.Stdout, crep, color)
+		}
+	} else {
+		srep, err := stats.Build(recs, rng, time.Now(), statsPrices(cfg))
+		if err != nil {
+			return err
+		}
+		rep = srep
+		if !asJSON {
+			stats.Summary(os.Stdout, srep, color)
+		}
 	}
 	if asJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(rep)
 	}
-	stats.Summary(os.Stdout, rep, newPalette(os.Stdout).reset != "")
 	return nil
 }
 
@@ -161,15 +181,24 @@ func serveStats(cfg *config.Config, rng, host string, port int) error {
 	return nil
 }
 
-// statsCommand is /stats: the summary for the last 7 days.
+// statsCommand is /stats: the summary for the last 7 days, or with
+// "cache" first the cache report.
 func (a *app) statsCommand(args string) {
-	rng := args
-	if rng == "" {
-		rng = "7d"
-	}
+	cache, rng := statsArgs(args)
 	recs, err := stats.Load(a.cfg.Dir)
 	if err != nil {
 		a.ui.Errorf("stats: %v", err)
+		return
+	}
+	if cache {
+		rep, err := stats.BuildCache(recs, rng, time.Now(), statsPrices(a.cfg))
+		if err != nil {
+			a.ui.Errorf("%v", err)
+			return
+		}
+		a.ui.Finish()
+		stats.CacheSummary(a.out, rep, a.ui.c.reset != "")
+		a.ui.Dim("/stats cache 24h|7d|30d|90d|all · tego stats cache -j for JSON")
 		return
 	}
 	rep, err := stats.Build(recs, rng, time.Now(), statsPrices(a.cfg))
@@ -179,7 +208,20 @@ func (a *app) statsCommand(args string) {
 	}
 	a.ui.Finish()
 	stats.Summary(a.out, rep, a.ui.c.reset != "")
-	a.ui.Dim("tego stats serve opens the dashboard · /stats 24h|7d|30d|90d|all")
+	a.ui.Dim("tego stats serve opens the dashboard · /stats [cache] 24h|7d|30d|90d|all")
+}
+
+// statsArgs splits the arguments of /stats: [cache] [range], 7d by default.
+func statsArgs(args string) (cache bool, rng string) {
+	f := strings.Fields(args)
+	if len(f) > 0 && f[0] == "cache" {
+		cache, f = true, f[1:]
+	}
+	rng = "7d"
+	if len(f) > 0 {
+		rng = strings.Join(f, " ") // more than one word fails ParseRange
+	}
+	return
 }
 
 func openURL(u string) {

@@ -131,13 +131,23 @@ var acpCommands = []acpCommand{
 			renderUsage(&b, palette{}, all, time.Since(start), nil)
 			return slashResult{reply: fence(b.String())}
 		}},
-	{"stats", "Requests, tokens and estimated cost", "24h | 7d | 30d | 90d | all",
+	{"stats", "Requests, tokens and estimated cost; cache: prompt-cache writes that could have been reads", "[cache] 24h | 7d | 30d | 90d | all",
 		func(sess *acpSession, _ context.Context, args string) slashResult {
 			recs, err := stats.Load(sess.srv.cfg.Dir)
 			if err != nil {
 				return slashResult{reply: "stats: " + err.Error()}
 			}
-			rep, err := stats.Build(recs, firstNonEmpty(args, "7d"), time.Now(), statsPrices(sess.srv.cfg))
+			cache, rng := statsArgs(args)
+			if cache {
+				rep, err := stats.BuildCache(recs, rng, time.Now(), statsPrices(sess.srv.cfg))
+				if err != nil {
+					return slashResult{reply: err.Error()}
+				}
+				var b bytes.Buffer
+				stats.CacheSummary(&b, rep, false)
+				return slashResult{reply: fence(b.String())}
+			}
+			rep, err := stats.Build(recs, rng, time.Now(), statsPrices(sess.srv.cfg))
 			if err != nil {
 				return slashResult{reply: err.Error()}
 			}

@@ -74,7 +74,7 @@ tego -m openai-codex/gpt-5.6 -t high # model and thinking level
 }
 ```
 
-**Usage stats.** Every request is logged to `~/.tego/stats.jsonl`, without prompt text. `tego stats` prints a summary and `tego stats serve` opens a local dashboard with cost, cache use, speed and failures per model, project and tool. Costs are estimates at API list prices from [models.dev](https://github.com/anomalyco/models.dev).
+**Usage stats.** Every request is logged to `~/.tego/stats.jsonl`, without prompt text. `tego stats` prints a summary and `tego stats serve` opens a local dashboard with cost, cache use, speed and failures per model, project and tool. `tego stats cache` (`/stats cache` in a session) lists prompt-cache writes that could have been reads: a request that wrote again what its session's previous request had cached, by cause (the API's reason, a keep-alive that missed, a model switch), with the costliest ones. Writes after the cache expired while idle, and after compaction or elision shrank the history, are expected and counted apart. Costs are estimates at API list prices from [models.dev](https://github.com/anomalyco/models.dev).
 
 ## Token use
 
