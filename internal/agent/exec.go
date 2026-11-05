@@ -264,6 +264,9 @@ func (a *Agent) run(ctx context.Context, t tools.Tool, call llm.Block) (res llm.
 		if llm.TakesVideo(a.Provider, a.Model) {
 			ctx = tools.WithVideo(ctx)
 		}
+		if llm.TakesAudio(a.Provider, a.Model) {
+			ctx = tools.WithAudio(ctx)
+		}
 		out, res.Images, err = it.RunImages(ctx, call.Input)
 	} else if rt, ok := t.(refTool); ok {
 		out, res.ToolRefs, err = rt.RunRefs(ctx, call.Input)

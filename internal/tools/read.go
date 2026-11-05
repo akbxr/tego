@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/akbxr/tego/internal/audio"
 	"github.com/akbxr/tego/internal/images"
 	"github.com/akbxr/tego/internal/llm"
 	"github.com/akbxr/tego/internal/video"
@@ -34,13 +35,13 @@ func (t *readTool) ReadOnly() bool { return true }
 func (t *readTool) Def() llm.Tool {
 	return llm.Tool{
 		Name:        "read",
-		Description: "Read a file (lines prefixed with 1-based line numbers), view an image file (png/jpeg/gif/webp) or a video (mp4/mov/webm/mkv/…: the video itself with its sound when you take video, else frames with their timestamps), list a directory, or fetch an http(s) URL as readable text. For large files use offset/limit; for part of a video, start/end.",
+		Description: "Read a file (lines prefixed with 1-based line numbers), view an image file (png/jpeg/gif/webp) or a video (mp4/mov/webm/mkv/…: the video itself with its sound when you take video, else frames with their timestamps), hear an audio file (mp3/wav/m4a/ogg/flac/…: the sound itself when you take audio, else a transcript with timestamps), list a directory, or fetch an http(s) URL as readable text. For large files use offset/limit; for part of a video or audio file, start/end.",
 		Schema: schema(`{"type":"object","properties":{` +
 			`"path":{"type":"string","description":"File or directory path, or http(s) URL"},` +
 			`"offset":{"type":"integer","description":"1-based start line"},` +
 			`"limit":{"type":"integer","description":"Max lines (default 2000)"},` +
-			`"start":{"type":"number","description":"Video: seconds to start at (default 0)"},` +
-			`"end":{"type":"number","description":"Video: seconds to end at (default: the end)"},` +
+			`"start":{"type":"number","description":"Video or audio: seconds to start at (default 0)"},` +
+			`"end":{"type":"number","description":"Video or audio: seconds to end at (default: the end)"},` +
 			`"frames":{"type":"integer","description":"Video: take this many frames, spread evenly, instead of the video itself (default 6-16 by length, max 48)"}},` +
 			`"required":["path"]}`),
 	}
@@ -97,24 +98,16 @@ func (t *readTool) read(ctx context.Context, input json.RawMessage) (string, []l
 		text := fmt.Sprintf("Image %s (%dx%d, %d KB)", t.env.rel(p), info.Width, info.Height, (info.Bytes+1023)/1024)
 		return text, []llm.Block{blk}, nil
 	}
+	ao := audio.Options{Start: in.Start, End: in.End}
 	if isVideoFile(p) {
-		o := video.Options{Start: in.Start, End: in.End, Frames: in.Frames}
-		note := ""
-		if TakesVideo(ctx) && in.Frames == 0 {
-			clip, blk, err := video.Encode(ctx, p, t.env.rel(p), o)
-			if err == nil {
-				return clip.DescribeNative(t.env.rel(p)), []llm.Block{blk}, nil
-			}
-			if !errors.Is(err, video.ErrTooLong) && !errors.Is(err, video.ErrTooBig) {
-				return "", nil, err
-			}
-			note = fmt.Sprintf(". Frames instead of the video: it is %v; read a shorter part with start/end to watch it with sound", err)
+		text, blocks, err := t.readVideo(ctx, p, video.Options{Start: in.Start, End: in.End, Frames: in.Frames})
+		if !errors.Is(err, video.ErrNoVideo) {
+			return text, blocks, err
 		}
-		clip, err := video.Read(ctx, p, o)
-		if err != nil {
-			return "", nil, err
-		}
-		return clip.Describe(t.env.rel(p)) + note, clip.Blocks(), nil
+		return t.readAudio(ctx, p, ao) // sound only, in a video container
+	}
+	if isAudioFile(p) {
+		return t.readAudio(ctx, p, ao)
 	}
 	var sum [sha256.Size]byte
 	text, err := t.env.readFile(ctx, p, in.Offset, in.Limit, &sum)
@@ -122,6 +115,51 @@ func (t *readTool) read(ctx context.Context, input json.RawMessage) (string, []l
 		t.env.markSeen(p, sum) // any range counts: edit matches text, not line numbers
 	}
 	return text, nil, err
+}
+
+func (t *readTool) readVideo(ctx context.Context, p string, o video.Options) (string, []llm.Block, error) {
+	note := ""
+	if TakesVideo(ctx) && o.Frames == 0 {
+		clip, blk, err := video.Encode(ctx, p, t.env.rel(p), o)
+		if err == nil {
+			return clip.DescribeNative(t.env.rel(p)), []llm.Block{blk}, nil
+		}
+		if !errors.Is(err, video.ErrTooLong) && !errors.Is(err, video.ErrTooBig) {
+			return "", nil, err
+		}
+		note = fmt.Sprintf(". Frames instead of the video: it is %v; read a shorter part with start/end to watch it with sound", err)
+	}
+	clip, err := video.Read(ctx, p, o)
+	if err != nil {
+		return "", nil, err
+	}
+	text := clip.Describe(t.env.rel(p)) + note
+	if clip.Audio {
+		text += audio.SoundTrack(ctx, p, t.env.rel(p), clip.Start, clip.End)
+	}
+	return text, clip.Blocks(), nil
+}
+
+// readAudio returns the sound itself to a model that takes audio, else a
+// transcript (or why there is none).
+func (t *readTool) readAudio(ctx context.Context, p string, o audio.Options) (string, []llm.Block, error) {
+	name := t.env.rel(p)
+	note := ""
+	if TakesAudio(ctx) {
+		clip, blk, err := audio.Encode(ctx, p, name, o)
+		if err == nil {
+			return clip.DescribeNative(name), []llm.Block{blk}, nil
+		}
+		if !errors.Is(err, audio.ErrTooLong) && !errors.Is(err, audio.ErrTooBig) {
+			return "", nil, err
+		}
+		note = fmt.Sprintf("\nA transcript instead of the sound: it is %v; read a shorter part with start/end to hear it.", err)
+	}
+	tr, err := audio.Transcribe(ctx, p, name, o)
+	if err != nil {
+		return "", nil, err
+	}
+	return tr.Text() + note, nil, nil
 }
 
 // readURL fetches a web page; its text is windowed like a file, without
@@ -181,6 +219,18 @@ func isVideoFile(p string) bool {
 	head := make([]byte, 16)
 	n, _ := io.ReadFull(f, head)
 	return video.Sniff(head[:n])
+}
+
+// isAudioFile reports whether p starts like an audio file.
+func isAudioFile(p string) bool {
+	f, err := os.Open(p)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	head := make([]byte, audio.HeadLen)
+	n, _ := io.ReadFull(f, head)
+	return audio.Sniff(head[:n])
 }
 
 // isImageFile reports whether p starts with PNG, JPEG, GIF or WebP magic bytes.

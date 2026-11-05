@@ -25,6 +25,7 @@ const (
 	BlockToolResult BlockType = "tool_result"
 	BlockImage      BlockType = "image"
 	BlockVideo      BlockType = "video"
+	BlockAudio      BlockType = "audio"
 )
 
 // Block is one content block. Fields used depend on Type:
@@ -41,6 +42,9 @@ const (
 //   - video:       MediaType (video/mp4), Data (base64), Input (what the clip
 //     is, for turning it into frames: see video.Meta); only sent to models
 //     that take video (TakesVideo), as images go; others get frames instead
+//   - audio:       MediaType (audio/mp3|wav|aiff|aac|ogg|flac), Data (base64),
+//     Input (see audio.Meta); only sent to models that take audio
+//     (TakesAudio); others get a transcript instead
 type Block struct {
 	Type      BlockType       `json:"type"`
 	Text      string          `json:"text,omitempty"`
@@ -270,6 +274,18 @@ type VideoInput interface {
 func TakesVideo(p Provider, model string) bool {
 	v, ok := p.(VideoInput)
 	return ok && v.TakesVideo(model)
+}
+
+// AudioInput is implemented by providers some of whose models take audio
+// blocks (BlockAudio).
+type AudioInput interface {
+	TakesAudio(model string) bool
+}
+
+// TakesAudio reports whether p's model takes audio blocks.
+func TakesAudio(p Provider, model string) bool {
+	v, ok := p.(AudioInput)
+	return ok && v.TakesAudio(model)
 }
 
 // CacheExpiry is implemented by providers whose prompt cache lives for an

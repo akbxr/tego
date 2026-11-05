@@ -38,6 +38,7 @@ const (
 	skipThoughtSignature      = "skip_thought_signature_validator"
 	imageOmittedText          = "[image omitted: model does not support vision]"
 	videoOmittedText          = "[video omitted: model does not take video]"
+	audioOmittedText          = "[audio omitted: model does not take audio]"
 )
 
 var antigravityEndpoints = []string{antigravityDaily, antigravitySandbox}
@@ -145,6 +146,11 @@ func (p *antigravityProvider) ImplicitPrefixCache(string) bool { return true }
 // Antigravity don't.
 func (p *antigravityProvider) TakesVideo(model string) bool {
 	return resolveAntigravityModel(model, "", 0).video
+}
+
+// TakesAudio: the Gemini models take audio files too.
+func (p *antigravityProvider) TakesAudio(model string) bool {
+	return resolveAntigravityModel(model, "", 0).audio
 }
 
 // agTurn is the per-request snapshot of session state.
@@ -381,6 +387,7 @@ type agTarget struct {
 	gemini3        bool // Gemini 3+: skip-signature sentinel and multimodal function responses
 	images         bool
 	video          bool // Gemini takes video files, sound included
+	audio          bool // ... and audio files
 	reasoning      bool
 	thinking       *agThinkingConfig
 	maxOutput      int
@@ -452,6 +459,7 @@ func resolveAntigravityModel(model, thinking string, maxTokens int) agTarget {
 	}
 	t.gemini3 = geminiMajor >= 3
 	t.video = geminiMajor >= 2
+	t.audio = geminiMajor >= 2
 
 	switch {
 	case agLevelFlashRe.MatchString(id) && flashLevelModel(id):
@@ -781,6 +789,12 @@ func antigravityContents(msgs []Message, provider, model string, t agTarget) []a
 				} else {
 					user = append(user, agPart{Text: videoOmittedText})
 				}
+			case BlockAudio:
+				if t.audio {
+					user = append(user, inlineImage(b))
+				} else {
+					user = append(user, agPart{Text: audioOmittedText})
+				}
 			case BlockToolResult:
 				fr, extra := antigravityToolResult(b, names, t)
 				part := agPart{FunctionResponse: fr}
@@ -794,8 +808,10 @@ func antigravityContents(msgs []Message, provider, model string, t agTarget) []a
 		}
 		if len(imageFollowUp) > 0 {
 			label := "Tool result image:"
-			if imageFollowUp[0].InlineData != nil && strings.HasPrefix(imageFollowUp[0].InlineData.MimeType, "video/") {
+			if d := imageFollowUp[0].InlineData; d != nil && strings.HasPrefix(d.MimeType, "video/") {
 				label = "Tool result video:"
+			} else if d != nil && strings.HasPrefix(d.MimeType, "audio/") {
+				label = "Tool result audio:"
 			}
 			out = append(out, agContent{Role: "user", Parts: append([]agPart{{Text: label}}, imageFollowUp...)})
 		}
@@ -819,26 +835,35 @@ func hasFunctionResponse(parts []agPart) bool {
 // inside the response; other vision models get them in a following user
 // turn (returned as extra); text-only models get a placeholder.
 func antigravityToolResult(b *Block, names map[string]string, t agTarget) (*agFunctionResponse, []agPart) {
-	var imgs, videos []agPart
+	var imgs, videos, audios []agPart
 	for i := range b.Images {
 		switch b.Images[i].Type {
 		case BlockImage:
 			imgs = append(imgs, inlineImage(&b.Images[i]))
 		case BlockVideo:
 			videos = append(videos, inlineImage(&b.Images[i]))
+		case BlockAudio:
+			audios = append(audios, inlineImage(&b.Images[i]))
 		}
 	}
 	text := b.Content
 	var extra []agPart
-	// Video goes in the next user turn: a functionResponse takes images and
-	// documents only.
-	if len(videos) > 0 && t.video {
-		extra = videos
-	} else if len(videos) > 0 {
-		if text != "" {
-			text += "\n"
+	// Video and audio go in the next user turn: a functionResponse takes
+	// images and documents only.
+	for _, m := range []struct {
+		parts   []agPart
+		takes   bool
+		omitted string
+	}{{videos, t.video, videoOmittedText}, {audios, t.audio, audioOmittedText}} {
+		switch {
+		case len(m.parts) > 0 && m.takes:
+			extra = append(extra, m.parts...)
+		case len(m.parts) > 0:
+			if text != "" {
+				text += "\n"
+			}
+			text += m.omitted
 		}
-		text += videoOmittedText
 	}
 	fr := &agFunctionResponse{Name: names[b.ToolUseID]}
 	switch {

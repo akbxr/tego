@@ -92,6 +92,10 @@ func (p *Pool) TakesVideo(model string) bool {
 	return len(p.members) > 0 && TakesVideo(p.members[0].Provider, model)
 }
 
+func (p *Pool) TakesAudio(model string) bool {
+	return len(p.members) > 0 && TakesAudio(p.members[0].Provider, model)
+}
+
 type failFastKey struct{}
 
 // failFastLimits reports whether rate-limit errors should be returned

@@ -469,3 +469,36 @@ func TestAntigravityVideo(t *testing.T) {
 		t.Errorf("claude contents:\n%s", got)
 	}
 }
+
+// Audio goes like video: inline for Gemini, attached or returned by a tool
+// (in the next user turn), a placeholder for Claude on Antigravity.
+func TestAntigravityAudio(t *testing.T) {
+	p := &antigravityProvider{}
+	if !p.TakesAudio("gemini-3.8-flash") || p.TakesAudio("claude-sonnet-4-6") || p.TakesAudio("gpt-oss-120b") {
+		t.Fatal("TakesAudio")
+	}
+	if !TakesAudio(NewPool("ag", "", []PoolMember{{Provider: p}}), "gemini-3.8-flash") {
+		t.Fatal("pool does not forward TakesAudio")
+	}
+	aud := Block{Type: BlockAudio, MediaType: "audio/mp3", Data: "YXVk", Input: []byte(`{"name":"a.mp3"}`)}
+	msgs := []Message{
+		{Role: RoleUser, Blocks: []Block{{Type: BlockText, Text: "listen"}, aud}},
+		{Role: RoleAssistant, Blocks: []Block{{Type: BlockToolUse, ID: "r1", Name: "read", Input: []byte(`{}`)}}},
+		{Role: RoleUser, Blocks: []Block{{Type: BlockToolResult, ToolUseID: "r1", Content: "Audio a.mp3", Images: []Block{aud}}}},
+	}
+	r := agBuild(t, &Request{Model: "gemini-3.8-flash", Messages: msgs})["request"].(map[string]any)
+	got := jsonOf(r["contents"])
+	for _, want := range []string{
+		`{"parts":[{"text":"listen"},{"inlineData":{"data":"YXVk","mimeType":"audio/mp3"}}],"role":"user"}`,
+		`"response":{"output":"Audio a.mp3"}`,
+		`{"parts":[{"text":"Tool result audio:"},{"inlineData":{"data":"YXVk","mimeType":"audio/mp3"}}],"role":"user"}`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("gemini contents lack %s:\n%s", want, got)
+		}
+	}
+	r = agBuild(t, &Request{Model: "claude-sonnet-4-6", Messages: msgs})["request"].(map[string]any)
+	if got := jsonOf(r["contents"]); strings.Contains(got, "audio/mp3") || strings.Count(got, audioOmittedText) != 2 {
+		t.Errorf("claude contents:\n%s", got)
+	}
+}
