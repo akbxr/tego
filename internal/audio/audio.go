@@ -101,6 +101,7 @@ func Available() bool { return video.Available() }
 // Options choose the span: Start..End seconds (End 0: the end).
 type Options struct {
 	Start, End float64
+	Encode     bool // never send the file as is (a video's sound)
 }
 
 // Clip is what was read of an audio file.
@@ -215,7 +216,7 @@ func Encode(ctx context.Context, path, name string, o Options) (*Clip, llm.Block
 		return nil, llm.Block{}, ErrTooLong
 	}
 	meta, _ := json.Marshal(Meta{Name: name, Duration: c.Duration, Start: c.Start, End: c.End})
-	if mt := c.originalType(); mt != "" && c.whole() {
+	if mt := c.originalType(); mt != "" && c.whole() && !o.Encode {
 		if data, err := os.ReadFile(path); err == nil && len(data) <= MaxOriginalBytes {
 			return c, llm.Block{Type: llm.BlockAudio, MediaType: mt, Data: base64.StdEncoding.EncodeToString(data), Input: meta}, nil
 		}

@@ -58,6 +58,24 @@ func Transcribe(ctx context.Context, path, name string, o Options) (*Transcript,
 		return nil, err
 	}
 	t := &Transcript{Name: name, Duration: c.Duration, Start: start, End: end}
+	if c.Duration > 0 && c.Duration <= wholeMax {
+		// The whole file once, then any part from it: a model reading a
+		// video window by window would otherwise start whisper (and load
+		// its model, over a GB) for every window.
+		w := &Transcript{Start: 0, End: c.Duration}
+		key, err := fileKey(path, 0, c.Duration)
+		if err != nil {
+			return nil, err
+		}
+		w.run(ctx, path, key, 0, 0)
+		t.Engine, t.Err = w.Engine, w.Err
+		for _, sg := range w.Segments {
+			if sg.End > start && sg.Start < end {
+				t.Segments = append(t.Segments, Segment{Start: sg.Start - start, End: sg.End - start, Text: sg.Text})
+			}
+		}
+		return t, nil
+	}
 	key, err := fileKey(path, start, end)
 	if err != nil {
 		return nil, err
@@ -65,6 +83,9 @@ func Transcribe(ctx context.Context, path, name string, o Options) (*Transcript,
 	t.run(ctx, path, key, start, end)
 	return t, nil
 }
+
+// wholeMax is the longest file transcribed whole for a part of it.
+const wholeMax = 30 * 60
 
 // SoundTrack is a transcript of start..end of a video's sound, for a
 // model that gets its frames, after a newline; "" without a local whisper
@@ -173,6 +194,15 @@ func (t *Transcript) run(ctx context.Context, src, key string, start, end float6
 		return
 	}
 	t.Engine = tr.Name()
+	unlock, err := lockWhisper(ctx)
+	if err != nil {
+		t.Err = err
+		return
+	}
+	defer unlock()
+	if t.segmentsCached(key) { // done by whoever held the lock
+		return
+	}
 	ctx, cancel := context.WithTimeout(ctx, timeout(t.End-t.Start))
 	defer cancel()
 	dir, err := os.MkdirTemp("", "tego-audio-*")

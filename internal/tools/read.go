@@ -133,11 +133,17 @@ func (t *readTool) readVideo(ctx context.Context, p string, o video.Options) (st
 	if err != nil {
 		return "", nil, err
 	}
-	text := clip.Describe(t.env.rel(p)) + note
+	text, blocks := clip.Describe(t.env.rel(p))+note, clip.Blocks()
 	if clip.Audio {
+		// A model that hears gets the part's sound itself, not a transcript.
+		if TakesAudio(ctx) {
+			if _, blk, err := audio.Encode(ctx, p, t.env.rel(p), audio.Options{Start: clip.Start, End: clip.End, Encode: true}); err == nil {
+				return strings.Replace(text, "has audio (not included)", "sound attached after the frames", 1), append(blocks, blk), nil
+			}
+		}
 		text += audio.SoundTrack(ctx, p, t.env.rel(p), clip.Start, clip.End)
 	}
-	return text, clip.Blocks(), nil
+	return text, blocks, nil
 }
 
 // readAudio returns the sound itself to a model that takes audio, else a

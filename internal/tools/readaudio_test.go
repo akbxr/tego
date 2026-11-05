@@ -16,7 +16,7 @@ type fakeWhisper struct{}
 
 func (fakeWhisper) Name() string { return "fake" }
 func (fakeWhisper) Transcribe(context.Context, string) ([]audio.Segment, error) {
-	return []audio.Segment{{Start: 0.5, End: 1, Text: " hi"}}, nil
+	return []audio.Segment{{Start: 1.5, End: 2, Text: " hi"}}, nil
 }
 
 // read gives a model that takes audio the sound, any other a transcript;
@@ -50,5 +50,29 @@ func TestReadAudio(t *testing.T) {
 		if err != nil || len(blocks) != 0 || !strings.HasSuffix(text, "\n[0:01.5-0:02.0] hi") {
 			t.Fatalf("%s transcribed: %v %d blocks %q", name, err, len(blocks), text)
 		}
+	}
+}
+
+// Frames of a video asked by a model that hears come with the part's sound
+// itself, not a transcript (no whisper run).
+func TestReadVideoFramesWithSound(t *testing.T) {
+	if !audio.Available() {
+		t.Skip("no ffmpeg")
+	}
+	dir := t.TempDir()
+	if out, err := exec.Command("ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=10:duration=4",
+		"-f", "lavfi", "-i", "sine=duration=4", "-shortest", "-pix_fmt", "yuv420p", filepath.Join(dir, "v.mp4")).CombinedOutput(); err != nil {
+		t.Fatalf("ffmpeg: %v %s", err, out)
+	}
+	find := audio.Find
+	audio.Find = func() audio.Transcriber { t.Fatal("whisper started"); return nil }
+	defer func() { audio.Find = find }()
+	in, _ := json.Marshal(map[string]any{"path": "v.mp4", "start": 1, "end": 3, "frames": 3})
+	text, blocks, err := (&readTool{&Env{Cwd: dir}}).RunImages(WithAudio(WithVideo(context.Background())), in)
+	if err != nil || len(blocks) != 4 || blocks[3].Type != llm.BlockAudio || !strings.Contains(text, "sound attached after the frames") {
+		t.Fatalf("%v %d blocks %q", err, len(blocks), text)
+	}
+	if m := audio.ReadMeta(blocks[3]); m.Start != 1 || m.End != 3 {
+		t.Fatalf("sound of %+v", m)
 	}
 }

@@ -4,11 +4,15 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/akbxr/tego/internal/llm"
 	"github.com/akbxr/tego/internal/video"
@@ -162,9 +166,11 @@ func TestTranscribe(t *testing.T) {
 	if _, err := Transcribe(context.Background(), wav, "a.wav", Options{}); err != nil || calls != 1 {
 		t.Fatalf("not cached: %v, %d calls", err, calls)
 	}
+	// A part comes from the whole file's transcript: no second whisper run.
 	tr, _ = Transcribe(context.Background(), wav, "a.wav", Options{Start: 2, End: 5})
-	if got := tr.Text(); calls != 2 || !strings.Contains(got, "transcript of the part 0:02.0 to 0:05.0 by") || !strings.Contains(got, "\n[0:02.0-0:03.5] Hello there.") {
-		t.Fatalf("part:\n%s", got)
+	if got := tr.Text(); calls != 1 || !strings.Contains(got, "transcript of the part 0:02.0 to 0:05.0 by") ||
+		!strings.Contains(got, "\n[0:01.5-0:02.9] General Kenobi.") || strings.Contains(got, "Hello") {
+		t.Fatalf("part (%d calls):\n%s", calls, got)
 	}
 
 	_, blk, err := Encode(context.Background(), wav, "a.wav", Options{Start: 1, End: 4})
@@ -172,12 +178,14 @@ func TestTranscribe(t *testing.T) {
 		t.Fatal(err)
 	}
 	tr, err = TranscribeBlock(context.Background(), blk, ReadMeta(blk), false)
-	if err != nil || !strings.Contains(tr.Text(), "\n[0:01.0-0:02.5] Hello there.") || calls != 3 {
+	if err != nil || !strings.Contains(tr.Text(), "\n[0:01.0-0:02.5] Hello there.") || calls != 2 {
 		t.Fatalf("block: %v\n%s", err, tr.Text())
 	}
 
 	Find = func() Transcriber { return nil }
-	tr, _ = Transcribe(context.Background(), wav, "b.wav", Options{End: 1}) // another span: not cached
+	other := filepath.Join(dir, "b.wav")
+	ffmpeg(t, "-f", "lavfi", "-i", "sine=frequency=300:duration=6", other) // not cached
+	tr, _ = Transcribe(context.Background(), other, "b.wav", Options{End: 1})
 	if got := tr.Text(); !strings.HasPrefix(got, "Audio b.wav (6.0 s): you can't hear it, and no local whisper is installed") || !strings.Contains(got, "pip install mlx-whisper") ||
 		!strings.Contains(tr.Summary(), "no whisper installed") {
 		t.Fatalf("no whisper:\n%s", got)
@@ -225,4 +233,71 @@ func TestWhisper(t *testing.T) {
 	if err != nil || got.Err != nil || !strings.Contains(strings.ToLower(got.Text()), "lazy dog") {
 		t.Fatalf("%v %v\n%s", err, got.Err, got.Text())
 	}
+}
+
+type slowWhisper struct {
+	mu        *sync.Mutex
+	now, most *int
+}
+
+func (slowWhisper) Name() string { return "slow" }
+func (w slowWhisper) Transcribe(context.Context, string) ([]Segment, error) {
+	w.mu.Lock()
+	*w.now++
+	*w.most = max(*w.most, *w.now)
+	w.mu.Unlock()
+	time.Sleep(50 * time.Millisecond)
+	w.mu.Lock()
+	*w.now--
+	w.mu.Unlock()
+	return []Segment{{Start: 0, End: 1, Text: "hi"}}, nil
+}
+
+// One whisper at a time (each loads a model of over a GB): within tego,
+// and across tego processes through the lock file.
+func TestOneWhisperAtATime(t *testing.T) {
+	if !Available() {
+		t.Skip("no ffmpeg")
+	}
+	dir := t.TempDir()
+	var mu sync.Mutex
+	now, most := 0, 0
+	useWhisper(t, slowWhisper{&mu, &now, &most})
+	var wg sync.WaitGroup
+	for i := range 4 {
+		f := filepath.Join(dir, fmt.Sprintf("%d.wav", i))
+		ffmpeg(t, "-f", "lavfi", "-i", fmt.Sprintf("sine=frequency=%d:duration=2", 300+100*i), f)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if tr, err := Transcribe(context.Background(), f, "x", Options{}); err != nil || len(tr.Segments) != 1 {
+				t.Errorf("%v %+v", err, tr)
+			}
+		}()
+	}
+	wg.Wait()
+	if most != 1 {
+		t.Fatalf("%d whispers at once", most)
+	}
+
+	// Another tego holds the lock: this one waits, up to its context.
+	other, err := os.OpenFile(filepath.Join(CacheDir(), ".whisper.lock"), os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	if err := syscall.Flock(int(other.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if _, err := lockWhisper(ctx); err == nil {
+		t.Fatal("locked while another process holds it")
+	}
+	_ = syscall.Flock(int(other.Fd()), syscall.LOCK_UN)
+	unlock, err := lockWhisper(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock()
 }
