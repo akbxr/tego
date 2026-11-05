@@ -233,3 +233,20 @@ func TestLatestPromptsKeepTheirMedia(t *testing.T) {
 		t.Fatalf("elided %d: first image %v, video %v", n, isMedia(a.Messages[0].Blocks[1]), isMedia(a.Messages[2].Blocks[2]))
 	}
 }
+
+// An attached audio file (its own block type, from another change) is
+// found and stubbed like images and video.
+func TestElideMediaAudio(t *testing.T) {
+	blocks := []llm.Block{
+		{Type: llm.BlockText, Text: "listen to [Audio #1: /tmp/memo.wav]"},
+		{Type: llm.BlockText, Text: "[Audio #1] Audio memo.wav (5.0 s): attached as audio"},
+		{Type: llm.BlockAudio, MediaType: "audio/wav", Data: strings.Repeat("A", 4000)},
+	}
+	if src := mediaSources(blocks); src[2] != "/tmp/memo.wav" {
+		t.Fatalf("sources %q", src)
+	}
+	out, changed, _ := elideMedia(blocks)
+	if changed != 1 || len(out) != 3 || out[2].Type != llm.BlockText || !strings.Contains(out[2].Text, "audio elided: /tmp/memo.wav") {
+		t.Fatalf("%d changed: %+v", changed, out)
+	}
+}
