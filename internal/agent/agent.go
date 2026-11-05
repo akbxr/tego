@@ -520,11 +520,7 @@ func (a *Agent) takeSteering() bool {
 	if a.Steer == nil {
 		return false
 	}
-	a.wakeMu.Lock()
-	if a.wake != nil && closed(a.wake) {
-		a.wake = nil // taken (or put back with Alt+↑): the next one wakes again
-	}
-	a.wakeMu.Unlock()
+	a.SteerTaken() // taken (or put back with Alt+↑): the next one wakes again
 	msgs := a.Steer()
 	for _, blocks := range msgs {
 		a.append(llm.Message{Role: llm.RoleUser, Blocks: blocks})
@@ -745,6 +741,17 @@ func (a *Agent) SteerArrived() {
 	case <-ch:
 	default:
 		close(ch)
+	}
+}
+
+// SteerTaken says the messages SteerArrived announced were taken, by the
+// Steer hook or as a prompt of their own (a follow-up after the turn), so
+// later waits wait again. Safe from any goroutine.
+func (a *Agent) SteerTaken() {
+	a.wakeMu.Lock()
+	defer a.wakeMu.Unlock()
+	if a.wake != nil && closed(a.wake) {
+		a.wake = nil
 	}
 }
 

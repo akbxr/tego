@@ -78,6 +78,9 @@ func (a *app) popFollowUp() (string, bool) {
 	if len(a.steer) > 0 {
 		a.queue = append(a.steer, a.queue...)
 		a.steer = nil
+		if a.ag != nil {
+			a.ag.SteerTaken() // they are follow-ups now: a wait in their turn must not end at once
+		}
 	}
 	if len(a.queue) == 0 {
 		return "", false

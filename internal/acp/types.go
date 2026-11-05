@@ -33,6 +33,7 @@ type InitializeResponse struct {
 	AgentCapabilities AgentCapabilities `json:"agentCapabilities"`
 	AuthMethods       []AuthMethod      `json:"authMethods"`
 	AgentInfo         *Implementation   `json:"agentInfo,omitempty"`
+	Meta              map[string]any    `json:"_meta,omitempty"` // extensions on offer
 }
 
 // AuthMethod is one way to log in; tego's are run in a terminal.
