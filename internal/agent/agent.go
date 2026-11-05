@@ -367,14 +367,14 @@ func (a *Agent) loop(ctx context.Context) error {
 			before := a.LastCtx
 			if n, _ := a.elide(a.warmMinSave()); n > 0 {
 				a.LastCtx = a.EstimateContext()
-				a.UI.OnInfo(fmt.Sprintf("context at %d%%: elided %d old tool block(s) (~%.1fk → ~%.1fk tokens)",
+				a.UI.OnInfo(fmt.Sprintf("context at %d%%: elided %d old block(s) (~%.1fk → ~%.1fk tokens)",
 					before*100/a.ContextWindow, n, float64(before)/1000, float64(a.LastCtx)/1000))
 			}
 		}
 		if before := a.LastCtx; a.ContextWindow > 0 {
 			if n, _ := a.elideBeforeCompact(); n > 0 {
 				a.LastCtx = a.EstimateContext()
-				a.UI.OnInfo(fmt.Sprintf("context at %d%%: elided %d old tool block(s) instead of compacting (~%.1fk → ~%.1fk tokens)",
+				a.UI.OnInfo(fmt.Sprintf("context at %d%%: elided %d old block(s) instead of compacting (~%.1fk → ~%.1fk tokens)",
 					before*100/a.ContextWindow, n, float64(before)/1000, float64(a.LastCtx)/1000))
 			}
 		}

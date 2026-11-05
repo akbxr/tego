@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/akbxr/tego/internal/llm"
+	"github.com/akbxr/tego/internal/video"
 )
 
 // Staged context management (Fan et al., "An Empirical Study of Harness
@@ -37,6 +40,9 @@ const (
 	// A cold pass costs nothing (the cache is rebuilt anyway) but drops the
 	// thinking after the cut, so it too must save something worthwhile.
 	coldMinSave = 5_000
+	// Media the user attached in the last this many prompts stays, even
+	// outside the recent window: it is likely what the work is about.
+	keepMediaPrompts = 2
 )
 
 // spilledRE finds the file in which bash kept the whole of a cut output
@@ -112,7 +118,8 @@ func (a *Agent) needsElide() bool {
 
 // elide stubs out bulky tool results (and bulky string arguments of tool
 // calls, e.g. a written file's content) older than the recent window that
-// compaction keeps verbatim, if that saves at least minSave tokens. It
+// compaction keeps verbatim, and the media the user attached there before
+// the last keepMediaPrompts prompts, if that saves at least minSave tokens. It
 // reports how many blocks it changed and the tokens saved (estimated from
 // the removed text). The history is left as is when the cut is too small.
 func (a *Agent) elide(minSave int) (changed, saved int) {
@@ -130,6 +137,7 @@ func (a *Agent) elide(minSave int) (changed, saved int) {
 			}
 		}
 	}
+	mediaEnd := min(end, a.recentPrompts(keepMediaPrompts))
 	next := map[int][]llm.Block{} // message index -> its new blocks, applied only if worth it
 	for i := range end {
 		m := a.Messages[i]
@@ -145,6 +153,15 @@ func (a *Agent) elide(minSave int) (changed, saved int) {
 			blocks[j] = nb
 			changed++
 			saved += estimateTokens([]llm.Message{{Blocks: []llm.Block{b}}}) - estimateTokens([]llm.Message{{Blocks: []llm.Block{nb}}})
+		}
+		if i < mediaEnd && m.Role == llm.RoleUser {
+			src := blocks
+			if src == nil {
+				src = m.Blocks
+			}
+			if nb, n, s := elideMedia(src); n > 0 {
+				blocks, changed, saved = nb, changed+n, saved+s
+			}
 		}
 		if blocks != nil {
 			next[i] = blocks
@@ -238,4 +255,145 @@ func kb(n int) string {
 		return fmt.Sprintf("%d B", n)
 	}
 	return fmt.Sprintf("%.1f KB", float64(n)/1024)
+}
+
+// Media the user attached (images, video, audio: any block with data in a
+// user message, outside tool results) is elided like tool output: a stub
+// that names the file, so the model can read it again.
+var (
+	// "[Image #1: /path]" in the prompt; its block follows in token order.
+	attachRefRE = regexp.MustCompile(`\[([A-Z][a-z]+) #(\d+)(?:: ([^\]\n]+))?\]`)
+	// "[Video #2] …": the line before an attached video's blocks.
+	attachHeadRE = regexp.MustCompile(`^\[[A-Z][a-z]+ #(\d+)\] `)
+	// `<file path="x" type="image">`: the line before an @mention's media.
+	mentionMediaRE = regexp.MustCompile(`^<file path="([^"]*)" type="[a-z]+">`)
+	// "12 frames in order", "1 frame, at": how many blocks a video became.
+	framesRE = regexp.MustCompile(`(\d+) frames?[ ,]`)
+	// What elideMedia leaves (carry.go leaves it out of the user's text).
+	mediaStubRE = regexp.MustCompile(`^\[(?:\d+ )?[a-z]+s? elided[:\]]`)
+)
+
+func isMedia(b llm.Block) bool { return b.Data != "" && b.Type != llm.BlockToolResult }
+
+// recentPrompts is the index of the n-th last prompt the user wrote (0
+// when there are fewer).
+func (a *Agent) recentPrompts(n int) int {
+	for i := len(a.Messages) - 1; i >= 0; i-- {
+		if m := a.Messages[i]; isPrompt(m) && !strings.HasPrefix(textOf(&m), "<system-reminder>") {
+			if n--; n == 0 {
+				return i
+			}
+		}
+	}
+	return 0
+}
+
+// elideMedia replaces the media in a user message's blocks with stubs, one
+// per run of blocks from the same file (a video's frames). It returns nil
+// when there is none; blocks itself is never changed.
+func elideMedia(blocks []llm.Block) (out []llm.Block, changed, saved int) {
+	src := mediaSources(blocks)
+	for i := 0; i < len(blocks); i++ {
+		b := blocks[i]
+		if !isMedia(b) {
+			if out != nil {
+				out = append(out, b)
+			}
+			continue
+		}
+		if out == nil {
+			out = append(make([]llm.Block, 0, len(blocks)), blocks[:i]...)
+		}
+		j := i + 1
+		for j < len(blocks) && src[i] != "" && src[j] == src[i] && blocks[j].Type == b.Type && isMedia(blocks[j]) {
+			j++
+		}
+		stub := llm.Block{Type: llm.BlockText, Text: mediaStub(string(b.Type), j-i, src[i])}
+		out = append(out, stub)
+		changed += j - i
+		saved += estimateTokens([]llm.Message{{Blocks: blocks[i:j]}}) - estimateTokens([]llm.Message{{Blocks: []llm.Block{stub}}})
+		i = j - 1
+	}
+	return out, changed, saved
+}
+
+func mediaStub(kind string, n int, path string) string {
+	if kind == "" {
+		kind = "attachment"
+	}
+	if n > 1 {
+		kind = fmt.Sprintf("%d %ss", n, kind)
+	}
+	if path == "" {
+		return "[" + kind + " elided: old attachments are dropped to save context]"
+	}
+	return "[" + kind + " elided: " + path + "; read it again if needed]"
+}
+
+// mediaSources is the file each media block in blocks came from ("" when
+// unknown, as for a pasted image). Attachments are named in the prompt and
+// follow it in token order, a video's blocks after its "[Video #n]" line;
+// an @mention's media follows its <file> line.
+func mediaSources(blocks []llm.Block) []string {
+	type ref struct {
+		n    int
+		path string
+	}
+	paths := map[int]string{} // a "[Video #n]" line names n again, without the path
+	for _, b := range blocks {
+		if b.Type == llm.BlockText {
+			for _, m := range attachRefRE.FindAllStringSubmatch(b.Text, -1) {
+				n, _ := strconv.Atoi(m[2])
+				if paths[n] == "" {
+					paths[n] = m[3]
+				}
+			}
+		}
+	}
+	refs := make([]ref, 0, len(paths))
+	for n, p := range paths {
+		refs = append(refs, ref{n, p})
+	}
+	sort.Slice(refs, func(i, j int) bool { return refs[i].n < refs[j].n })
+	out := make([]string, len(blocks))
+	next := 0            // the attachment the next unlabelled block is
+	label, left := "", 0 // the file the next left blocks are, after a line naming it
+	for i, b := range blocks {
+		if !isMedia(b) {
+			label, left = "", 0
+			if b.Type != llm.BlockText {
+				continue
+			}
+			head := ""
+			if m := mentionMediaRE.FindStringSubmatch(b.Text); m != nil {
+				head = m[1]
+			} else if m := attachHeadRE.FindStringSubmatch(b.Text); m != nil {
+				n, _ := strconv.Atoi(m[1])
+				for k, r := range refs {
+					if r.n == n {
+						head, next = r.path, k+1
+						break
+					}
+				}
+			}
+			if head != "" {
+				label, left = head, 1
+				if m := framesRE.FindStringSubmatch(b.Text); m != nil {
+					left, _ = strconv.Atoi(m[1])
+				}
+			}
+			continue
+		}
+		switch {
+		case left > 0:
+			out[i] = label
+			left--
+		case b.Type == llm.BlockVideo && video.ReadMeta(b).Name != "":
+			out[i] = video.ReadMeta(b).Name
+		case next < len(refs):
+			out[i] = refs[next].path
+			next++
+		}
+	}
+	return out
 }

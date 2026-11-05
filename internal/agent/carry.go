@@ -49,7 +49,7 @@ func typedText(m llm.Message) string {
 		t := strings.TrimSpace(b.Text)
 		switch {
 		case strings.HasPrefix(t, contextSummaryTag), strings.HasPrefix(t, `<file path="`),
-			strings.HasPrefix(t, `<skill-attachment `):
+			strings.HasPrefix(t, `<skill-attachment `), mediaStubRE.MatchString(t):
 			continue
 		case strings.HasPrefix(t, `<skill name="`): // a /skill:<name> prompt embeds the skill
 			name := ""
