@@ -186,6 +186,34 @@ func TestServerEditsReportedOnce(t *testing.T) {
 	}
 }
 
+// A rewound or resumed history keeps what the server had cleared: the next
+// reply, cleared the same way, is not reported again, and reads before the
+// clearing are not taken as still visible.
+func TestRewindKeepsServerEdits(t *testing.T) {
+	ui := &infoUI{}
+	a := &Agent{UI: ui}
+	reply := func(cleared, trigger int) llm.Message {
+		return llm.Message{Role: llm.RoleAssistant, Usage: &llm.Usage{}, ClearedToolUses: cleared, ClearTrigger: trigger}
+	}
+	user := llm.Message{Role: llm.RoleUser, Blocks: []llm.Block{{Type: llm.BlockText, Text: "go"}}}
+	a.SetHistory([]llm.Message{user, reply(0, 0), user, reply(76, 79), user, reply(76, 79), user})
+	if a.cleared != 76 || a.clearMark != 5 || a.clearUses != 79 {
+		t.Fatalf("cleared %d, mark %d, trigger %d", a.cleared, a.clearMark, a.clearUses)
+	}
+	a.noteServerEdits(&llm.Message{ClearedToolUses: 76})
+	if len(ui.infos) != 0 {
+		t.Fatalf("reported again: %q", ui.infos)
+	}
+	a.noteServerEdits(&llm.Message{ClearedToolUses: 90})
+	if len(ui.infos) != 1 {
+		t.Fatalf("growth not reported: %q", ui.infos)
+	}
+	a.SetHistory([]llm.Message{user, reply(0, 0), user})
+	if a.cleared != 0 || a.clearMark != 0 || a.clearUses != 0 {
+		t.Fatalf("before any clearing: %d %d %d", a.cleared, a.clearMark, a.clearUses)
+	}
+}
+
 // Thinking the provider dropped stays in the history: removing it would
 // change the prefix the request had just cached, and write it all again.
 func TestDroppedThinkingStays(t *testing.T) {

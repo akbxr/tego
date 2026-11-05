@@ -76,13 +76,23 @@ func (a *Agent) clearableSince(from int) int {
 	return n
 }
 
-// restoreClearTrigger picks up the trigger a resumed history was sent with,
-// so its next request clears the same results and hits the cache.
+// restoreClearTrigger picks up the trigger a resumed (or rewound) history
+// was sent with, so its next request clears the same results and hits the
+// cache, and what the server had cleared by then: the clearing is not news
+// again, and reads before it are not taken as still visible.
 func (a *Agent) restoreClearTrigger() {
-	a.clearUses = 0
+	a.clearUses, a.cleared, a.clearMark = 0, 0, 0
+	trigger := false
 	for i := len(a.Messages) - 1; i >= 0; i-- {
-		if m := a.Messages[i]; m.Role == llm.RoleAssistant && m.Usage != nil {
-			a.clearUses = m.ClearTrigger
+		m := a.Messages[i]
+		if m.Role != llm.RoleAssistant || m.Usage == nil {
+			continue
+		}
+		if !trigger {
+			a.clearUses, trigger = m.ClearTrigger, true
+		}
+		if m.ClearedToolUses > 0 {
+			a.cleared, a.clearMark = m.ClearedToolUses, i
 			return
 		}
 	}
