@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/akbxr/tego/internal/llm"
+	"github.com/akbxr/tego/internal/tools"
 )
 
 // Background runs the tasks of task calls with "background": true. The
@@ -236,6 +237,8 @@ func (b *Background) Wait(ctx context.Context, ids []string, d time.Duration) er
 			return nil
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-tools.Wake(ctx):
+			return nil
 		}
 	}
 }
@@ -359,6 +362,7 @@ func (t *TaskStatusTool) Run(ctx context.Context, input json.RawMessage) (string
 	}
 	b := t.BG
 	var head []string
+	woken := false
 	if in.Cancel {
 		if len(in.IDs) == 0 {
 			return "", errors.New("cancel needs ids")
@@ -373,6 +377,7 @@ func (t *TaskStatusTool) Run(ctx context.Context, input json.RawMessage) (string
 		if err := b.Wait(ctx, in.IDs, time.Duration(min(in.Wait, taskWaitMax)*float64(time.Second))); err != nil {
 			return "", err
 		}
+		woken = tools.Woken(ctx)
 	}
 	b.mu.Lock()
 	var rows []string
@@ -410,6 +415,9 @@ func (t *TaskStatusTool) Run(ctx context.Context, input json.RawMessage) (string
 	if len(reports) > 0 {
 		out += "\n\n" + strings.Join(reports, "\n\n")
 	}
+	if woken && b.running(in.IDs) {
+		out += "\n\n" + tools.WokenNote
+	}
 	return out, nil
 }
 
@@ -443,4 +451,16 @@ func (bt *bgTask) rowLocked() string {
 		parts = append(parts, "stopped")
 	}
 	return bt.id + " " + s.Name + ": " + strings.Join(parts, " · ")
+}
+
+// running reports whether any task in ids (all without ids) still runs.
+func (b *Background) running(ids []string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, bt := range b.tasks {
+		if !bt.ended && (len(ids) == 0 || contains(ids, bt.id)) {
+			return true
+		}
+	}
+	return false
 }

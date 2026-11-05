@@ -626,10 +626,15 @@ func (t *bashOutputTool) Run(ctx context.Context, input json.RawMessage) (string
 	matched := s.waitOutput(ctx, re, wait)
 	out, dropped := s.unread()
 	res := fmt.Sprintf("%s %s.", s.id, s.status())
-	if re != nil && !matched {
+	woken := !matched && wait > 0 && !s.finished() && Woken(ctx)
+	if re != nil && !matched && !woken {
 		res += fmt.Sprintf(" No new line matched %q within %s.", in.WaitFor, wait.Round(time.Second))
 	}
-	return res + formatNew(out, dropped), nil
+	res += formatNew(out, dropped)
+	if woken {
+		res += "\n" + WokenNote
+	}
+	return res, nil
 }
 
 // waitOutput waits up to d for new output matching re (any new output if
@@ -659,6 +664,8 @@ func (s *bgShell) waitOutput(ctx context.Context, re *regexp.Regexp, d time.Dura
 		case <-deadline.C:
 			return false
 		case <-ctx.Done():
+			return false
+		case <-Wake(ctx):
 			return false
 		}
 	}

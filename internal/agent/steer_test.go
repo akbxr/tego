@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/akbxr/tego/internal/llm"
 	"github.com/akbxr/tego/internal/tools"
@@ -80,5 +82,39 @@ func TestSteeringWhenModelWouldStop(t *testing.T) {
 	}
 	if got := a.LastText(); got != "second answer" {
 		t.Fatalf("turn ended on %q", got)
+	}
+}
+
+// A message sent while task_status waits for background tasks ends the
+// wait: the model gets it with the next request instead of after up to
+// 10 minutes. Without one, the wait runs on.
+func TestSteeringEndsATaskWait(t *testing.T) {
+	a := &Agent{}
+	bg := &Background{change: make(chan struct{})}
+	bg.tasks = []*bgTask{{id: "t1", st: &SubagentStatus{Name: "Slow", State: "running"}, parent: a}}
+	tool := &TaskStatusTool{BG: bg}
+	run := func() (string, time.Duration) {
+		ctx := tools.WithWake(context.Background(), a.wakeChan())
+		start := time.Now()
+		out, err := tool.Run(ctx, []byte(`{"ids":["t1"],"wait":600}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out, time.Since(start)
+	}
+
+	time.AfterFunc(50*time.Millisecond, a.SteerArrived)
+	out, took := run()
+	if took > 5*time.Second || !strings.Contains(out, "Stopped waiting: the user sent a message") || !strings.Contains(out, "t1 Slow") {
+		t.Fatalf("after %v:\n%s", took, out)
+	}
+
+	// Taken: the next wait is not cut short by the same message.
+	a.Steer = func() [][]llm.Block { return [][]llm.Block{{text("go on")}} }
+	a.takeSteering()
+	ctx, cancel := context.WithTimeout(tools.WithWake(context.Background(), a.wakeChan()), 200*time.Millisecond)
+	defer cancel()
+	if _, err := tool.Run(ctx, []byte(`{"ids":["t1"],"wait":600}`)); err == nil {
+		t.Fatal("the wait ended before its context")
 	}
 }

@@ -86,7 +86,9 @@ type Agent struct {
 	// was working (each as the blocks of one user message). It is polled
 	// after each tool round and when the model would stop, so a message
 	// steers the next request without interrupting a running tool.
-	Steer func() [][]llm.Block
+	Steer  func() [][]llm.Block
+	wakeMu sync.Mutex
+	wake   chan struct{} // closed by SteerArrived; tools that wait watch it
 	// ToolStat, when set, is told about every tool call's outcome (for
 	// usage statistics); subagents inherit it.
 	ToolStat func(name string, isErr, subagent bool)
@@ -518,6 +520,11 @@ func (a *Agent) takeSteering() bool {
 	if a.Steer == nil {
 		return false
 	}
+	a.wakeMu.Lock()
+	if a.wake != nil && closed(a.wake) {
+		a.wake = nil // taken (or put back with Alt+↑): the next one wakes again
+	}
+	a.wakeMu.Unlock()
 	msgs := a.Steer()
 	for _, blocks := range msgs {
 		a.append(llm.Message{Role: llm.RoleUser, Blocks: blocks})
@@ -724,4 +731,41 @@ func renderTranscript(msgs []llm.Message) string {
 		}
 	}
 	return b.String()
+}
+
+// SteerArrived says the user sent a message to steer the running turn. A
+// tool call that is only waiting (task_status, bash_output) stops waiting,
+// so the message goes in with the next request; other tools run on.
+// Safe from any goroutine.
+func (a *Agent) SteerArrived() {
+	a.wakeMu.Lock()
+	defer a.wakeMu.Unlock()
+	ch := a.wakeChanLocked()
+	select {
+	case <-ch:
+	default:
+		close(ch)
+	}
+}
+
+func (a *Agent) wakeChan() <-chan struct{} {
+	a.wakeMu.Lock()
+	defer a.wakeMu.Unlock()
+	return a.wakeChanLocked()
+}
+
+func (a *Agent) wakeChanLocked() chan struct{} {
+	if a.wake == nil {
+		a.wake = make(chan struct{})
+	}
+	return a.wake
+}
+
+func closed(ch chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
 }

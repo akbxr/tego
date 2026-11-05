@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -155,3 +156,21 @@ func TestBackgroundBufferDropsOldOutput(t *testing.T) {
 }
 
 func fmtSscan(s string, p *int) (int, error) { return fmt.Sscan(s, p) }
+
+// A message from the user ends a bash_output wait at once.
+func TestBackgroundWaitEndsOnWake(t *testing.T) {
+	_, bash, out := bgEnv(t)
+	if _, err := run(t, bash, map[string]any{"command": "sleep 60", "background": true}); err != nil {
+		t.Fatal(err)
+	}
+	wake := make(chan struct{})
+	time.AfterFunc(50*time.Millisecond, func() { close(wake) })
+	start := time.Now()
+	res, err := out.Run(WithWake(context.Background(), wake), []byte(`{"id":"bg1","wait_for":"never","wait":120}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(start) > 5*time.Second || !strings.Contains(res, "Stopped waiting: the user sent a message") || strings.Contains(res, "No new line matched") {
+		t.Fatalf("after %v: %q", time.Since(start), res)
+	}
+}

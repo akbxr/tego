@@ -50,3 +50,32 @@ func TakesVideo(ctx context.Context) bool {
 	v, _ := ctx.Value(videoKey{}).(bool)
 	return v
 }
+
+type wakeKey struct{}
+
+// WithWake returns a context carrying a channel that is closed when the
+// user sends a message to the running turn. A tool that only waits (for
+// background tasks, for a shell's output) stops waiting then, so the
+// message reaches the model without sitting out the whole wait.
+func WithWake(ctx context.Context, ch <-chan struct{}) context.Context {
+	return context.WithValue(ctx, wakeKey{}, ch)
+}
+
+// Wake is ctx's wake channel; nil (never ready) without one.
+func Wake(ctx context.Context) <-chan struct{} {
+	ch, _ := ctx.Value(wakeKey{}).(<-chan struct{})
+	return ch
+}
+
+// Woken reports whether ctx's wake channel is closed.
+func Woken(ctx context.Context) bool {
+	select {
+	case <-Wake(ctx):
+		return true
+	default:
+		return false
+	}
+}
+
+// WokenNote ends the output of a wait the user's message cut short.
+const WokenNote = "Stopped waiting: the user sent a message, which follows. Wait again after it if you still need to."

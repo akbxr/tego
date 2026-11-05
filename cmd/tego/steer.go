@@ -30,6 +30,9 @@ func (a *app) addPending(line string, steer bool) {
 		a.queue = append(a.queue, line)
 	}
 	a.pendMu.Unlock()
+	if steer && a.ag != nil {
+		a.ag.SteerArrived() // a task_status or bash_output wait ends for it
+	}
 	a.tui.Redraw()
 }
 
