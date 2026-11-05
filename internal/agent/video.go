@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/akbxr/tego/internal/audio"
 	"github.com/akbxr/tego/internal/llm"
 	"github.com/akbxr/tego/internal/video"
 )
@@ -68,6 +69,11 @@ func (a *Agent) frames(ctx context.Context, b llm.Block) []llm.Block {
 	if err == nil && len(f) > 0 {
 		// Answers about it from before a model switch may cite its sound.
 		f[0].Text += ". Note: earlier replies in this conversation came from a model that got the video itself, sound included, so what they say about its sound was heard, not made up; you get these frames only"
+		if m := video.ReadMeta(b); m.Audio && audio.Find() != nil {
+			if tr, err := audio.TranscribeBlock(ctx, b, audio.Meta{Name: m.Name, Duration: m.Duration, Start: m.Start, End: m.End}, true); err == nil && ctx.Err() == nil {
+				f = append(f, llm.Block{Type: llm.BlockText, Text: tr.Text()})
+			}
+		}
 	}
 	if err != nil {
 		if ctx.Err() != nil { // not kept: the next request tries again

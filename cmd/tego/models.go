@@ -313,6 +313,8 @@ func (a *app) replayMessages() {
 				a.ui.Dim("  [image]")
 			case b.Type == llm.BlockVideo:
 				a.ui.Dim("  [video]")
+			case b.Type == llm.BlockAudio:
+				a.ui.Dim("  [audio]")
 			case b.Type == llm.BlockThinking && b.Text != "":
 				a.ui.ReplayThinking(b.Text)
 			case b.Type == llm.BlockText:

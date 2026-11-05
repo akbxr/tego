@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/akbxr/tego/internal/audio"
 	"github.com/akbxr/tego/internal/images"
 	"github.com/akbxr/tego/internal/lineedit"
 	"github.com/akbxr/tego/internal/llm"
@@ -225,14 +227,31 @@ func (a *app) collectMentions(prompt string) []llm.Block {
 			a.ui.Dim("📎 @%s (directory, %d entries)", ref, strings.Count(listing, "\n"))
 			continue
 		}
-		if video.Sniff(readHead(abs, 16)) {
+		head := readHead(abs, audio.HeadLen)
+		isAudio := audio.Sniff(head)
+		if video.Sniff(head) {
 			desc, vblocks, summary, err := a.loadVideo(abs, ref)
+			switch {
+			case errors.Is(err, video.ErrNoVideo): // sound only, in a video container
+				isAudio = true
+			case err != nil:
+				a.ui.Errorf("@%s: %v", ref, err)
+				continue
+			default:
+				blocks = append(blocks, llm.Block{Type: llm.BlockText, Text: fmt.Sprintf("%s%s\" type=\"video\">%s</file>", mentionPrefix, ref, desc)})
+				blocks = append(blocks, vblocks...)
+				a.ui.Dim("📎 @%s · %s", ref, summary)
+				continue
+			}
+		}
+		if isAudio {
+			desc, ablocks, summary, err := a.loadAudio(abs, ref)
 			if err != nil {
 				a.ui.Errorf("@%s: %v", ref, err)
 				continue
 			}
-			blocks = append(blocks, llm.Block{Type: llm.BlockText, Text: fmt.Sprintf("%s%s\" type=\"video\">%s</file>", mentionPrefix, ref, desc)})
-			blocks = append(blocks, vblocks...)
+			blocks = append(blocks, llm.Block{Type: llm.BlockText, Text: fmt.Sprintf("%s%s\" type=\"audio\">%s</file>", mentionPrefix, ref, desc)})
+			blocks = append(blocks, ablocks...)
 			a.ui.Dim("📎 @%s · %s", ref, summary)
 			continue
 		}

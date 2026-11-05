@@ -91,6 +91,10 @@ type Clip struct {
 // ErrNoFFmpeg is returned when ffmpeg or ffprobe is not on PATH.
 var ErrNoFFmpeg = errors.New("reading video needs ffmpeg and ffprobe on PATH (macOS: brew install ffmpeg; Debian/Ubuntu: apt install ffmpeg)")
 
+// ErrNoVideo is returned for a file with no video stream: audio in a
+// container Sniff can't tell from video (WebM, MP4).
+var ErrNoVideo = errors.New("no video stream")
+
 // Available reports whether ffmpeg and ffprobe are on PATH.
 func Available() bool {
 	_, e1 := exec.LookPath("ffmpeg")
@@ -257,7 +261,7 @@ func probe(ctx context.Context, path string) (*Clip, error) {
 		}
 	}
 	if !video {
-		return nil, fmt.Errorf("%s has no video stream", filepath.Base(path))
+		return nil, fmt.Errorf("%s has %w", filepath.Base(path), ErrNoVideo)
 	}
 	return c, nil
 }

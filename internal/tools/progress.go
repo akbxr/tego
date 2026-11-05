@@ -51,6 +51,20 @@ func TakesVideo(ctx context.Context) bool {
 	return v
 }
 
+type audioKey struct{}
+
+// WithAudio returns a context saying the model takes audio files: tools
+// then return an audio block instead of a transcript.
+func WithAudio(ctx context.Context) context.Context {
+	return context.WithValue(ctx, audioKey{}, true)
+}
+
+// TakesAudio reports whether ctx came from WithAudio.
+func TakesAudio(ctx context.Context) bool {
+	v, _ := ctx.Value(audioKey{}).(bool)
+	return v
+}
+
 type wakeKey struct{}
 
 // WithWake returns a context carrying a channel that is closed when the
