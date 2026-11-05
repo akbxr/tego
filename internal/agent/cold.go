@@ -65,7 +65,7 @@ func (a *Agent) coldElide() {
 	before := a.LastCtx
 	if n, _ := a.elide(coldMinSave); n > 0 {
 		a.LastCtx = a.EstimateContext()
-		a.UI.OnInfo(fmt.Sprintf("prompt cache expired (idle %s): elided %d old tool block(s) (~%.1fk → ~%.1fk tokens)",
+		a.UI.OnInfo(fmt.Sprintf("prompt cache expired (idle %s): elided %d old block(s) (~%.1fk → ~%.1fk tokens)",
 			idle.Round(time.Minute), n, float64(before)/1000, float64(a.LastCtx)/1000))
 	}
 }

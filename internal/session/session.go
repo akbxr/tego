@@ -5,11 +5,21 @@
 // so jumping back to an earlier point (/tree) and continuing creates a new
 // branch while the old path stays in the file. The active path ends at the
 // "leaf": the last appended node, or the target of the latest leaf entry.
+//
+// Media (any block with Data: images, video, audio, a tool result's images)
+// is stored once per file. The first write of a given Data appends a blob
+// entry, and blocks refer to it (see refBlock):
+//
+//	{"type":"blob","sha":"<sha256 hex of data>","data":"<base64>"}
+//	{"type":"media_ref","name":"image","media_type":"image/png","data":"sha256:<hex>"}
+//
+// Files without blobs hold the data inline and read as before.
 package session
 
 import (
 	"bufio"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -18,6 +28,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -27,7 +38,7 @@ import (
 )
 
 type entry struct {
-	Type    string `json:"type"` // header | message | compaction | leaf
+	Type    string `json:"type"` // header | message | compaction | title | leaf | blob
 	ID      string `json:"id,omitempty"`
 	Parent  string `json:"parent,omitempty"`
 	Time    int64  `json:"ts,omitempty"`
@@ -40,6 +51,25 @@ type entry struct {
 	Messages []llm.Message `json:"messages,omitempty"`
 	// title
 	Title string `json:"title,omitempty"`
+	// blob: a media block's Data, referenced by its sha256
+	SHA  string `json:"sha,omitempty"`
+	Data string `json:"data,omitempty"`
+}
+
+// A reference block keeps every field of the block but Data, and its type
+// in Name. Its type is one no provider sends, so an older tego reading the
+// file leaves the media out instead of sending empty data, and keeps the
+// reference whole when it copies the block (compaction, fork).
+const (
+	blockRef  llm.BlockType = "media_ref"
+	refPrefix               = "sha256:"
+	minBlob                 = 1024 // shorter data stays inline
+)
+
+// blobLoc is where a blob entry's line is in the file.
+type blobLoc struct {
+	off  int64
+	size int
 }
 
 // Node is one message (or compaction) in the session tree.
@@ -76,10 +106,11 @@ type Session struct {
 	roots []*Node
 	leaf  string // "" = before the first node
 
-	mu     sync.Mutex // serialises writes
-	Title  string     // generated title ("" = none yet)
-	Cwd    string     // working directory the session was started in ("" in files without a header)
-	ForkOf string     // id of the session this one was forked or cloned from ("" = none)
+	mu     sync.Mutex         // serialises writes
+	blobs  map[string]blobLoc // sha -> blob entry in the file (under mu)
+	Title  string             // generated title ("" = none yet)
+	Cwd    string             // working directory the session was started in ("" in files without a header)
+	ForkOf string             // id of the session this one was forked or cloned from ("" = none)
 }
 
 type Info struct {
@@ -174,6 +205,7 @@ type lightEntry struct {
 	Cwd     string        `json:"cwd"`
 	ForkOf  string        `json:"fork_of"`
 	Title   string        `json:"title"`
+	SHA     string        `json:"sha"`
 	Message *outlineEntry `json:"message"`
 }
 
@@ -193,6 +225,9 @@ func (o *outlineEntry) message() *llm.Message {
 	}
 	m := &llm.Message{Role: o.Role, Blocks: make([]llm.Block, len(o.Blocks))}
 	for i, b := range o.Blocks {
+		if b.Type == blockRef {
+			b.Type, b.Name = llm.BlockType(b.Name), ""
+		}
 		m.Blocks[i] = outlineBlock(llm.Block{Type: b.Type, Text: b.Text, ID: b.ID, Name: b.Name})
 	}
 	return m
@@ -248,6 +283,13 @@ func load(path string) (*Session, error) {
 			}
 			s.add(&Node{ID: e.ID, Parent: e.Parent, Time: time.Unix(e.Time, 0), Message: e.Message.message(),
 				compaction: e.Type == "compaction", off: off, size: len(line)})
+		case "blob":
+			if _, ok := s.blobs[e.SHA]; !ok && e.SHA != "" {
+				if s.blobs == nil {
+					s.blobs = map[string]blobLoc{}
+				}
+				s.blobs[e.SHA] = blobLoc{off, len(line)}
+			}
 		case "title":
 			s.Title = e.Title
 		case "leaf":
@@ -277,15 +319,37 @@ func (s *Session) write(e entry) (off int64, size int, err error) {
 	if s == nil {
 		return -1, 0, nil
 	}
-	data, err := json.Marshal(e)
-	if err != nil {
-		return -1, 0, err
-	}
 	s.mu.Lock() // titles are written from another goroutine than messages
 	defer s.mu.Unlock()
 	if s.f == nil {
 		return -1, 0, nil
 	}
+	// Media first: the blobs a message refers to are in the file before it.
+	if e.Message != nil {
+		m := *e.Message
+		if m.Blocks, err = s.refBlocks(m.Blocks); err != nil {
+			return -1, 0, err
+		}
+		e.Message = &m
+	}
+	if e.Messages != nil {
+		msgs := slices.Clone(e.Messages)
+		for i := range msgs {
+			if msgs[i].Blocks, err = s.refBlocks(msgs[i].Blocks); err != nil {
+				return -1, 0, err
+			}
+		}
+		e.Messages = msgs
+	}
+	data, err := json.Marshal(e)
+	if err != nil {
+		return -1, 0, err
+	}
+	return s.writeLine(data)
+}
+
+// writeLine appends data as a line; s.mu is held.
+func (s *Session) writeLine(data []byte) (off int64, size int, err error) {
 	if _, err := s.f.Write(append(data, '\n')); err != nil {
 		return -1, 0, err
 	}
@@ -298,12 +362,75 @@ func (s *Session) write(e entry) (off int64, size int, err error) {
 	return end - int64(len(data)) - 1, len(data), nil
 }
 
+// refBlocks is blocks with their media replaced by references, the blobs
+// written first where the file lacks them. blocks is copied on the first
+// change: the caller's are shared with the agent. s.mu is held.
+func (s *Session) refBlocks(blocks []llm.Block) ([]llm.Block, error) {
+	var out []llm.Block
+	for i, b := range blocks {
+		nb, changed, err := s.refBlock(b)
+		if err != nil {
+			return nil, err
+		}
+		if changed {
+			if out == nil {
+				out = slices.Clone(blocks)
+			}
+			out[i] = nb
+		}
+	}
+	if out == nil {
+		return blocks, nil
+	}
+	return out, nil
+}
+
+// refBlock keys on Data, whatever the block's type. A block that uses Name
+// stays inline: the reference keeps the type there.
+func (s *Session) refBlock(b llm.Block) (llm.Block, bool, error) {
+	changed := false
+	if len(b.Images) > 0 {
+		imgs, err := s.refBlocks(b.Images)
+		if err != nil {
+			return b, false, err
+		}
+		if &imgs[0] != &b.Images[0] {
+			b.Images, changed = imgs, true
+		}
+	}
+	if len(b.Data) < minBlob || b.Name != "" || b.Type == blockRef {
+		return b, changed, nil
+	}
+	sum := sha256.Sum256([]byte(b.Data))
+	sha := hex.EncodeToString(sum[:])
+	if _, ok := s.blobs[sha]; !ok {
+		line, err := json.Marshal(entry{Type: "blob", SHA: sha, Data: b.Data})
+		if err != nil {
+			return b, false, err
+		}
+		off, size, err := s.writeLine(line)
+		if err != nil {
+			return b, false, err
+		}
+		if off < 0 { // where it went is unknown: keep the data inline
+			return b, changed, nil
+		}
+		if s.blobs == nil {
+			s.blobs = map[string]blobLoc{}
+		}
+		s.blobs[sha] = blobLoc{off, size}
+	}
+	b.Type, b.Name, b.Data = blockRef, string(b.Type), refPrefix+sha
+	return b, true, nil
+}
+
 // fileReader reads the session file back: through the open file, or
 // (closed, or loaded only) the file opened again until the reader is
 // closed.
 type fileReader struct {
-	s *Session
-	g *os.File
+	s     *Session
+	g     *os.File
+	blobs map[string]string // read so far: the messages of one History share each blob's data
 }
 
 func (s *Session) reader() *fileReader { return &fileReader{s: s} }
@@ -347,7 +474,60 @@ func (r *fileReader) read(n *Node) (entry, bool) {
 	if json.Unmarshal(buf, &e) != nil || (e.ID != "" && e.ID != n.ID) {
 		return entry{}, false
 	}
+	if e.Message != nil {
+		r.resolve(e.Message.Blocks)
+	}
+	for _, m := range e.Messages {
+		r.resolve(m.Blocks)
+	}
 	return e, true
+}
+
+// resolve puts the data of the blobs that blocks refer to back in place.
+// A blob the file lacks (a copy made by an older tego) leaves a note.
+func (r *fileReader) resolve(blocks []llm.Block) {
+	for i := range blocks {
+		b := &blocks[i]
+		r.resolve(b.Images)
+		if b.Type != blockRef {
+			continue
+		}
+		data, ok := r.blob(strings.TrimPrefix(b.Data, refPrefix))
+		if !ok {
+			*b = llm.Block{Type: llm.BlockText, Text: fmt.Sprintf("[%s %s is missing from the session file]", b.Name, b.MediaType)}
+			continue
+		}
+		b.Type, b.Name, b.Data = llm.BlockType(b.Name), "", data
+	}
+}
+
+func (r *fileReader) blob(sha string) (string, bool) {
+	if d, ok := r.blobs[sha]; ok {
+		return d, true
+	}
+	r.s.mu.Lock()
+	loc, ok := r.s.blobs[sha]
+	r.s.mu.Unlock()
+	if !ok {
+		return "", false
+	}
+	buf := make([]byte, loc.size)
+	if r.readAt(buf, loc.off) != nil {
+		return "", false
+	}
+	var e struct {
+		Type string `json:"type"`
+		SHA  string `json:"sha"`
+		Data string `json:"data"`
+	}
+	if json.Unmarshal(buf, &e) != nil || e.Type != "blob" || e.SHA != sha {
+		return "", false
+	}
+	if r.blobs == nil {
+		r.blobs = map[string]string{}
+	}
+	r.blobs[sha] = e.Data
+	return e.Data, true
 }
 
 // message is n's whole message.
