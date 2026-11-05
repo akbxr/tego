@@ -85,7 +85,10 @@ func (c *Conn) Serve(ctx context.Context, r io.Reader) error {
 	defer cancel()
 	defer c.close()
 	var wg sync.WaitGroup
-	defer wg.Wait()
+	defer func() {
+		cancel() // before the wait: a prompt runs until cancelled
+		wg.Wait()
+	}()
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 64*1024*1024)
 	for sc.Scan() {
