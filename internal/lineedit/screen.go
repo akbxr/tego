@@ -219,18 +219,18 @@ func (t *TUI) footerLines() (lines []string, curLine, curCol int, active bool) {
 			panel = panel[:limit]
 		}
 		for _, s := range panel {
-			lines = append(lines, truncateANSI(s, fit))
+			lines = append(lines, truncateANSI(footerSafe(s), fit))
 		}
 	}
 	if t.opts.Activity != nil {
 		if s := t.opts.Activity(w); s != "" {
-			lines = append(lines, truncateANSI(s, fit))
+			lines = append(lines, truncateANSI(footerSafe(s), fit))
 			active = true
 		}
 	}
 	if t.opts.Header != nil {
 		if s := t.opts.Header(w); s != "" {
-			lines = append(lines, truncateANSI(s, fit))
+			lines = append(lines, truncateANSI(footerSafe(s), fit))
 		}
 	}
 	var status []string
@@ -265,7 +265,7 @@ func (t *TUI) footerLines() (lines []string, curLine, curCol int, active bool) {
 		}
 	}
 	for _, s := range status {
-		lines = append(lines, truncateANSI(s, fit))
+		lines = append(lines, truncateANSI(footerSafe(s), fit))
 	}
 	t.lines = lines
 	return lines, curLine, curCol, active

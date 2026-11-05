@@ -719,3 +719,35 @@ func TestPickRenameSortAndAsk(t *testing.T) {
 		t.Fatalf("esc: %+v", a)
 	}
 }
+
+// A panel line with a tab or newline (a subagent's bash command) used to
+// draw more rows than the footer counted: each redraw left the panel's top
+// rows behind in the scrollback.
+func TestFooterControlCharsKeepOneRow(t *testing.T) {
+	panel := []string{"TODO 0/4", "└ bash " + strings.Repeat("x", 8) + "\tcol\tcol\tend of a long command", "two\nlines\r here"}
+	tt := newTestTUI(Options{Panel: func(int) []string { return panel }, Status: func(int) []string { return []string{"ok"} }}, 30, 20)
+	defer tt.Close()
+	for range 5 {
+		tt.mu.Lock()
+		tt.drawLocked()
+		tt.mu.Unlock()
+	}
+	got := tt.emu().all()
+	want := []string{"", "TODO 0/4", "└ bash xxxxxxxx col col end …", "two lines  here", ">", "ok"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("footer %q\nwant %q", got, want)
+	}
+}
+
+// An emoji made by U+FE0F takes two cells, as terminals draw it.
+func TestEmojiPresentationWidth(t *testing.T) {
+	if w := visibleWidth("⚠️ ok"); w != 5 {
+		t.Fatalf("width %d", w)
+	}
+	if got := truncateANSI("ab⚠️cd", 3); got != "ab…\x1b[0m" {
+		t.Fatalf("truncated %q", got)
+	}
+	if got := truncateANSI("a⚠️cdef", 4); got != "a⚠️…\x1b[0m" {
+		t.Fatalf("truncated %q", got)
+	}
+}

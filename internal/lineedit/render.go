@@ -55,7 +55,7 @@ func escEnd[T ~string | ~[]byte](s T, i int) (int, bool) {
 // (CSI such as SGR, OSC such as hyperlinks, and two-byte ESC sequences).
 func visibleWidth(s string) int {
 	if strings.IndexByte(s, 0x1b) < 0 {
-		return widthCond.StringWidth(s)
+		return textWidth(s)
 	}
 	w := 0
 	for i := 0; i < len(s); {
@@ -67,10 +67,50 @@ func visibleWidth(s string) int {
 		for j < len(s) && s[j] != 0x1b {
 			j++
 		}
-		w += widthCond.StringWidth(s[i:j])
+		w += textWidth(s[i:j])
 		i = j
 	}
 	return w
+}
+
+// vs16 asks for the emoji form of the character before it, which
+// terminals draw two cells wide ("⚠️"); runewidth counts that pair as one.
+const vs16 = '\uFE0F'
+
+// textWidth is s's width in cells, a narrow character turned emoji by
+// vs16 counting two.
+func textWidth(s string) int {
+	w := widthCond.StringWidth(s)
+	if !strings.ContainsRune(s, vs16) {
+		return w
+	}
+	prev := 0
+	for _, r := range s {
+		if r == vs16 && prev == 1 {
+			w++
+		}
+		prev = widthCond.RuneWidth(r)
+	}
+	return w
+}
+
+// footerSafe makes s one terminal row: a tab, newline or carriage return
+// would move the cursor where the width count doesn't, so the footer drew
+// more rows than it later cleared (the top rows were left behind in the
+// scrollback). They become spaces; other control characters go.
+func footerSafe(s string) string {
+	if !strings.ContainsFunc(s, func(r rune) bool { return (r < 0x20 && r != 0x1b) || r == 0x7f }) {
+		return s
+	}
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\t' || r == '\n' || r == '\r':
+			return ' '
+		case (r < 0x20 && r != 0x1b) || r == 0x7f:
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // truncateANSI shortens s to at most w display cells, keeping the escape
@@ -102,6 +142,9 @@ func truncateANSI(s string, w int) string {
 		}
 		r, size := utf8.DecodeRuneInString(s[i:])
 		rw := widthCond.RuneWidth(r)
+		if next, n := utf8.DecodeRuneInString(s[i+size:]); next == vs16 && rw == 1 {
+			rw, size = 2, size+n // keep the pair together
+		}
 		if cells+rw > w-1 {
 			break
 		}
