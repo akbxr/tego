@@ -118,6 +118,7 @@ func (s *acpServer) handle(ctx context.Context, method string, params json.RawMe
 			},
 			AuthMethods: []acp.AuthMethod{},
 			AgentInfo:   &acp.Implementation{Name: "tego", Title: "tego", Version: version},
+			Meta:        map[string]any{"steering": map[string]any{"supported": true}}, // steerMethod
 		}, nil
 	case "authenticate":
 		return struct{}{}, nil
@@ -180,7 +181,24 @@ func (s *acpServer) handle(ctx context.Context, method string, params json.RawMe
 		if sess == nil {
 			return nil, unknownSession(req.SessionID)
 		}
-		return sess.prompt(ctx, req.Prompt)
+		resp, err := sess.prompt(ctx, req.Prompt)
+		if err != nil {
+			return nil, err
+		}
+		return resp, nil
+	case steerMethod:
+		req, err := decodeParams[steerRequest](params)
+		if err != nil {
+			return nil, err
+		}
+		if len(req.Prompt) == 0 {
+			return nil, &acp.Error{Code: acp.CodeInvalidParams, Message: "prompt is empty"}
+		}
+		sess := s.session(req.SessionID)
+		if sess == nil {
+			return nil, unknownSession(req.SessionID)
+		}
+		return sess.steerExt(req), nil
 	case "session/set_mode":
 		req, err := decodeParams[acp.SetModeRequest](params)
 		if err != nil {
@@ -273,6 +291,8 @@ type acpSession struct {
 
 	mu        sync.Mutex
 	run       *acpRun       // the running prompt; nil when idle
+	steers    []acpSteer    // prompts sent during the run, for it (acp_steer.go)
+	waiting   []*acpRun     // prompts that run after it, in order: commands, and those sent after a cancel
 	kaDone    chan struct{} // closed when the keep-alive in flight ends; nil: none
 	queued    []string      // prompts extensions sent, run after the running prompt
 	mcpWaited bool
@@ -333,6 +353,7 @@ func (s *acpServer) open(cwd string, servers []acp.MCPServer, id string) (*acpSe
 		CacheReadRatio:    statsPrices(cfg).CacheReadRatio,
 	}
 	ag.Approve = sess.approve
+	ag.Steer = sess.takeSteering // prompts sent during a turn steer it
 	// Kept warm between prompts as in the terminal (keepAlive below).
 	ag.KeepAlive, ag.KeepAliveAuto = cfg.CacheKeepAlive()
 	ap := &app{cfg: cfg, store: s.store, cwd: cwd, ag: ag, env: env, skills: skills, agentDefs: agent.LoadAgents(cfg.Dir, cwd),
@@ -576,51 +597,110 @@ func (sess *acpSession) setConfig(id, value string) error {
 	return nil
 }
 
-// acpRun is a running prompt.
-type acpRun struct{ cancel context.CancelFunc }
+// acpRun is a prompt that runs, or waits to. done is closed, with resp and
+// err set, when it ended; the prompts that steered it get the same answer.
+type acpRun struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	ready  chan struct{} // closed when it becomes the session's running prompt
+	done   chan struct{}
+	resp   acp.PromptResponse
+	err    error
+}
 
+// cancelPrompt is session/cancel: the running prompt stops, and so do the
+// ones waiting for it, which were sent before the cancel.
 func (sess *acpSession) cancelPrompt() {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 	if sess.run != nil {
 		sess.run.cancel()
 	}
+	for _, w := range sess.waiting {
+		w.cancel()
+	}
 }
 
 // prompt is session/prompt: one turn, streamed as updates, and what came
-// for the session meanwhile (followUps).
-func (sess *acpSession) prompt(ctx context.Context, blocks []acp.ContentBlock) (any, error) {
-	sess.mu.Lock()
-	if sess.run != nil {
-		sess.mu.Unlock()
-		return nil, &acp.Error{Code: acp.CodeInvalidRequest, Message: "a prompt is already running in this session"}
-	}
+// for the session meanwhile (followUps). A prompt sent while another runs
+// steers that one (acp_steer.go), unless that one was cancelled or it is a
+// command: then it runs next.
+func (sess *acpSession) prompt(ctx context.Context, blocks []acp.ContentBlock) (resp acp.PromptResponse, err error) {
+	text, images := promptContent(blocks)
 	ctx, cancel := context.WithCancel(ctx)
-	run := &acpRun{cancel: cancel}
-	sess.run = run
-	keepAlive := sess.kaDone
+	defer cancel()
+	run := &acpRun{ctx: ctx, cancel: cancel, ready: make(chan struct{}), done: make(chan struct{})}
+	sess.mu.Lock()
+	switch cur := sess.run; {
+	case cur == nil:
+		sess.run = run
+		close(run.ready)
+	case cur.ctx.Err() == nil && !isSlashCommand(text):
+		sess.addSteerLocked(text, images)
+		sess.mu.Unlock()
+		sess.ag.SteerArrived() // a task_status or bash_output wait ends for it
+		<-cur.done
+		return cur.resp, cur.err
+	default:
+		sess.waiting = append(sess.waiting, run)
+	}
 	sess.mu.Unlock()
+	if !sess.awaitTurn(run) {
+		return acp.PromptResponse{StopReason: "cancelled"}, nil
+	}
 	defer func() {
 		sess.mu.Lock()
 		if sess.run == run {
-			sess.run = nil
+			sess.endRunLocked(run, resp, err)
 		}
 		sess.mu.Unlock()
-		cancel()
 	}()
+	if ctx.Err() != nil { // cancelled as it waited
+		return acp.PromptResponse{StopReason: "cancelled"}, nil
+	}
+	sess.mu.Lock()
+	keepAlive := sess.kaDone
+	sess.mu.Unlock()
 	if keepAlive != nil {
 		<-keepAlive // the agent is the turn's once the keep-alive in flight ended
 	}
 
-	text, images := promptContent(blocks)
-	resp, err := sess.runPrompt(ctx, text, images)
-	if err != nil {
-		return nil, err
+	if resp, err = sess.runPrompt(ctx, text, images); err != nil {
+		return resp, err
 	}
-	if resp, err = sess.followUps(ctx, resp); err != nil {
-		return nil, err
+	return sess.followUps(ctx, run, resp)
+}
+
+// awaitTurn waits until run is the running prompt; false when it was
+// cancelled before.
+func (sess *acpSession) awaitTurn(run *acpRun) bool {
+	select {
+	case <-run.ready:
+		return true
+	case <-run.ctx.Done():
 	}
-	return resp, nil
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if i := slices.Index(sess.waiting, run); i >= 0 {
+		sess.waiting = slices.Delete(sess.waiting, i, i+1)
+		return false
+	}
+	return true // it became the running one meanwhile
+}
+
+// endRunLocked ends the running prompt, answering the prompts that steered
+// it too, and starts the next waiting one.
+func (sess *acpSession) endRunLocked(run *acpRun, resp acp.PromptResponse, err error) {
+	run.resp, run.err = resp, err
+	// Steering it never took: it was cancelled or failed, as their
+	// answers say.
+	sess.steers = nil
+	close(run.done)
+	sess.run = nil
+	if len(sess.waiting) > 0 {
+		sess.run, sess.waiting = sess.waiting[0], sess.waiting[1:]
+		close(sess.run.ready)
+	}
 }
 
 // runPrompt runs what the editor sent: a command, or a prompt for the agent.
@@ -659,28 +739,38 @@ func (sess *acpSession) turn(ctx context.Context, text string, images []llm.Bloc
 }
 
 // followUps runs, once a prompt ended well, what would start a turn of its
-// own in the terminal: the reports of background tasks that ended after
-// its last request, and prompts extensions sent. The session is idle (and
+// own in the terminal: steering sent too late for the turn, the reports of
+// background tasks that ended after its last request, and prompts
+// extensions sent. The session is idle (and
 // what comes later waits for the next prompt) only when none is left.
-func (sess *acpSession) followUps(ctx context.Context, resp acp.PromptResponse) (acp.PromptResponse, error) {
+func (sess *acpSession) followUps(ctx context.Context, run *acpRun, resp acp.PromptResponse) (acp.PromptResponse, error) {
 	for resp.StopReason == "end_turn" {
 		sess.mu.Lock()
 		var reports, next string
+		var steer *acpSteer
 		switch {
+		case len(sess.steers) > 0: // sent as the turn ended: the next turn's, as in the terminal
+			steer, sess.steers = &sess.steers[0], sess.steers[1:]
+			if len(sess.steers) == 0 {
+				sess.ag.SteerTaken()
+			}
 		case sess.app.bg.Pending():
 			reports = sess.app.bg.Take()
 		case len(sess.queued) > 0:
 			next, sess.queued = sess.queued[0], sess.queued[1:]
 		default:
-			sess.run = nil
+			sess.endRunLocked(run, resp, nil)
 			sess.mu.Unlock()
 			return resp, nil
 		}
 		sess.mu.Unlock()
 		var err error
-		if reports != "" {
+		switch {
+		case steer != nil: // not shown: the editor showed it when it was sent
+			resp, err = sess.turn(ctx, steer.text, steer.images)
+		case reports != "":
 			resp, err = result(ctx, sess.ag.Run(ctx, backgroundPrompt(reports)))
-		} else {
+		default:
 			sess.notify(acp.Chunk{SessionUpdate: "user_message_chunk", Content: acp.Text(next)})
 			resp, err = sess.turn(ctx, next, nil)
 		}
