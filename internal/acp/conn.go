@@ -48,7 +48,8 @@ type message struct {
 }
 
 // Reply is a handler result with work to do once it has been sent, such as
-// notifications about the session the reply creates.
+// notifications about the session the reply creates. Then runs after an
+// error answer too.
 type Reply struct {
 	Result any
 	Then   func()
@@ -159,7 +160,7 @@ func (c *Conn) serve(ctx context.Context, m *message) {
 		}
 	}
 	c.send(out)
-	if then != nil && out.Error == nil {
+	if then != nil {
 		then()
 	}
 }

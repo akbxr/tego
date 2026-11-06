@@ -79,6 +79,28 @@ type editor struct {
 	commands []string // terminal commands run
 	asked    []acp.PermissionRequest
 	answer   string // permission option to pick
+	wire     wireLog
+}
+
+// wireLog keeps what tego wrote to the editor, in order.
+type wireLog struct {
+	r    io.Reader
+	mu   sync.Mutex
+	data []byte
+}
+
+func (w *wireLog) Read(p []byte) (int, error) {
+	n, err := w.r.Read(p)
+	w.mu.Lock()
+	w.data = append(w.data, p[:n]...)
+	w.mu.Unlock()
+	return n, err
+}
+
+func (w *wireLog) lines() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return strings.Split(string(w.data), "\n")
 }
 
 func (e *editor) handle(_ context.Context, method string, params json.RawMessage, _ bool) (any, error) {
@@ -168,7 +190,8 @@ func startACP(t *testing.T, dir string, model llm.Provider) *editor {
 		fromAgent.Close()
 		close(done)
 	}()
-	go func() { _ = ed.conn.Serve(context.Background(), toEditor) }()
+	ed.wire.r = toEditor
+	go func() { _ = ed.conn.Serve(context.Background(), &ed.wire) }()
 	t.Cleanup(func() {
 		fromEditor.Close()
 		<-done

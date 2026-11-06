@@ -307,8 +307,22 @@ func TestACPSteerCommandWaits(t *testing.T) {
 	})
 	close(release)
 	r0, r1 := awaitAnswer(t, first, "prompt"), awaitAnswer(t, cmd, "command")
-	if r0.resp.StopReason != "end_turn" || r1.resp.StopReason != "end_turn" || r1.at.Before(r0.at) {
+	if r0.resp.StopReason != "end_turn" || r1.resp.StopReason != "end_turn" {
 		t.Fatalf("answers %+v %+v", r0, r1)
+	}
+	// On the wire, the prompt's answer comes before anything the command
+	// streams: the editor would take that for the prompt's turn.
+	answered, streamed := -1, -1
+	for i, l := range ed.wire.lines() {
+		if answered < 0 && strings.Contains(l, `"stopReason":"end_turn"`) {
+			answered = i
+		}
+		if streamed < 0 && strings.Contains(l, "agent_message_chunk") && strings.Contains(l, sid) && !strings.Contains(l, "done") {
+			streamed = i
+		}
+	}
+	if answered < 0 || streamed < answered {
+		t.Fatalf("the command streamed (line %d) before the prompt's answer (line %d)", streamed, answered)
 	}
 	if out := ed.text("agent_message_chunk"); !strings.Contains(out, sid) {
 		t.Fatalf("/session did not run: %q", out)

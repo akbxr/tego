@@ -181,11 +181,8 @@ func (s *acpServer) handle(ctx context.Context, method string, params json.RawMe
 		if sess == nil {
 			return nil, unknownSession(req.SessionID)
 		}
-		resp, err := sess.prompt(ctx, req.Prompt)
-		if err != nil {
-			return nil, err
-		}
-		return resp, nil
+		resp, sent, err := sess.promptReply(ctx, req.Prompt)
+		return acp.Reply{Result: resp, Then: sent}, err
 	case steerMethod:
 		req, err := decodeParams[steerRequest](params)
 		if err != nil {
@@ -604,6 +601,9 @@ type acpRun struct {
 	cancel context.CancelFunc
 	ready  chan struct{} // closed when it becomes the session's running prompt
 	done   chan struct{}
+	sent   chan struct{}   // closed once its answer was sent to the editor
+	after  <-chan struct{} // the previous run's sent: this one starts after it
+	once   sync.Once
 	resp   acp.PromptResponse
 	err    error
 }
@@ -625,11 +625,21 @@ func (sess *acpSession) cancelPrompt() {
 // for the session meanwhile (followUps). A prompt sent while another runs
 // steers that one (acp_steer.go), unless that one was cancelled or it is a
 // command: then it runs next.
-func (sess *acpSession) prompt(ctx context.Context, blocks []acp.ContentBlock) (resp acp.PromptResponse, err error) {
+func (sess *acpSession) prompt(ctx context.Context, blocks []acp.ContentBlock) (acp.PromptResponse, error) {
+	resp, sent, err := sess.promptReply(ctx, blocks)
+	sent()
+	return resp, err
+}
+
+// promptReply is prompt for a request the editor sent: call sent once its
+// answer went out, so the prompt that runs next streams nothing before it
+// (the editor would take it for this turn's).
+func (sess *acpSession) promptReply(ctx context.Context, blocks []acp.ContentBlock) (resp acp.PromptResponse, sent func(), err error) {
 	text, images := promptContent(blocks)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	run := &acpRun{ctx: ctx, cancel: cancel, ready: make(chan struct{}), done: make(chan struct{})}
+	run := &acpRun{ctx: ctx, cancel: cancel, ready: make(chan struct{}), done: make(chan struct{}), sent: make(chan struct{})}
+	sent = func() { run.once.Do(func() { close(run.sent) }) }
 	sess.mu.Lock()
 	switch cur := sess.run; {
 	case cur == nil:
@@ -640,13 +650,13 @@ func (sess *acpSession) prompt(ctx context.Context, blocks []acp.ContentBlock) (
 		sess.mu.Unlock()
 		sess.ag.SteerArrived() // a task_status or bash_output wait ends for it
 		<-cur.done
-		return cur.resp, cur.err
+		return cur.resp, sent, cur.err
 	default:
 		sess.waiting = append(sess.waiting, run)
 	}
 	sess.mu.Unlock()
 	if !sess.awaitTurn(run) {
-		return acp.PromptResponse{StopReason: "cancelled"}, nil
+		return acp.PromptResponse{StopReason: "cancelled"}, sent, nil
 	}
 	defer func() {
 		sess.mu.Lock()
@@ -655,8 +665,14 @@ func (sess *acpSession) prompt(ctx context.Context, blocks []acp.ContentBlock) (
 		}
 		sess.mu.Unlock()
 	}()
+	if run.after != nil {
+		select {
+		case <-run.after:
+		case <-ctx.Done():
+		}
+	}
 	if ctx.Err() != nil { // cancelled as it waited
-		return acp.PromptResponse{StopReason: "cancelled"}, nil
+		return acp.PromptResponse{StopReason: "cancelled"}, sent, nil
 	}
 	sess.mu.Lock()
 	keepAlive := sess.kaDone
@@ -666,9 +682,10 @@ func (sess *acpSession) prompt(ctx context.Context, blocks []acp.ContentBlock) (
 	}
 
 	if resp, err = sess.runPrompt(ctx, text, images); err != nil {
-		return resp, err
+		return resp, sent, err
 	}
-	return sess.followUps(ctx, run, resp)
+	resp, err = sess.followUps(ctx, run, resp)
+	return resp, sent, err
 }
 
 // awaitTurn waits until run is the running prompt; false when it was
@@ -699,6 +716,7 @@ func (sess *acpSession) endRunLocked(run *acpRun, resp acp.PromptResponse, err e
 	sess.run = nil
 	if len(sess.waiting) > 0 {
 		sess.run, sess.waiting = sess.waiting[0], sess.waiting[1:]
+		sess.run.after = run.sent
 		close(sess.run.ready)
 	}
 }
