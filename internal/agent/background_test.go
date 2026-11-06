@@ -294,3 +294,78 @@ func (providerFunc) Name() string { return "fake" }
 func (f providerFunc) Stream(_ context.Context, req *llm.Request, _ func(llm.Event)) (*llm.Message, error) {
 	return f(req), nil
 }
+
+// task_status message reaches a running task before its next request;
+// a task that ended doesn't take it.
+func TestBackgroundMessage(t *testing.T) {
+	gate := make(chan struct{})
+	var mu sync.Mutex
+	var seen []string
+	prov := providerFunc(func(req *llm.Request) *llm.Message {
+		mu.Lock()
+		n := len(seen)
+		var all strings.Builder
+		for _, m := range req.Messages {
+			for _, b := range m.Blocks {
+				all.WriteString(b.Text + "\n")
+			}
+		}
+		seen = append(seen, all.String())
+		mu.Unlock()
+		if n == 0 {
+			<-gate
+			return &llm.Message{Role: llm.RoleAssistant, StopReason: "end_turn", Blocks: []llm.Block{{Type: llm.BlockText, Text: "first answer"}}}
+		}
+		return &llm.Message{Role: llm.RoleAssistant, StopReason: "end_turn", Blocks: []llm.Block{{Type: llm.BlockText, Text: "narrowed"}}}
+	})
+	bg := &Background{}
+	done := make(chan string, 4)
+	bg.OnDone = func(id string) { done <- id }
+	parent := &Agent{Provider: prov, UI: nopUI{}}
+	task := &TaskTool{Parent: parent, Env: &tools.Env{Cwd: t.TempDir()}, Background: bg}
+	status := &TaskStatusTool{BG: bg}
+	t.Cleanup(func() { bg.Close(5 * time.Second) })
+	in, _ := json.Marshal(map[string]any{"tasks": []map[string]string{{"name": "W", "prompt": "work"}}, "background": true})
+	if _, err := task.Run(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		mu.Lock()
+		n := len(seen)
+		mu.Unlock()
+		if n == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no first request")
+		}
+	}
+	out, err := status.Run(context.Background(), json.RawMessage(`{"ids":["t1"],"message":"only look at the parser"}`))
+	if err != nil || !strings.Contains(out, "Sent to t1") {
+		t.Fatalf("%v %s", err, out)
+	}
+	close(gate)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("never ended")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 2 || !strings.Contains(seen[1], messageNote+"only look at the parser") {
+		t.Fatalf("requests: %q", seen)
+	}
+	if rep := bg.Take(); !strings.Contains(rep, "narrowed") {
+		t.Fatalf("report: %s", rep)
+	}
+	out, err = status.Run(context.Background(), json.RawMessage(`{"ids":["t1"],"message":"more"}`))
+	if err != nil || !strings.Contains(out, "Not sent to t1: ended") {
+		t.Fatalf("%v %s", err, out)
+	}
+	if _, err := status.Run(context.Background(), json.RawMessage(`{"ids":["t9"],"message":"x"}`)); err == nil {
+		t.Fatal("unknown id took a message")
+	}
+	if _, err := status.Run(context.Background(), json.RawMessage(`{"message":"x"}`)); err == nil {
+		t.Fatal("a message without ids")
+	}
+}

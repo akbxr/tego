@@ -107,7 +107,7 @@ func (t *TaskTool) backgroundProperty() string {
 		return ""
 	}
 	desc := "true: return at once and run the tasks in the background while you and the user go on; " +
-		"each report comes in a later message when its task ends (task_status checks, waits for or cancels them). " +
+		"each report comes in a later message when its task ends (task_status checks, waits for, messages or cancels them). " +
 		"For long tasks whose results your next step doesn't need. Don't do their work yourself meanwhile."
 	if t.Isolate != nil {
 		desc += " Background tasks that edit files should use isolation: worktree: you and the user keep editing this folder."
@@ -424,7 +424,10 @@ func (t *TaskTool) runOne(ctx context.Context, task taskSpec, def *AgentDef, mod
 	}
 	sub.UI = &subUI{name: name, parent: p, st: st, sub: sub, live: quiet}
 	sub.noteInterrupted() // calls cut off when it was stopped, if resumed
-	p.setSub(st, func(s *SubagentStatus) { s.State, s.Started = SubRunning, time.Now() })
+	inbox := &subInbox{}
+	inbox.attach(sub)
+	defer inbox.detach()
+	p.setSub(st, func(s *SubagentStatus) { s.State, s.Started, s.inbox = SubRunning, time.Now(), inbox })
 	if !quiet {
 		verb := "started"
 		if task.resumed != nil {
@@ -553,6 +556,9 @@ type SubagentStatus struct {
 	Usage          llm.Usage
 	Log            []string // tool-call summaries and notices, oldest first (capped)
 	Text           string   // text of its latest answer (capped)
+
+	inbox *subInbox // messages sent to it while it runs
+	key   string    // unique in the process, for a UI's subagent sessions
 }
 
 const (

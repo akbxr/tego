@@ -324,6 +324,21 @@ const lastResponseNote = "This is your last response. Don't call tools; calls in
 // lastTurnNote: the last request at the turn limit.
 const lastTurnNote = "You have reached your limit of requests. " + lastResponseNote
 
+// wrapUpNote warns a subagent near its limit, so it can finish a step and
+// report rather than be cut off mid-change.
+const wrapUpNote = "You have made %d of your %d requests. Start wrapping up: finish or undo the change in progress, " +
+	"leave nothing half-done, and end with your report; say what is left instead of starting something new."
+
+// wrapUpTurn is the request a subagent is told to wrap up before: a tenth
+// of its limit before it (at least 5); 0 without a limit, or one too low
+// for a warning to help.
+func wrapUpTurn(limit int) int {
+	if limit < 20 {
+		return 0
+	}
+	return limit - max(5, limit/10)
+}
+
 func (a *Agent) loop(ctx context.Context) error {
 	a.stuck = stuckState{} // streaks count within one prompt (or /retry)
 	_, rev := a.TodoState()
@@ -346,6 +361,9 @@ func (a *Agent) loop(ctx context.Context) error {
 		// mid-work with whatever it said last: at its turn limit, or when
 		// the watchdog found it stuck twice in a row.
 		var final error
+		if a.Subagent && turn == wrapUpTurn(a.MaxTurns) {
+			a.remind(fmt.Sprintf(wrapUpNote, turn-1, a.MaxTurns))
+		}
 		if a.Subagent && a.MaxTurns > 0 && turn == a.MaxTurns {
 			final = fmt.Errorf("stopped at its limit of %d turns; its report says what is left", a.MaxTurns)
 			a.remind(lastTurnNote)

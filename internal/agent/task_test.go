@@ -165,3 +165,28 @@ func TestTodoPhases(t *testing.T) {
 		t.Fatalf("RenderTodos:\n%s\nwant:\n%s", got, want)
 	}
 }
+
+// A subagent near its limit is told to wrap up, once, a tenth of the
+// limit before it (at least 5); low limits and no limit get no warning.
+func TestSubagentWrapUp(t *testing.T) {
+	for limit, want := range map[int]int{0: 0, 10: 0, 19: 0, 20: 15, 60: 54, 150: 135} {
+		if got := wrapUpTurn(limit); got != want {
+			t.Fatalf("wrapUpTurn(%d) = %d, want %d", limit, got, want)
+		}
+	}
+	prov := &busyProvider{}
+	parent := &Agent{Provider: prov, UI: nopUI{}}
+	tool := &TaskTool{Parent: parent, Env: &tools.Env{Cwd: t.TempDir()}, MaxTurns: 20}
+	in, _ := json.Marshal(map[string]any{"tasks": []map[string]string{{"name": "Worker", "prompt": "work"}}})
+	if _, err := tool.Run(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	for i, seen := range prov.lastSeen {
+		if got := strings.Contains(seen, "Start wrapping up"); got != (i == 14) {
+			t.Fatalf("request %d: wrap-up note %v: %q", i+1, got, seen)
+		}
+	}
+	if !strings.Contains(prov.lastSeen[14], "You have made 14 of your 20 requests") {
+		t.Fatalf("note: %q", prov.lastSeen[14])
+	}
+}

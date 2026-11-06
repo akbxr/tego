@@ -82,7 +82,7 @@ func (b *Background) start(t *TaskTool, specs []taskSpec, defs []*AgentDef, mode
 	}
 	b.pruneLocked()
 	return fmt.Sprintf("Started in the background: %s. You and the user can go on; each report comes in a message when its task ends "+
-		"(task_status checks, waits for or cancels them). Don't do their work yourself meanwhile.", strings.Join(started, ", "))
+		"(task_status checks, waits for, messages or cancels them). Don't do their work yourself meanwhile.", strings.Join(started, ", "))
 }
 
 func (b *Background) finish(bt *bgTask, status, report string) {
@@ -261,6 +261,28 @@ func (b *Background) Cancel(ids []string) (stopped int, unknown []string) {
 	return stopped, unknown
 }
 
+// Send gives text to the running tasks in ids.
+func (b *Background) Send(ids []string, text string) (sent, ended, unknown []string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, id := range ids {
+		bt := b.findLocked(id)
+		if bt == nil {
+			unknown = append(unknown, id)
+			continue
+		}
+		bt.parent.subMu.Lock()
+		in := bt.st.inbox
+		bt.parent.subMu.Unlock()
+		if !bt.ended && in != nil && in.send(text) {
+			sent = append(sent, id)
+		} else {
+			ended = append(ended, id)
+		}
+	}
+	return sent, ended, unknown
+}
+
 // Stop stops the task id for the user: no report, no OnDone. False if it
 // isn't running (it ended meanwhile, or there is no such task).
 func (b *Background) Stop(id string) bool {
@@ -343,17 +365,20 @@ func (t *TaskStatusTool) Def() llm.Tool {
 		Name: "task_status",
 		Description: "Check on the background tasks (task with background: true): their state, and the reports of those that ended and you haven't seen. " +
 			"Without ids, all of this session's. wait: seconds to wait for them (without ids, all running ones) to end, up to 600; use it only when you can't go on without them. " +
-			"cancel: true stops the tasks in ids.",
+			"cancel: true stops the tasks in ids. " +
+			"message: sends text to the running tasks in ids, which read it before their next request: to correct or narrow a task without stopping it and losing its work.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"ids":{"type":"array","items":{"type":"string"},"description":"task ids, like t1"},` +
-			`"wait":{"type":"number","description":"seconds to wait for them to end"},"cancel":{"type":"boolean","description":"stop the tasks in ids"}}}`),
+			`"wait":{"type":"number","description":"seconds to wait for them to end"},"cancel":{"type":"boolean","description":"stop the tasks in ids"},` +
+			`"message":{"type":"string","description":"text for the running tasks in ids"}}}`),
 	}
 }
 
 func (t *TaskStatusTool) Run(ctx context.Context, input json.RawMessage) (string, error) {
 	var in struct {
-		IDs    []string `json:"ids"`
-		Wait   float64  `json:"wait"`
-		Cancel bool     `json:"cancel"`
+		IDs     []string `json:"ids"`
+		Wait    float64  `json:"wait"`
+		Cancel  bool     `json:"cancel"`
+		Message string   `json:"message"`
 	}
 	if len(input) > 0 {
 		if err := json.Unmarshal(input, &in); err != nil {
@@ -363,6 +388,21 @@ func (t *TaskStatusTool) Run(ctx context.Context, input json.RawMessage) (string
 	b := t.BG
 	var head []string
 	woken := false
+	if msg := strings.TrimSpace(in.Message); msg != "" {
+		if len(in.IDs) == 0 || in.Cancel {
+			return "", errors.New("message needs ids, and goes without cancel")
+		}
+		sent, ended, unknown := b.Send(in.IDs, msg)
+		if len(unknown) > 0 {
+			return "", fmt.Errorf("no background task %s", strings.Join(unknown, ", "))
+		}
+		if len(sent) > 0 {
+			head = append(head, "Sent to "+strings.Join(sent, ", ")+": they read it before their next request.")
+		}
+		if len(ended) > 0 {
+			head = append(head, "Not sent to "+strings.Join(ended, ", ")+": ended (resume it with task to go on).")
+		}
+	}
 	if in.Cancel {
 		if len(in.IDs) == 0 {
 			return "", errors.New("cancel needs ids")
