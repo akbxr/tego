@@ -122,9 +122,9 @@ func TestTaskInWorktree(t *testing.T) {
 	var isolated []string
 	finished := 0
 	task := &TaskTool{Parent: parent, System: "BASE", Env: &tools.Env{Cwd: main},
-		Isolate: func(name string) (string, string, func() string, error) {
+		Isolate: func(name string) (string, string, func(bool) string, error) {
 			isolated = append(isolated, name)
-			return wt, "WORKTREE NOTE", func() string { finished++; return "kept on branch tego/x" }, nil
+			return wt, "WORKTREE NOTE", func(bool) string { finished++; return "kept on branch tego/x" }, nil
 		}}
 	if !strings.Contains(string(task.Def().Schema), `"isolation":{"type":"string","enum":["worktree"]`) {
 		t.Fatal("schema lacks isolation")
@@ -162,7 +162,7 @@ func TestTaskInWorktree(t *testing.T) {
 	}
 
 	// No worktree can be made: the task fails rather than share the folder.
-	task.Isolate = func(string) (string, string, func() string, error) { return "", "", nil, os.ErrPermission }
+	task.Isolate = func(string) (string, string, func(bool) string, error) { return "", "", nil, os.ErrPermission }
 	out, _ = task.Run(context.Background(), in)
 	if !strings.Contains(out, "## F (failed: no worktree for it: permission denied)") {
 		t.Errorf("report %s", out)

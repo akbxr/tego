@@ -49,7 +49,7 @@ type TaskTool struct {
 	// own: the folder to work in, a note on it for the subagent, and finish,
 	// which removes the worktree if nothing is in it and says what became of
 	// it. nil: tasks can't ask for one.
-	Isolate func(task string) (dir, note string, finish func() string, err error)
+	Isolate func(task string) (dir, note string, finish func(ok bool) string, err error)
 	// Background runs the tasks of a call with "background": true; nil:
 	// calls can't ask for it.
 	Background *Background
@@ -402,7 +402,7 @@ func (t *TaskTool) runOne(ctx context.Context, task taskSpec, def *AgentDef, mod
 		return status, ""
 	}
 	var sub *Agent
-	var finish func() string
+	var finish func(ok bool) string
 	asked := task.Prompt // all it was asked, for its watchdog
 	prompt := task.Prompt
 	if e := task.resumed; e != nil {
@@ -472,7 +472,7 @@ func (t *TaskTool) runOne(ctx context.Context, task taskSpec, def *AgentDef, mod
 		status += "; on the session's model: " + n
 	}
 	if finish != nil {
-		report += "\n\n[worktree: " + finish() + "]"
+		report += "\n\n[worktree: " + finish(err == nil) + "]"
 		return status, report
 	}
 	agentName := ""
@@ -493,7 +493,7 @@ func (t *TaskTool) runOne(ctx context.Context, task taskSpec, def *AgentDef, mod
 // newSub makes a new task's subagent, in its worktree if it has one
 // (finish then commits or removes it). nil: it can't run (status says why).
 func (t *TaskTool) newSub(task taskSpec, def *AgentDef, model taskModel,
-	failed func(why, status string) (string, string)) (sub *Agent, finish func() string, status string) {
+	failed func(why, status string) (string, string)) (sub *Agent, finish func(ok bool) string, status string) {
 	p, name := t.Parent, task.Name
 	sub = &Agent{
 		Provider: p.Provider, ProviderName: p.ProviderName, Model: p.Model, Thinking: p.Thinking, Fast: p.Fast,

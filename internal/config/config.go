@@ -33,6 +33,7 @@ type Config struct {
 	Subagents     int                            `json:"subagents,omitempty"`          // subagents running at once (default 8); more tasks queue
 	SubagentTurns *int                           `json:"subagent_max_turns,omitempty"` // requests a subagent may make (default 150; 0: no limit); on the last it writes its report
 	SubagentCheck *int                           `json:"subagent_watchdog,omitempty"`  // requests between checks that a subagent is getting somewhere (default 40; 0: none)
+	SubagentMerge bool                           `json:"subagent_merge,omitempty"`     // merge the commits of a worktree subagent that succeeded into the session's branch
 	MCPTools      string                         `json:"mcp_tools,omitempty"`          // "auto" (default: deferred behind tool_search above 10 tools), "lazy", "eager"
 	MCPIdle       string                         `json:"mcp_idle,omitempty"`           // local MCP servers stop after this long unused and start at their next call (default "10m"; "off": run all session)
 	Accounts      string                         `json:"accounts,omitempty"`           // with several logins per provider: "fallback" (default: switch on limits), "round-robin" or "expiring" (the account whose weekly quota runs out unused soonest)

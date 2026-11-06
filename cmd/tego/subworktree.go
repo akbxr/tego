@@ -17,7 +17,8 @@ import (
 // Subagents given "isolation": "worktree" work in a worktree of their own
 // (under ~/.tego/worktrees, like tego -w), so several can edit the same
 // files at once. One with nothing in it at the end is removed; one with
-// work in it stays, and the report names its branch.
+// work in it stays, and the report names its branch. With subagent_merge,
+// the commits of one that succeeded are merged into the session's branch.
 
 // worktreeMu serialises git's worktree bookkeeping across subagents.
 var worktreeMu sync.Mutex
@@ -31,12 +32,12 @@ func inGitRepo(dir string) bool {
 }
 
 // isolator is the task tool's Isolate for cwd, nil outside a git repo.
-func isolator(home, cwd string) func(string) (string, string, func() string, error) {
+func isolator(home, cwd string, merge bool) func(string) (string, string, func(bool) string, error) {
 	if !inGitRepo(cwd) {
 		return nil
 	}
-	return func(task string) (string, string, func() string, error) {
-		return isolate(home, cwd, task)
+	return func(task string) (string, string, func(bool) string, error) {
+		return isolate(home, cwd, task, merge)
 	}
 }
 
@@ -57,7 +58,7 @@ func subWorktreeName(task string) string {
 	return "sub-" + base + "-" + hex.EncodeToString(b)
 }
 
-func isolate(home, cwd, task string) (string, string, func() string, error) {
+func isolate(home, cwd, task string, merge bool) (string, string, func(bool) string, error) {
 	worktreeMu.Lock()
 	defer worktreeMu.Unlock()
 	wt, _, err := worktree.Open(home, cwd, subWorktreeName(task))
@@ -80,7 +81,10 @@ func isolate(home, cwd, task string) (string, string, func() string, error) {
 		"Other subagents may change the same files in their own worktrees. "+
 		"When you are done, commit your changes on this branch (git add -A && git commit -m \"...\") and say what you changed.",
 		dir, wt.Branch, cwd, dir, cwd)
-	finish := func() string {
+	if merge {
+		note += " If you end without an error, your commits are merged into the session's branch; changes you didn't commit are not."
+	}
+	finish := func(ok bool) string {
 		worktreeMu.Lock()
 		defer worktreeMu.Unlock()
 		st, err := wt.Status()
@@ -93,7 +97,18 @@ func isolate(home, cwd, task string) (string, string, func() string, error) {
 			}
 			return "no changes; removed"
 		}
-		s := fmt.Sprintf("%s in %s, branch %s. ", st.Describe(), wt.Path, wt.Branch)
+		s := ""
+		if merge && ok && st.Changed == 0 && st.Unmerged > 0 {
+			done, err := mergeBranch(cwd, wt.Branch)
+			if err == nil {
+				if err := wt.Remove(true); err != nil {
+					return done + fmt.Sprintf("; removing %s failed: %v", wt.Path, err)
+				}
+				return done + "; removed"
+			}
+			s = fmt.Sprintf("not merged (%v). ", err)
+		}
+		s += fmt.Sprintf("%s in %s, branch %s. ", st.Describe(), wt.Path, wt.Branch)
 		if st.Unmerged > 0 {
 			s += "Merge it with: git merge " + wt.Branch
 		}
@@ -106,4 +121,38 @@ func isolate(home, cwd, task string) (string, string, func() string, error) {
 		return s + ". Remove it afterwards with: tego worktree rm " + wt.Name
 	}
 	return dir, note, finish, nil
+}
+
+// mergeBranch merges branch into the branch checked out in cwd, or leaves
+// cwd as it was.
+func mergeBranch(cwd, branch string) (string, error) {
+	git := func(args ...string) (string, error) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = cwd
+		out, err := cmd.CombinedOutput()
+		return strings.TrimSpace(string(out)), err
+	}
+	if _, err := git("rev-parse", "-q", "--verify", "MERGE_HEAD"); err == nil {
+		return "", fmt.Errorf("a merge is in progress in %s", cwd)
+	}
+	into, err := git("symbolic-ref", "--short", "-q", "HEAD")
+	if err != nil {
+		into = "the detached HEAD"
+	}
+	n, _ := git("rev-list", "--count", "HEAD.."+branch)
+	if out, err := git("merge", "--no-edit", branch); err != nil {
+		if _, conflict := git("rev-parse", "-q", "--verify", "MERGE_HEAD"); conflict == nil {
+			git("merge", "--abort")
+		}
+		why, _, _ := strings.Cut(out, "\n")
+		if why == "" {
+			why = err.Error()
+		}
+		return "", fmt.Errorf("git merge: %s", why)
+	}
+	commits := "commits"
+	if n == "1" {
+		commits = "commit"
+	}
+	return fmt.Sprintf("merged into %s (%s %s)", into, n, commits), nil
 }
