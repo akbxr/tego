@@ -83,6 +83,7 @@ type Agent struct {
 	// declined is set when the user declines a call without saying what to
 	// do instead: the turn stops, its subagents included (they share it).
 	declined *atomic.Bool
+	dir      string // a subagent's worktree folder; "" for the session's
 	// Steer, when set, returns the messages the user sent while the agent
 	// was working (each as the blocks of one user message). It is polled
 	// after each tool round and when the model would stop, so a message

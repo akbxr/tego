@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -287,11 +288,13 @@ type acpSession struct {
 	announce1 sync.Once
 
 	mu        sync.Mutex
-	run       *acpRun       // the running prompt; nil when idle
-	steers    []acpSteer    // prompts sent during the run, for it (acp_steer.go)
-	waiting   []*acpRun     // prompts that run after it, in order: commands, and those sent after a cancel
-	kaDone    chan struct{} // closed when the keep-alive in flight ends; nil: none
-	queued    []string      // prompts extensions sent, run after the running prompt
+	subs      map[string]string // running subagents' sessions, by agent.SubagentSessions key
+	subCalls  map[string]string // the session of each running subagent's tool call
+	run       *acpRun           // the running prompt; nil when idle
+	steers    []acpSteer        // prompts sent during the run, for it (acp_steer.go)
+	waiting   []*acpRun         // prompts that run after it, in order: commands, and those sent after a cancel
+	kaDone    chan struct{}     // closed when the keep-alive in flight ends; nil: none
+	queued    []string          // prompts extensions sent, run after the running prompt
 	mcpWaited bool
 	titling   bool
 	title     string // the session's (its Session.Title is written from the titling goroutine)
@@ -311,7 +314,7 @@ func (s *acpServer) open(cwd string, servers []acp.MCPServer, id string) (*acpSe
 	if err != nil && s.provider == nil {
 		return nil, &acp.Error{Code: acp.CodeAuthRequired, Message: err.Error()}
 	}
-	sess := &acpSession{srv: s, cwd: cwd, before: map[string]*string{}, terms: map[string]string{},
+	sess := &acpSession{srv: s, cwd: cwd, before: map[string]*string{}, terms: map[string]string{}, subs: map[string]string{}, subCalls: map[string]string{},
 		commands: agent.LoadCommands(cfg.Dir, cwd)}
 	sess.life, sess.stop = context.WithCancel(context.Background())
 	sess.announced = make(chan struct{})
@@ -475,7 +478,15 @@ func (sess *acpSession) close() {
 }
 
 func (sess *acpSession) notify(update any) {
-	_ = sess.srv.conn.Notify("session/update", acp.SessionNotification{SessionID: sess.id, Update: update})
+	id := sess.id
+	if c, ok := update.(acp.ToolCall); ok {
+		id = sess.callSession(c.ToolCallID) // a subagent's call goes to its session
+	}
+	sess.notifyTo(id, update)
+}
+
+func (sess *acpSession) notifyTo(id string, update any) {
+	_ = sess.srv.conn.Notify("session/update", acp.SessionNotification{SessionID: id, Update: update})
 }
 
 // announce tells the editor what the session offers beyond the prompt.
@@ -975,6 +986,95 @@ func (sess *acpSession) OnTurnEnd(*llm.Message)                             {}
 // lines of text.
 func (sess *acpSession) LiveSubagents() bool { return true }
 
+// Subagent sessions (agent.SubagentSessions), for an editor that shows
+// them (clientCapabilities.subagents): each subagent run is announced on
+// the session as a session of its own, which gets its task, its answer,
+// its thinking and its tool calls. Without that capability nothing is sent
+// and its calls show in the session, labelled with its name.
+
+func (sess *acpSession) subagentSessions() bool { return sess.srv.caps.Subagents != nil }
+
+// callSession is the session a tool call shows in.
+func (sess *acpSession) callSession(callID string) string {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if child, ok := sess.subCalls[callID]; ok {
+		return child
+	}
+	return sess.id
+}
+
+func (sess *acpSession) child(key string) string {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return sess.subs[key]
+}
+
+func (sess *acpSession) SubagentStarted(key string, info agent.SubagentInfo) {
+	if !sess.subagentSessions() {
+		return
+	}
+	child := sess.id + "/" + key
+	sess.mu.Lock()
+	sess.subs[key] = child
+	sess.mu.Unlock()
+	desc := info.Model
+	if info.Agent != "" && info.Agent != info.Name {
+		desc = info.Agent + " · " + desc
+	}
+	sess.notify(acp.SubagentUpdate{SessionUpdate: "subagent_update", SessionID: child, Title: info.Name,
+		Description: desc, State: acp.SubagentState{State: "running"}, Cwd: info.Cwd})
+}
+
+func (sess *acpSession) SubagentPrompt(key, text string) {
+	if child := sess.child(key); child != "" {
+		sess.notifyTo(child, acp.Chunk{SessionUpdate: "user_message_chunk", Content: acp.Text(text)})
+	}
+}
+
+func (sess *acpSession) SubagentCall(key, callID string) {
+	if child := sess.child(key); child != "" {
+		sess.mu.Lock()
+		sess.subCalls[callID] = child
+		sess.mu.Unlock()
+	}
+}
+
+func (sess *acpSession) SubagentText(key, delta string) {
+	if child := sess.child(key); child != "" {
+		sess.notifyTo(child, acp.Chunk{SessionUpdate: "agent_message_chunk", Content: acp.Text(delta)})
+	}
+}
+
+func (sess *acpSession) SubagentThinking(key, delta string) {
+	if child := sess.child(key); child != "" {
+		sess.notifyTo(child, acp.Chunk{SessionUpdate: "agent_thought_chunk", Content: acp.Text(delta)})
+	}
+}
+
+func (sess *acpSession) SubagentEnded(key string, err error) {
+	sess.mu.Lock()
+	child := sess.subs[key]
+	delete(sess.subs, key)
+	for id, c := range sess.subCalls {
+		if c == child {
+			delete(sess.subCalls, id)
+		}
+	}
+	sess.mu.Unlock()
+	if child == "" {
+		return
+	}
+	st := acp.SubagentState{State: "idle", StopReason: "end_turn"}
+	switch {
+	case errors.Is(err, context.Canceled):
+		st.StopReason = "cancelled"
+	case err != nil:
+		st.StopReason, st.Error = "error", &acp.Error{Code: -32603, Message: err.Error()}
+	}
+	sess.notify(acp.SubagentUpdate{SessionUpdate: "subagent_update", SessionID: child, State: st})
+}
+
 // toolKind is the ACP kind of a tool, which picks its icon.
 func toolKind(name string) string {
 	switch name {
@@ -1015,7 +1115,7 @@ func (sess *acpSession) abs(p string) string {
 
 func (sess *acpSession) OnCallStart(agentName, id, name string, input json.RawMessage) {
 	title := tools.Summary(name, input)
-	if agentName != "" {
+	if agentName != "" && sess.callSession(id) == sess.id { // not in its own session
 		title = "[" + agentName + "] " + title
 	}
 	var in callInput
@@ -1163,13 +1263,14 @@ func (sess *acpSession) Run(ctx context.Context, command, cwd string, timeout ti
 		shell = "sh"
 	}
 	var created acp.CreateTerminalResponse
+	owner := sess.callSession(tools.CallID(ctx)) // a subagent's command shows in its session
 	if err := conn.Call(ctx, "terminal/create", acp.CreateTerminalRequest{
-		SessionID: sess.id, Command: shell, Args: []string{"-c", command}, Cwd: cwd, OutputByteLimit: limit,
+		SessionID: owner, Command: shell, Args: []string{"-c", command}, Cwd: cwd, OutputByteLimit: limit,
 		Env: []acp.EnvVariable{{Name: "PAGER", Value: "cat"}, {Name: "GIT_PAGER", Value: "cat"}, {Name: "NO_COLOR", Value: "1"}},
 	}, &created); err != nil {
 		return tools.TerminalResult{}, err
 	}
-	ref := acp.TerminalRef{SessionID: sess.id, TerminalID: created.TerminalID}
+	ref := acp.TerminalRef{SessionID: owner, TerminalID: created.TerminalID}
 	// Released (the editor keeps showing its output) whatever happens.
 	defer func() { _ = conn.Call(context.Background(), "terminal/release", ref, nil) }()
 	if id := tools.CallID(ctx); id != "" {

@@ -21,6 +21,9 @@ type InitializeRequest struct {
 type ClientCapabilities struct {
 	FS       FileSystemCapabilities `json:"fs"`
 	Terminal bool                   `json:"terminal"`
+	// Subagents, when present, says the client shows subagents as sessions
+	// of their own (the subagent sessions RFD).
+	Subagents *struct{} `json:"subagents,omitempty"`
 }
 
 type FileSystemCapabilities struct {
@@ -206,6 +209,24 @@ type SessionNotification struct {
 }
 
 // Chunk is a user_message_chunk, agent_message_chunk or agent_thought_chunk.
+// SubagentUpdate announces a subagent's session on its parent's, or a
+// change of its state. SessionID is the subagent's.
+type SubagentUpdate struct {
+	SessionUpdate string        `json:"sessionUpdate"` // "subagent_update"
+	SessionID     string        `json:"sessionId"`
+	Title         string        `json:"title,omitempty"`
+	Description   string        `json:"description,omitempty"`
+	State         SubagentState `json:"state"`
+	Cwd           string        `json:"cwd,omitempty"`
+}
+
+// SubagentState is "running", or "idle" with why it stopped.
+type SubagentState struct {
+	State      string `json:"state"`
+	StopReason string `json:"stopReason,omitempty"` // "end_turn", "cancelled", "error"
+	Error      *Error `json:"error,omitempty"`
+}
+
 type Chunk struct {
 	SessionUpdate string       `json:"sessionUpdate"`
 	Content       ContentBlock `json:"content"`

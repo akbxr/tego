@@ -422,9 +422,20 @@ func (t *TaskTool) runOne(ctx context.Context, task taskSpec, def *AgentDef, mod
 		}
 		sub.Watchdog = w
 	}
-	sub.UI = &subUI{name: name, parent: p, st: st, sub: sub, live: quiet}
+	ui := &subUI{name: name, parent: p, st: st, sub: sub, live: quiet}
+	sub.UI = ui
 	sub.noteInterrupted() // calls cut off when it was stopped, if resumed
 	inbox := &subInbox{}
+	if ss, ok := p.UI.(SubagentSessions); ok {
+		ui.sess, ui.key = ss, fmt.Sprintf("%s-%d", name, subKeys.Add(1))
+		info := SubagentInfo{Name: name, Model: sub.Model, Cwd: sub.dir}
+		if def != nil {
+			info.Agent = def.Name
+		}
+		ss.SubagentStarted(ui.key, info)
+		ss.SubagentPrompt(ui.key, task.Prompt)
+		inbox.shown = func(text string) { ss.SubagentPrompt(ui.key, text) }
+	}
 	inbox.attach(sub)
 	defer inbox.detach()
 	p.setSub(st, func(s *SubagentStatus) { s.State, s.Started, s.inbox = SubRunning, time.Now(), inbox })
@@ -444,6 +455,10 @@ func (t *TaskTool) runOne(ctx context.Context, task taskSpec, def *AgentDef, mod
 	}
 	before := sub.Usage()
 	err := sub.Run(ctx, prompt)
+	inbox.detach()
+	if ui.sess != nil {
+		ui.sess.SubagentEnded(ui.key, err)
+	}
 	left := t.Env.StopShells(owner)
 	after := sub.Usage()
 	p.addUsage(&llm.Usage{Input: after.Input - before.Input, Output: after.Output - before.Output,
@@ -521,6 +536,7 @@ func (t *TaskTool) newSub(task taskSpec, def *AgentDef, model taskModel,
 		}
 		// Its own tools, on the worktree on disk (not an editor's buffers).
 		sub.Tools = tools.Builtins(t.Env.At(dir)) // its background shells are the session's to see and clean up
+		sub.dir = dir
 		sub.System += "\n\n# Worktree\n" + note
 		finish = fin
 	}
@@ -558,8 +574,28 @@ type SubagentStatus struct {
 	Text           string   // text of its latest answer (capped)
 
 	inbox *subInbox // messages sent to it while it runs
-	key   string    // unique in the process, for a UI's subagent sessions
 }
+
+// SubagentSessions is a UI that shows each subagent as a session of its
+// own (ACP's subagent sessions), not in the parent's stream. key is unique
+// in the process; a resumed subagent runs under a new one.
+type SubagentSessions interface {
+	SubagentStarted(key string, info SubagentInfo)
+	SubagentPrompt(key, text string)    // a message to it: its task, or one sent while it runs
+	SubagentCall(key, callID string)    // the call is the subagent's
+	SubagentText(key, delta string)     // its answer, streamed
+	SubagentThinking(key, delta string) // its thinking, streamed
+	SubagentEnded(key string, err error)
+}
+
+// SubagentInfo describes a subagent to a SubagentSessions UI.
+type SubagentInfo struct {
+	Name, Agent, Model string
+	Cwd                string // its worktree's folder; "" for the session's
+}
+
+// subKeys numbers subagent runs for SubagentSessions keys.
+var subKeys atomic.Int64
 
 const (
 	subLogMax  = 200
@@ -600,6 +636,8 @@ type subUI struct {
 	st     *SubagentStatus
 	sub    *Agent
 	live   bool
+	sess   SubagentSessions // nil: the parent's UI shows no subagent sessions
+	key    string
 }
 
 func (s *subUI) log(line string) {
@@ -612,8 +650,12 @@ func (s *subUI) log(line string) {
 }
 
 // A subagent's calls show in an editor (ACP) as the parent's, labelled with
-// the subagent's name: the user may be asked about them.
+// the subagent's name (the user may be asked about them), or in its own
+// session where the editor shows subagents.
 func (s *subUI) OnCallStart(_, id, name string, input json.RawMessage) {
+	if s.sess != nil {
+		s.sess.SubagentCall(s.key, id)
+	}
 	if cu, ok := s.parent.UI.(CallUI); ok {
 		cu.OnCallStart(s.name, id, name, input)
 	}
@@ -631,8 +673,18 @@ func (s *subUI) OnCallEnd(_, id, name string, input json.RawMessage, output stri
 	}
 }
 
-func (s *subUI) OnText(string)                                      {}
-func (s *subUI) OnThinking(string)                                  {}
+func (s *subUI) OnText(delta string) {
+	if s.sess != nil {
+		s.sess.SubagentText(s.key, delta)
+	}
+}
+
+func (s *subUI) OnThinking(delta string) {
+	if s.sess != nil {
+		s.sess.SubagentThinking(s.key, delta)
+	}
+}
+
 func (s *subUI) OnToolStart(string)                                 {}
 func (s *subUI) OnToolResult(string, json.RawMessage, string, bool) {}
 

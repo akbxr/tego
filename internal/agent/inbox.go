@@ -14,6 +14,8 @@ type subInbox struct {
 	msgs []string
 	wake func() // ends a wait it is in (task_status, bash_output)
 	open bool   // its run takes messages
+	// shown, if set, shows a message where the subagent's work shows
+	shown func(text string)
 }
 
 // messageNote heads a message to a subagent, so it knows who wrote it.
@@ -41,8 +43,11 @@ func (in *subInbox) send(text string) bool {
 		return false
 	}
 	in.msgs = append(in.msgs, text)
-	wake := in.wake
+	wake, shown := in.wake, in.shown
 	in.mu.Unlock()
+	if shown != nil {
+		shown(text)
+	}
 	if wake != nil {
 		wake()
 	}

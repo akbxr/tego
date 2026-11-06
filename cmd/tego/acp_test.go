@@ -77,6 +77,7 @@ type editor struct {
 	updates  []map[string]any
 	buffers  map[string]string
 	commands []string // terminal commands run
+	termOn   []string // the session of each
 	asked    []acp.PermissionRequest
 	answer   string // permission option to pick
 	wire     wireLog
@@ -109,9 +110,11 @@ func (e *editor) handle(_ context.Context, method string, params json.RawMessage
 	switch method {
 	case "session/update":
 		var n struct {
-			Update map[string]any `json:"update"`
+			SessionID string         `json:"sessionId"`
+			Update    map[string]any `json:"update"`
 		}
 		_ = json.Unmarshal(params, &n)
+		n.Update["_session"] = n.SessionID // the session it was sent on
 		e.updates = append(e.updates, n.Update)
 		return nil, nil
 	case "session/request_permission":
@@ -138,6 +141,7 @@ func (e *editor) handle(_ context.Context, method string, params json.RawMessage
 		var req acp.CreateTerminalRequest
 		_ = json.Unmarshal(params, &req)
 		e.commands = append(e.commands, strings.Join(req.Args, " "))
+		e.termOn = append(e.termOn, req.SessionID)
 		return acp.CreateTerminalResponse{TerminalID: "term-1"}, nil
 	case "terminal/wait_for_exit":
 		return map[string]any{"exitCode": 0}, nil
@@ -172,6 +176,13 @@ func (e *editor) seen(kind string) []map[string]any {
 // startACP runs tego acp with model and a connected editor.
 func startACP(t *testing.T, dir string, model llm.Provider) *editor {
 	t.Helper()
+	return startACPWith(t, dir, model, acp.ClientCapabilities{
+		FS: acp.FileSystemCapabilities{ReadTextFile: true, WriteTextFile: true}, Terminal: true})
+}
+
+// startACPWith is startACP for an editor with caps.
+func startACPWith(t *testing.T, dir string, model llm.Provider, caps acp.ClientCapabilities) *editor {
+	t.Helper()
 	cfg := &config.Config{Dir: dir}
 	store, err := auth.Open(filepath.Join(dir, "auth.json"))
 	if err != nil {
@@ -197,8 +208,7 @@ func startACP(t *testing.T, dir string, model llm.Provider) *editor {
 		<-done
 	})
 	var init acp.InitializeResponse
-	if err := ed.call("initialize", acp.InitializeRequest{ProtocolVersion: 1, ClientCapabilities: acp.ClientCapabilities{
-		FS: acp.FileSystemCapabilities{ReadTextFile: true, WriteTextFile: true}, Terminal: true}}, &init); err != nil {
+	if err := ed.call("initialize", acp.InitializeRequest{ProtocolVersion: 1, ClientCapabilities: caps}, &init); err != nil {
 		t.Fatal(err)
 	}
 	if init.ProtocolVersion != 1 || !init.AgentCapabilities.LoadSession {
