@@ -134,8 +134,8 @@ func TestAudioPathsBecomeTokens(t *testing.T) {
 		}
 	}
 	find, cache := audio.Find, audio.CacheDir
-	audio.Find, audio.CacheDir = func() audio.Transcriber { return fakeWhisper{} }, func() string { return dir }
-	defer func() { audio.Find, audio.CacheDir = find, cache }()
+	audio.Find, audio.CacheDir, audio.Enabled = func() audio.Transcriber { return fakeWhisper{} }, func() string { return dir }, true
+	defer func() { audio.Find, audio.CacheDir, audio.Enabled = find, cache, false }()
 
 	var diag strings.Builder
 	a := &app{cwd: dir, icons: iconPresets["unicode"], ui: &termUI{out: io.Discard, diag: &diag, atBOL: true}}

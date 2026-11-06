@@ -139,8 +139,8 @@ func useWhisper(t *testing.T, tr Transcriber) {
 	t.Helper()
 	find, cache := Find, CacheDir
 	dir := t.TempDir()
-	Find, CacheDir = func() Transcriber { return tr }, func() string { return dir }
-	t.Cleanup(func() { Find, CacheDir = find, cache })
+	Find, CacheDir, Enabled = func() Transcriber { return tr }, func() string { return dir }, true
+	t.Cleanup(func() { Find, CacheDir, Enabled = find, cache, false })
 }
 
 // A model that can't hear gets a transcript timed in the whole file, done
@@ -190,6 +190,20 @@ func TestTranscribe(t *testing.T) {
 		!strings.Contains(tr.Summary(), "no whisper installed") {
 		t.Fatalf("no whisper:\n%s", got)
 	}
+
+	// Off (the default): no whisper runs; a cached transcript still serves.
+	Find, Enabled = func() Transcriber { return fakeWhisper{&calls} }, false
+	tr, _ = Transcribe(context.Background(), other, "b.wav", Options{End: 1})
+	if got := tr.Text(); calls != 2 || !strings.HasPrefix(got, "Audio b.wav (6.0 s): you can't hear it, and transcription is off") ||
+		!strings.Contains(got, `"transcribe": true`) || tr.Summary() != "0:06.0 · transcription off: the model can't hear it" {
+		t.Fatalf("off (%d calls):\n%s\n%s", calls, got, tr.Summary())
+	}
+	if SoundTrack(context.Background(), other, "b.wav", 0, 1) != "" {
+		t.Fatal("sound track transcribed while off")
+	}
+	if tr, _ = Transcribe(context.Background(), wav, "a.wav", Options{}); calls != 2 || len(tr.Segments) != 2 {
+		t.Fatalf("cached transcript while off: %d calls, %+v", calls, tr)
+	}
 }
 
 // whisper.cpp writes offsets in milliseconds.
@@ -227,8 +241,8 @@ func TestWhisper(t *testing.T) {
 		t.Skipf("say: %v %s", err, out)
 	}
 	cache := CacheDir
-	CacheDir = func() string { return dir }
-	defer func() { CacheDir = cache }()
+	CacheDir, Enabled = func() string { return dir }, true
+	defer func() { CacheDir, Enabled = cache, false }()
 	got, err := Transcribe(context.Background(), aiff, "s.aiff", Options{})
 	if err != nil || got.Err != nil || !strings.Contains(strings.ToLower(got.Text()), "lazy dog") {
 		t.Fatalf("%v %v\n%s", err, got.Err, got.Text())

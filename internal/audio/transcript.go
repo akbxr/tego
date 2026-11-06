@@ -33,6 +33,9 @@ type Transcript struct {
 // ErrNoWhisper says no local whisper was found.
 var ErrNoWhisper = errors.New("no local whisper installed")
 
+// ErrOff says transcription is turned off in the config.
+var ErrOff = errors.New("transcription is off")
+
 // maxTranscript bounds the text a model gets (an hour of talk is ~60 KB).
 const maxTranscript = 200 << 10
 
@@ -91,7 +94,7 @@ const wholeMax = 30 * 60
 // model that gets its frames, after a newline; "" without a local whisper
 // (the frames' line already says the sound is not included).
 func SoundTrack(ctx context.Context, path, name string, start, end float64) string {
-	if Find() == nil {
+	if !CanTranscribe() {
 		return ""
 	}
 	tr, err := Transcribe(ctx, path, name, Options{Start: start, End: end})
@@ -188,9 +191,9 @@ func (t *Transcript) run(ctx context.Context, src, key string, start, end float6
 	if t.segmentsCached(key) {
 		return
 	}
-	tr := Find()
-	if tr == nil {
-		t.Err = ErrNoWhisper
+	tr, err := whisper()
+	if err != nil {
+		t.Err = err
 		return
 	}
 	t.Engine = tr.Name()
@@ -262,6 +265,10 @@ func (t *Transcript) Text() string {
 		part = fmt.Sprintf(" of the part %s to %s", Stamp(t.Start), Stamp(t.End))
 	}
 	switch {
+	case errors.Is(t.Err, ErrOff):
+		b.WriteString(": you can't hear it, and transcription is off, so what it says is unknown. Tell the user: a Gemini model hears audio itself, " +
+			"and \"transcribe\": true in ~/.tego/config.json lets tego transcribe it with a local whisper.")
+		return b.String()
 	case errors.Is(t.Err, ErrNoWhisper):
 		fmt.Fprintf(&b, ": you can't hear it, and no local whisper is installed to transcribe it, so what it says is unknown. "+
 			"Tell the user that installing one gives you a transcript: %s. A Gemini model hears audio itself.", InstallHint)
@@ -297,6 +304,8 @@ func (t *Transcript) Summary() string {
 		d = Stamp(t.Duration) + " · "
 	}
 	switch {
+	case errors.Is(t.Err, ErrOff):
+		return d + "transcription off: the model can't hear it"
 	case errors.Is(t.Err, ErrNoWhisper):
 		return d + "no whisper installed: the model can't hear it"
 	case t.Err != nil:

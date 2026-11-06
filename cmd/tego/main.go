@@ -20,6 +20,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/akbxr/tego/internal/agent"
+	"github.com/akbxr/tego/internal/audio"
 	"github.com/akbxr/tego/internal/auth"
 	"github.com/akbxr/tego/internal/config"
 	"github.com/akbxr/tego/internal/ext"
@@ -201,6 +202,7 @@ func run() error {
 		return err
 	}
 	llm.SetGzipRequests(cfg.GzipEnabled())
+	audio.Enabled = cfg.Transcribe
 	store, err := auth.Open(filepath.Join(cfg.Dir, "auth.json"))
 	if err != nil {
 		return err

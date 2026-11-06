@@ -41,8 +41,8 @@ func TestAudioAsText(t *testing.T) {
 	}
 	calls := 0
 	find, cache := audio.Find, audio.CacheDir
-	audio.Find, audio.CacheDir = func() audio.Transcriber { return fakeWhisper{&calls} }, func() string { return dir }
-	defer func() { audio.Find, audio.CacheDir = find, cache }()
+	audio.Find, audio.CacheDir, audio.Enabled = func() audio.Transcriber { return fakeWhisper{&calls} }, func() string { return dir }, true
+	defer func() { audio.Find, audio.CacheDir, audio.Enabled = find, cache, false }()
 	history := func() []llm.Message {
 		return []llm.Message{
 			{Role: llm.RoleUser, Blocks: []llm.Block{{Type: llm.BlockText, Text: "listen"}, aud}},
@@ -105,8 +105,8 @@ func TestVideoSoundTrack(t *testing.T) {
 	}
 	calls := 0
 	find, cache := audio.Find, audio.CacheDir
-	audio.Find, audio.CacheDir = func() audio.Transcriber { return fakeWhisper{&calls} }, func() string { return dir }
-	defer func() { audio.Find, audio.CacheDir = find, cache }()
+	audio.Find, audio.CacheDir, audio.Enabled = func() audio.Transcriber { return fakeWhisper{&calls} }, func() string { return dir }, true
+	defer func() { audio.Find, audio.CacheDir, audio.Enabled = find, cache, false }()
 	prov := &countingProvider{}
 	a := &Agent{Provider: prov, UI: nopUI{}, Messages: []llm.Message{{Role: llm.RoleUser, Blocks: []llm.Block{{Type: llm.BlockText, Text: "watch"}, vid}}}}
 	if err := a.Run(context.Background(), "and now?"); err != nil {

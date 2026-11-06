@@ -41,6 +41,7 @@ type Config struct {
 	UpdateCheck   string                         `json:"update_check,omitempty"`       // "off" stops the daily check for a newer release
 	Gzip          *bool                          `json:"gzip_requests,omitempty"`      // compress large request bodies to the hosts known to take that (default on)
 	LSP           *bool                          `json:"lsp,omitempty"`                // check edits with the installed language servers (default on)
+	Transcribe    bool                           `json:"transcribe,omitempty"`         // transcribe audio with a local whisper for models that can't hear (default off: a whisper loads a model of a GB or more)
 	LSPServers    map[string]json.RawMessage     `json:"lsp_servers,omitempty"`        // add or change servers by name; false turns a built-in one off (lsp.Specs)
 	ContextWindow int                            `json:"context_window,omitempty"`
 	MaxOutput     int                            `json:"max_output_tokens,omitempty"` // a response's limit, thinking included (default by model; at most the model's)

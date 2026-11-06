@@ -35,8 +35,8 @@ func TestReadAudio(t *testing.T) {
 		}
 	}
 	find, cache := audio.Find, audio.CacheDir
-	audio.Find, audio.CacheDir = func() audio.Transcriber { return fakeWhisper{} }, func() string { return dir }
-	defer func() { audio.Find, audio.CacheDir = find, cache }()
+	audio.Find, audio.CacheDir, audio.Enabled = func() audio.Transcriber { return fakeWhisper{} }, func() string { return dir }, true
+	defer func() { audio.Find, audio.CacheDir, audio.Enabled = find, cache, false }()
 
 	read := &readTool{&Env{Cwd: dir}}
 	for _, name := range []string{"a.mp3", "a.webm"} {
@@ -65,8 +65,8 @@ func TestReadVideoFramesWithSound(t *testing.T) {
 		t.Fatalf("ffmpeg: %v %s", err, out)
 	}
 	find := audio.Find
-	audio.Find = func() audio.Transcriber { t.Fatal("whisper started"); return nil }
-	defer func() { audio.Find = find }()
+	audio.Find, audio.Enabled = func() audio.Transcriber { t.Fatal("whisper started"); return nil }, true
+	defer func() { audio.Find, audio.Enabled = find, false }()
 	in, _ := json.Marshal(map[string]any{"path": "v.mp4", "start": 1, "end": 3, "frames": 3})
 	text, blocks, err := (&readTool{&Env{Cwd: dir}}).RunImages(WithAudio(WithVideo(context.Background())), in)
 	if err != nil || len(blocks) != 4 || blocks[3].Type != llm.BlockAudio || !strings.Contains(text, "sound attached after the frames") {

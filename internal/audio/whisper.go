@@ -32,6 +32,28 @@ type Transcriber interface {
 // openai-whisper. A variable so tests can stand in a fake.
 var Find = find
 
+// Enabled lets tego run a whisper (config "transcribe"; off by default):
+// each run loads a model of up to a few GB, and a Gemini model hears
+// the sound itself. Transcripts already in the cache are used either way.
+var Enabled = false
+
+// whisper is the whisper to run, or why there is none.
+func whisper() (Transcriber, error) {
+	if !Enabled {
+		return nil, ErrOff
+	}
+	if tr := Find(); tr != nil {
+		return tr, nil
+	}
+	return nil, ErrNoWhisper
+}
+
+// CanTranscribe says whether a transcript can be made.
+func CanTranscribe() bool {
+	_, err := whisper()
+	return err == nil
+}
+
 func find() Transcriber {
 	if p, err := exec.LookPath("whisper-cli"); err == nil {
 		if m := cppModel(); m != "" {
