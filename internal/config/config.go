@@ -24,36 +24,37 @@ import (
 )
 
 type Config struct {
-	Model         string                         `json:"model,omitempty"`              // provider/model-id
-	Thinking      string                         `json:"thinking,omitempty"`           // off|low|medium|high|xhigh|max
-	Fast          bool                           `json:"fast,omitempty"`               // fast mode on models that have it (/fast)
-	Permissions   string                         `json:"permissions,omitempty"`        // yolo (default) | edits | ask: which tool calls wait for approval
-	WebModel      string                         `json:"web_model,omitempty"`          // model for native web_search (default: provider-specific)
-	SmallModel    string                         `json:"small_model,omitempty"`        // cheaper model for side work: titles, web search, subagents given "small" (provider/model, a model of the session's provider, or "off"; default per provider)
-	Subagents     int                            `json:"subagents,omitempty"`          // subagents running at once (default 8); more tasks queue
-	SubagentTurns *int                           `json:"subagent_max_turns,omitempty"` // requests a subagent may make (default 150; 0: no limit); on the last it writes its report
-	SubagentCheck *int                           `json:"subagent_watchdog,omitempty"`  // requests between checks that a subagent is getting somewhere (default 40; 0: none)
-	SubagentMerge bool                           `json:"subagent_merge,omitempty"`     // merge the commits of a worktree subagent that succeeded into the session's branch
-	MCPTools      string                         `json:"mcp_tools,omitempty"`          // "auto" (default: deferred behind tool_search above 10 tools), "lazy", "eager"
-	MCPIdle       string                         `json:"mcp_idle,omitempty"`           // local MCP servers stop after this long unused and start at their next call (default "10m"; "off": run all session)
-	Accounts      string                         `json:"accounts,omitempty"`           // with several logins per provider: "fallback" (default: switch on limits), "round-robin" or "expiring" (the account whose weekly quota runs out unused soonest)
-	Icons         string                         `json:"icons,omitempty"`              // status-line icons: "nerd" (Nerd Font glyphs) or "unicode" (default)
-	Notify        string                         `json:"notify,omitempty"`             // "off" disables the notification (sound) when a turn finishes
-	UpdateCheck   string                         `json:"update_check,omitempty"`       // "off" stops the daily check for a newer release
-	Gzip          *bool                          `json:"gzip_requests,omitempty"`      // compress large request bodies to the hosts known to take that (default on)
-	LSP           *bool                          `json:"lsp,omitempty"`                // check edits with the installed language servers (default on)
-	Transcribe    bool                           `json:"transcribe,omitempty"`         // transcribe audio with a local whisper for models that can't hear (default off: a whisper loads a model of a GB or more)
-	LSPServers    map[string]json.RawMessage     `json:"lsp_servers,omitempty"`        // add or change servers by name; false turns a built-in one off (lsp.Specs)
-	ContextWindow int                            `json:"context_window,omitempty"`
-	MaxOutput     int                            `json:"max_output_tokens,omitempty"` // a response's limit, thinking included (default by model; at most the model's)
-	AutoCompact   *bool                          `json:"auto_compact,omitempty"`
-	CompactAt     int                            `json:"compact_at_percent,omitempty"`  // auto-compact above this % of the window (default: window - max(15%, 16k))
-	KeepRecent    int                            `json:"compact_keep_tokens,omitempty"` // recent tokens kept verbatim when compacting (default 20000)
-	IdleCompact   *bool                          `json:"idle_compact,omitempty"`        // after a break the prompt cache did not survive, compact a long context rather than cache it all again (default on)
-	IdleTokens    int                            `json:"idle_compact_tokens,omitempty"` // how long: above this many tokens (default 200000)
-	KeepAlive     string                         `json:"cache_keepalive,omitempty"`     // keep the prompt cache warm while idle: "auto" (default), a duration such as "8h", or "off"
-	SubModels     map[string]SubagentModel       `json:"subagent_models,omitempty"`
-	Providers     map[string]*llm.ProviderConfig `json:"providers,omitempty"`
+	Model           string                         `json:"model,omitempty"`              // provider/model-id
+	Thinking        string                         `json:"thinking,omitempty"`           // off|low|medium|high|xhigh|max
+	Fast            bool                           `json:"fast,omitempty"`               // fast mode on models that have it (/fast)
+	Permissions     string                         `json:"permissions,omitempty"`        // yolo (default) | edits | ask: which tool calls wait for approval
+	WebModel        string                         `json:"web_model,omitempty"`          // model for native web_search (default: provider-specific)
+	SmallModel      string                         `json:"small_model,omitempty"`        // cheaper model for side work: titles, web search, subagents given "small" (provider/model, a model of the session's provider, or "off"; default per provider)
+	Subagents       int                            `json:"subagents,omitempty"`          // subagents running at once (default 8); more tasks queue
+	SubagentTurns   *int                           `json:"subagent_max_turns,omitempty"` // requests a subagent may make (default 150; 0: no limit); on the last it writes its report
+	SubagentCheck   *int                           `json:"subagent_watchdog,omitempty"`  // requests between checks that a subagent is getting somewhere (default 40; 0: none)
+	SubagentMerge   bool                           `json:"subagent_merge,omitempty"`     // merge the commits of a worktree subagent that succeeded into the session's branch
+	SessionMessages bool                           `json:"session_messages,omitempty"`   // open sessions take messages from other sessions (session_send), and an idle terminal session starts a turn to answer
+	MCPTools        string                         `json:"mcp_tools,omitempty"`          // "auto" (default: deferred behind tool_search above 10 tools), "lazy", "eager"
+	MCPIdle         string                         `json:"mcp_idle,omitempty"`           // local MCP servers stop after this long unused and start at their next call (default "10m"; "off": run all session)
+	Accounts        string                         `json:"accounts,omitempty"`           // with several logins per provider: "fallback" (default: switch on limits), "round-robin" or "expiring" (the account whose weekly quota runs out unused soonest)
+	Icons           string                         `json:"icons,omitempty"`              // status-line icons: "nerd" (Nerd Font glyphs) or "unicode" (default)
+	Notify          string                         `json:"notify,omitempty"`             // "off" disables the notification (sound) when a turn finishes
+	UpdateCheck     string                         `json:"update_check,omitempty"`       // "off" stops the daily check for a newer release
+	Gzip            *bool                          `json:"gzip_requests,omitempty"`      // compress large request bodies to the hosts known to take that (default on)
+	LSP             *bool                          `json:"lsp,omitempty"`                // check edits with the installed language servers (default on)
+	Transcribe      bool                           `json:"transcribe,omitempty"`         // transcribe audio with a local whisper for models that can't hear (default off: a whisper loads a model of a GB or more)
+	LSPServers      map[string]json.RawMessage     `json:"lsp_servers,omitempty"`        // add or change servers by name; false turns a built-in one off (lsp.Specs)
+	ContextWindow   int                            `json:"context_window,omitempty"`
+	MaxOutput       int                            `json:"max_output_tokens,omitempty"` // a response's limit, thinking included (default by model; at most the model's)
+	AutoCompact     *bool                          `json:"auto_compact,omitempty"`
+	CompactAt       int                            `json:"compact_at_percent,omitempty"`  // auto-compact above this % of the window (default: window - max(15%, 16k))
+	KeepRecent      int                            `json:"compact_keep_tokens,omitempty"` // recent tokens kept verbatim when compacting (default 20000)
+	IdleCompact     *bool                          `json:"idle_compact,omitempty"`        // after a break the prompt cache did not survive, compact a long context rather than cache it all again (default on)
+	IdleTokens      int                            `json:"idle_compact_tokens,omitempty"` // how long: above this many tokens (default 200000)
+	KeepAlive       string                         `json:"cache_keepalive,omitempty"`     // keep the prompt cache warm while idle: "auto" (default), a duration such as "8h", or "off"
+	SubModels       map[string]SubagentModel       `json:"subagent_models,omitempty"`
+	Providers       map[string]*llm.ProviderConfig `json:"providers,omitempty"`
 	// Prices override or add API prices ($ per million tokens) for tego
 	// stats, keyed by model id or "provider/model".
 	Prices map[string]stats.Price `json:"prices,omitempty"`

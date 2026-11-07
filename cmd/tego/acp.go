@@ -48,6 +48,7 @@ import (
 func cmdACP(cfg *config.Config, store *auth.Store, in io.Reader, out io.Writer) error {
 	s := newACPServer(cfg, store, out)
 	defer s.closeAll()
+	defer s.listenPeers().Close()
 	return s.conn.Serve(context.Background(), in)
 }
 
@@ -358,6 +359,7 @@ func (s *acpServer) open(cwd string, servers []acp.MCPServer, id string) (*acpSe
 	ag.KeepAlive, ag.KeepAliveAuto = cfg.CacheKeepAlive()
 	ap := &app{cfg: cfg, store: s.store, cwd: cwd, ag: ag, env: env, skills: skills, agentDefs: agent.LoadAgents(cfg.Dir, cwd),
 		undo: undo.Open(cfg.Dir, cwd), notice: sess.OnInfo}
+	ap.takesMessages = s.cfg.SessionMessages
 	ap.setupTools(files)
 	ap.bg.OnDone = sess.backgroundDone
 	log := stats.OpenLog(cfg.Dir)
@@ -750,6 +752,7 @@ func (sess *acpSession) runPrompt(ctx context.Context, text string, images []llm
 			return acp.PromptResponse{StopReason: "end_turn"}, nil
 		}
 	}
+	sess.app.peers.hops.Store(0) // the user's prompt: a new chain of session messages
 	return sess.turn(ctx, text, images)
 }
 

@@ -57,11 +57,13 @@ func (a *app) takeSteering() [][]llm.Block {
 	lines := a.steer
 	a.steer = nil
 	a.pendMu.Unlock()
+	peers := a.takePeerSteering()
 	if len(lines) == 0 {
-		return nil
+		return peers
 	}
 	a.tui.Redraw()
-	out := make([][]llm.Block, 0, len(lines))
+	out := make([][]llm.Block, 0, len(lines)+len(peers))
+	out = append(out, peers...)
 	for _, l := range lines {
 		a.ui.Finish()
 		a.echoPrompt(l)

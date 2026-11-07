@@ -575,6 +575,10 @@ type app struct {
 	extMsgs   chan string  // prompts extensions send (sendMessage), taken by the REPL
 	bg        *agent.Background
 	bgDone    chan struct{} // a background task ended: the REPL may hand its report over
+	// peers: messages from other sessions (peers.go); takesMessages: this
+	// app listens for them.
+	peers         peerState
+	takesMessages bool
 	// notice, when set (tego acp), shows the shared helpers' lines for the
 	// user instead of the terminal.
 	notice func(msg string)
@@ -654,6 +658,7 @@ func (a *app) init(spec, thinking string) error {
 		a.ag.Approve = a.approve    // without a terminal, calls that need approval are refused
 		// The REPL keeps the prompt cache warm while the user is away.
 		a.ag.KeepAlive, a.ag.KeepAliveAuto = a.cfg.CacheKeepAlive()
+		a.takesMessages = a.cfg.SessionMessages // other sessions' messages (peers.go)
 	}
 	a.setupTools(files)
 	if a.tui != nil {
@@ -680,6 +685,7 @@ func (a *app) setupTools(files []agent.ContextFile) {
 		&agent.CheckpointTool{Parent: a.ag},
 		&agent.RewindTool{Parent: a.ag},
 		web.NewSearchTool(a.nativeSearch))
+	a.setupPeers()
 }
 
 func (a *app) setModel(spec string) error {
@@ -713,7 +719,7 @@ func (a *app) newSession() error {
 	if err != nil {
 		return err
 	}
-	a.ag.Session = s
+	a.setSession(s)
 	return nil
 }
 
@@ -728,7 +734,7 @@ func (a *app) resume(ref string) error {
 	}
 	a.resetBackground()
 	a.closeSession()
-	a.ag.Session = s
+	a.setSession(s)
 	a.ag.SetHistory(msgs)
 	a.ui.Dim("resumed %s (%d messages)", s.ID, len(msgs))
 	return nil
@@ -745,7 +751,7 @@ func (a *app) closeSession() {
 	if len(a.ag.Messages) == 0 {
 		_ = os.Remove(s.Path)
 	}
-	a.ag.Session = nil
+	a.setSession(nil)
 }
 
 // runTurn sends one prompt (with attached files, skills and images)

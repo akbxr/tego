@@ -375,7 +375,7 @@ func (a *app) switchToCopy(hist []llm.Message) error {
 		return err
 	}
 	a.closeSession()
-	a.ag.Session = s
+	a.setSession(s)
 	a.ag.SessionID = uuid4()
 	a.ag.SetHistory(hist)
 	return nil

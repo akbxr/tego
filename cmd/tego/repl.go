@@ -61,6 +61,8 @@ func (a *app) repl(initial string) error {
 		}
 	}()
 	a.offerStaleShells()
+	a.listenPeers()
+	defer a.peers.hub.Close()
 	defer func() {
 		if a.cancel != nil { // exiting mid-turn: stop it and let it record the abort
 			a.cancel()
@@ -174,6 +176,8 @@ func (a *app) repl(initial string) error {
 			a.finishLogin(res)
 		case r := <-a.titleDone:
 			a.finishTitle(r)
+		case d := <-a.peers.in: // a message from another session
+			d.reply <- a.receivePeer(d.m, done)
 		case line := <-a.extMsgs: // an extension's sendMessage
 			if a.cancel != nil {
 				a.addPending(line, false) // after the running turn
@@ -231,6 +235,10 @@ func (a *app) repl(initial string) error {
 					return nil
 				}
 			}
+			// Messages from other sessions that came too late for it.
+			if a.cancel == nil {
+				a.peerLeftovers(err == nil, done)
+			}
 			// Reports that came too late for the turn that ended. Not after an
 			// interrupt or error: they go with the next prompt then.
 			if a.cancel == nil && err == nil {
@@ -261,6 +269,7 @@ func (a *app) dispatch(line string, done chan<- error) bool {
 
 // startPrompt sends line to the agent as a new turn.
 func (a *app) startPrompt(line string, done chan<- error) {
+	a.peers.hops.Store(0) // the user's: a new chain
 	a.echoPrompt(line)
 	a.maybeTitle(line)
 	a.planTurn = a.plan.Load()
@@ -341,6 +350,7 @@ func (a *app) startJob(done chan<- error, fn func(ctx context.Context) error) {
 	a.ui.resetLive()
 	a.status.update(func(s *statusInfo) { s.busy, s.busySince = true, a.jobStart })
 	a.tui.SetBusy(true) // Alt+Enter now queues a follow-up
+	a.peers.busy.Store(true)
 	a.tui.Redraw()
 	go func() { done <- fn(ctx) }()
 }
@@ -348,6 +358,7 @@ func (a *app) startJob(done chan<- error, fn func(ctx context.Context) error) {
 func (a *app) finishJob(err error) {
 	a.cancel()
 	a.cancel = nil
+	a.peers.busy.Store(false)
 	a.endStatus(err, errors.Is(err, context.Canceled))
 	a.jobMsg = ""
 	a.ui.Finish()

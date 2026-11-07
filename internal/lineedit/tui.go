@@ -731,3 +731,7 @@ func waitReadable(fd, wake int) (bool, error) {
 		return rs.IsSet(fd), nil
 	}
 }
+
+// Offscreen is a TUI that touches no terminal and draws nothing until
+// started: for driving code that reports to a TUI in tests.
+func Offscreen(o Options, out io.Writer) *TUI { return newTUI(o, out, 80, 24) }

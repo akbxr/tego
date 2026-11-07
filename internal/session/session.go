@@ -428,9 +428,10 @@ func (s *Session) refBlock(b llm.Block) (llm.Block, bool, error) {
 // (closed, or loaded only) the file opened again until the reader is
 // closed.
 type fileReader struct {
-	s     *Session
-	g     *os.File
-	blobs map[string]string // read so far: the messages of one History share each blob's data
+	s       *Session
+	g       *os.File
+	blobs   map[string]string // read so far: the messages of one History share each blob's data
+	noMedia bool              // leave media as references (Transcript)
 }
 
 func (s *Session) reader() *fileReader { return &fileReader{s: s} }
@@ -486,6 +487,9 @@ func (r *fileReader) read(n *Node) (entry, bool) {
 // resolve puts the data of the blobs that blocks refer to back in place.
 // A blob the file lacks (a copy made by an older tego) leaves a note.
 func (r *fileReader) resolve(blocks []llm.Block) {
+	if r.noMedia {
+		return
+	}
 	for i := range blocks {
 		b := &blocks[i]
 		r.resolve(b.Images)
@@ -576,7 +580,9 @@ func (s *Session) SetTitle(title string) error {
 	if s == nil {
 		return nil
 	}
+	s.mu.Lock()
 	s.Title = title
+	s.mu.Unlock()
 	_, _, err := s.write(entry{Type: "title", Title: title, Time: time.Now().Unix()})
 	return err
 }
