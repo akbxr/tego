@@ -2,6 +2,7 @@ package stats
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -52,6 +53,7 @@ var (
 	dateSuffixRe   = regexp.MustCompile(`-(20\d{6}|\d{4}-\d{2}-\d{2})$`)
 	effortSuffixRe = regexp.MustCompile(`-(low|medium|high|minimal|xhigh|tiered|thinking)$`)
 	claudeDotRe    = regexp.MustCompile(`(\d)\.(\d)`)
+	claudeMinorRe  = regexp.MustCompile(`^(claude-[a-z]+-\d+)-(\d{1,2})$`)
 )
 
 // Prices resolves a model's price: config overrides first, then the
@@ -67,14 +69,41 @@ func (ps Prices) lookup(provider, model string) (Price, bool) {
 		return p, true
 	}
 	ids := priceIDs(model)
-	for _, table := range [...]map[string]Price{ps.Overrides, ps.Catalog, builtinPrices()} {
+	tables := [...]map[string]Price{ps.Overrides, ps.Catalog, builtinPrices()}
+	for _, table := range tables {
 		for _, id := range ids {
 			if p, ok := table[id]; ok {
 				return p, true
 			}
 		}
 	}
+	// A Claude newer than every table (out since this build and the last
+	// fetch) is priced as the version before it: close, and it keeps what
+	// depends on the price (cache-write premium, keep-alive) working.
+	for _, id := range earlierClaude(ids[len(ids)-1]) {
+		for _, table := range tables {
+			if p, ok := table[id]; ok {
+				return p, true
+			}
+		}
+	}
 	return Price{}, false
+}
+
+// earlierClaude lists the earlier versions of a Claude model's generation,
+// latest first: claude-fable-5-3 gives claude-fable-5-2, claude-fable-5-1,
+// claude-fable-5.
+func earlierClaude(id string) []string {
+	m := claudeMinorRe.FindStringSubmatch(id)
+	if m == nil {
+		return nil
+	}
+	minor, _ := strconv.Atoi(m[2])
+	var out []string
+	for v := minor - 1; v >= 1; v-- {
+		out = append(out, m[1]+"-"+strconv.Itoa(v))
+	}
+	return append(out, m[1])
 }
 
 // CacheWritePremium reports whether writing the prompt cache costs more than

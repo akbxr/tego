@@ -135,3 +135,52 @@ func TestEndedKeepsTheLatest(t *testing.T) {
 		t.Fatalf("by name: %v %v", e, err)
 	}
 }
+
+// modelProvider notes the model of each request and answers at once.
+type modelProvider struct {
+	mu     sync.Mutex
+	models []string
+}
+
+func (p *modelProvider) Name() string { return "fake" }
+
+func (p *modelProvider) Stream(_ context.Context, req *llm.Request, _ func(llm.Event)) (*llm.Message, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.models = append(p.models, req.Model+":"+req.Thinking)
+	return &llm.Message{Role: llm.RoleAssistant, StopReason: "end_turn", Usage: &llm.Usage{Output: 1},
+		Blocks: []llm.Block{{Type: llm.BlockText, Text: "done"}}}, nil
+}
+
+// After a /model, a resumed subagent that ran on the session's model runs
+// on the new one; one with a model of its own keeps it.
+func TestResumeFollowsSessionModel(t *testing.T) {
+	old, now, small := &modelProvider{}, &modelProvider{}, &modelProvider{}
+	parent := &Agent{Provider: old, ProviderName: "a", Model: "opus", Thinking: "high", ContextWindow: 100, UI: nopUI{}}
+	task := &TaskTool{Parent: parent, Env: &tools.Env{Cwd: t.TempDir()},
+		Small: func() (SmallModel, bool) {
+			return SmallModel{Provider: small, ProviderName: "a", Model: "haiku", Window: 50}, true
+		}}
+	for _, spec := range []map[string]string{{"name": "Main", "prompt": "x"}, {"name": "Small", "prompt": "x", "model": "small"}} {
+		if _, err := taskCall(t, task, spec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	parent.Provider, parent.Model, parent.Thinking, parent.ContextWindow = now, "fable", "xhigh", 200
+	for _, name := range []string{"Main", "Small"} {
+		if _, err := taskCall(t, task, map[string]string{"prompt": "more", "resume": name}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The small model has requests of its own besides the subagent's two.
+	if got := fmt.Sprint(old.models, now.models); got != "[opus:high] [fable:xhigh]" || strings.Count(fmt.Sprint(small.models), "haiku:high") != 2 {
+		t.Fatalf("requests went to %s %s", got, small.models)
+	}
+	e, _ := parent.takeEnded("Main")
+	if e == nil || e.sub.ContextWindow != 200 {
+		t.Fatalf("resumed subagent: %+v", e)
+	}
+	if subs := parent.Subagents(); len(subs) != 1 || subs[0].Model != "haiku" {
+		t.Fatalf("panel %+v", subs)
+	}
+}

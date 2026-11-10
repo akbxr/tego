@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -141,5 +142,79 @@ func TestSmallModelSpec(t *testing.T) {
 		if got := c.SmallModelSpec(tc.provider); got != tc.want {
 			t.Errorf("small_model %q on %s: %q, want %q", tc.small, tc.provider, got, tc.want)
 		}
+	}
+}
+
+// A save writes what this process changed and keeps the rest of the file:
+// another session's changes, keys this tego doesn't know, and the order.
+func TestSaveKeepsTheFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TEGO_HOME", dir)
+	path := filepath.Join(dir, "config.json")
+	write := func(s string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(s), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read := func() string {
+		t.Helper()
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	write(`{"thinking":"high","model":"anthropic/claude-opus-5-5","subagent_max_turns":0,"icons":"nerd"}`)
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Meanwhile: another session turns thinking up, the user adds two keys.
+	write(`{"thinking":"xhigh","model":"anthropic/claude-opus-5-5","subagent_max_turns":0,"icons":"nerd","session_messages":true,"from_a_newer_tego":{"a":[1,2]}}`)
+	c.Model = "anthropic/claude-fable-5-2"
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	want := `{
+  "thinking": "xhigh",
+  "model": "anthropic/claude-fable-5-2",
+  "subagent_max_turns": 0,
+  "icons": "nerd",
+  "session_messages": true,
+  "from_a_newer_tego": {
+    "a": [
+      1,
+      2
+    ]
+  }
+}
+`
+	if got := read(); got != want {
+		t.Fatalf("saved:\n%s", got)
+	}
+	// A key set back to its default goes; a new one is added at the end.
+	c.Icons, c.Accounts = "", "expiring"
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); strings.Contains(got, "icons") || !strings.Contains(got, "\"from_a_newer_tego\": {\n    \"a\": [\n      1,\n      2\n    ]\n  },\n  \"accounts\": \"expiring\"\n}") {
+		t.Fatalf("saved:\n%s", got)
+	}
+	// Its own earlier change is not written again over a later one.
+	write(`{"model":"openai/gpt-5.6"}`)
+	c.Thinking = "low"
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); got != "{\n  \"model\": \"openai/gpt-5.6\",\n  \"thinking\": \"low\"\n}\n" {
+		t.Fatalf("saved:\n%s", got)
+	}
+	// No file, and one that is not JSON: the changes alone.
+	os.Remove(path)
+	fresh, _ := Load()
+	fresh.Model = "a/b"
+	if err := fresh.Save(); err != nil || read() != "{\n  \"model\": \"a/b\"\n}\n" {
+		t.Fatalf("%v\n%s", err, read())
 	}
 }

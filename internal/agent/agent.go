@@ -84,6 +84,9 @@ type Agent struct {
 	// do instead: the turn stops, its subagents included (they share it).
 	declined *atomic.Bool
 	dir      string // a subagent's worktree folder; "" for the session's
+	// A subagent that runs on the session's model, and at its thinking
+	// level: resumed after a /model, it follows the session.
+	sessionModel, sessionThinking bool
 	// Steer, when set, returns the messages the user sent while the agent
 	// was working (each as the blocks of one user message). It is polled
 	// after each tool round and when the model would stop, so a message

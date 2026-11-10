@@ -2,6 +2,7 @@
 package config
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/rand"
@@ -60,6 +61,8 @@ type Config struct {
 	Prices map[string]stats.Price `json:"prices,omitempty"`
 
 	Dir string `json:"-"` // ~/.tego
+
+	saved map[string]json.RawMessage // the keys as loaded or last saved (Save)
 }
 
 // Presets are the built-in providers. User config entries with the same
@@ -167,6 +170,7 @@ func Load() (*Config, error) {
 	data, err := os.ReadFile(filepath.Join(dir, "config.json"))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			_, c.saved, _ = c.keys()
 			return c, nil
 		}
 		return nil, err
@@ -177,19 +181,103 @@ func Load() (*Config, error) {
 	if err := c.validateSubagentModels(); err != nil {
 		return nil, fmt.Errorf("config.json: %w", err)
 	}
+	_, c.saved, _ = c.keys()
 	return c, nil
 }
 
-// Save persists only the user-editable fields.
+// Save writes the keys this process changed since it loaded or last saved
+// the file, and leaves the rest of the file as it is: what another session
+// or the user wrote since, and keys of a newer tego this one doesn't know.
+// (A session open for days once put back the whole config it had started
+// with when its model was changed.)
 func (c *Config) Save() error {
 	if err := os.MkdirAll(c.Dir, 0o700); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(c, "", "  ")
+	order, now, err := c.keys()
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(c.Dir, "config.json"), append(data, '\n'), 0o600)
+	path := filepath.Join(c.Dir, "config.json")
+	data, _ := os.ReadFile(path)
+	fileOrder, file, err := objectKeys(data)
+	if err != nil { // no file, or not one to keep
+		fileOrder, file = nil, map[string]json.RawMessage{}
+	}
+	for _, k := range order {
+		if _, had := file[k]; !had && !bytes.Equal(now[k], c.saved[k]) {
+			fileOrder = append(fileOrder, k)
+		}
+		if !bytes.Equal(now[k], c.saved[k]) {
+			file[k] = now[k]
+		}
+	}
+	for k := range c.saved {
+		if _, still := now[k]; !still {
+			delete(file, k) // set back to its default
+		}
+	}
+	var out bytes.Buffer
+	out.WriteString("{")
+	n := 0
+	for _, k := range fileOrder {
+		v, ok := file[k]
+		if !ok {
+			continue
+		}
+		if n++; n > 1 {
+			out.WriteString(",")
+		}
+		name, _ := json.Marshal(k)
+		out.WriteString("\n  " + string(name) + ": ")
+		if json.Indent(&out, v, "  ", "  ") != nil {
+			out.Write(v)
+		}
+	}
+	if n > 0 {
+		out.WriteString("\n")
+	}
+	out.WriteString("}\n")
+	if err := os.WriteFile(path, out.Bytes(), 0o600); err != nil {
+		return err
+	}
+	c.saved = now
+	return nil
+}
+
+// keys is the config as the keys of its file, in the file's order.
+func (c *Config) keys() ([]string, map[string]json.RawMessage, error) {
+	data, err := json.Marshal(c)
+	if err != nil {
+		return nil, nil, err
+	}
+	return objectKeys(data)
+}
+
+// objectKeys reads a JSON object's keys in order, and their values.
+func objectKeys(data []byte) ([]string, map[string]json.RawMessage, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+		return nil, nil, errors.New("not a JSON object")
+	}
+	var order []string
+	vals := map[string]json.RawMessage{}
+	for dec.More() {
+		t, err := dec.Token()
+		if err != nil {
+			return nil, nil, err
+		}
+		k, _ := t.(string)
+		var v json.RawMessage
+		if err := dec.Decode(&v); err != nil {
+			return nil, nil, err
+		}
+		if _, dup := vals[k]; !dup {
+			order = append(order, k)
+		}
+		vals[k] = v
+	}
+	return order, vals, nil
 }
 
 func (c *Config) AutoCompactEnabled() bool { return c.AutoCompact == nil || *c.AutoCompact }

@@ -33,6 +33,24 @@ func (e *endedSub) ref() string {
 	return e.sub.Name
 }
 
+// followSession puts a subagent that ran on the session's model on the
+// one p has now, after a /model since it ended: one resumed would
+// otherwise stay on the old model for as long as it is resumed. It
+// reports whether the model changed. A subagent with a model of its own
+// (small, a named one, an agent file's) keeps it.
+func (a *Agent) followSession(p *Agent) bool {
+	if !a.sessionModel {
+		return false
+	}
+	changed := a.Model != p.Model || a.ProviderName != p.ProviderName
+	a.Provider, a.ProviderName, a.Model, a.ContextWindow = p.Provider, p.ProviderName, p.Model, p.ContextWindow
+	a.Fast, a.MaxOutputTokens, a.CacheWritePremium = p.Fast, p.MaxOutputTokens, p.CacheWritePremium
+	if a.sessionThinking {
+		a.Thinking = p.Thinking
+	}
+	return changed
+}
+
 // keepEnded keeps e, forgetting the oldest past endedMax.
 func (a *Agent) keepEnded(e *endedSub) {
 	a.endedMu.Lock()

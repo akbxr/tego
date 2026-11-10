@@ -252,7 +252,7 @@ func (t *TaskTool) pickModels(asked []string) []taskModel {
 
 // resumeProperty is the tasks' "resume" property (resume.go).
 const resumeProperty = `,"resume":{"type":"string","description":"Resume a subagent of this session that ended, by its name or task id (t3), ` +
-	`instead of starting a new one: it keeps its context, and prompt says what to do next. Its model, agent and folder stay its own. Worktree subagents can't be resumed."}`
+	`instead of starting a new one: it keeps its context, and prompt says what to do next. Its agent and folder stay its own, and its model too unless it ran on the session's: then it runs on the session's model as it is now. Worktree subagents can't be resumed."}`
 
 // taskSpec is one task of a task call.
 type taskSpec struct {
@@ -295,7 +295,11 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 			}
 			return "", err
 		}
-		// It goes on as what it was: its own name, agent and model.
+		// It goes on as what it was: its own name, agent and model. One
+		// that ran on the session's model follows it to the one it is now.
+		if was := e.sub.Model; e.sub.followSession(p) {
+			p.UI.OnInfo(fmt.Sprintf("  [%s] resumed on %s, the session's model now (it ran on %s)", e.sub.Name, p.Model, was))
+		}
 		in.Tasks[i] = taskSpec{Name: e.sub.Name, Prompt: task.Prompt, Resume: task.Resume, resumed: e}
 	}
 	defs := make([]*AgentDef, len(in.Tasks))
@@ -347,7 +351,10 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 			states[i].Agent = defs[i].Name
 		}
 		if e := task.resumed; e != nil {
-			states[i].Agent, states[i].Model, states[i].Window = e.agent, e.sub.Model, e.sub.ContextWindow
+			states[i].Agent, states[i].Window = e.agent, e.sub.ContextWindow
+			if !e.sub.sessionModel {
+				states[i].Model = e.sub.Model
+			}
 		} else if m := models[i]; m.Provider != nil {
 			states[i].Model, states[i].Window = m.Model, m.Window
 		} else if m.note != "" {
@@ -517,6 +524,7 @@ func (t *TaskTool) newSub(task taskSpec, def *AgentDef, model taskModel,
 		CacheWritePremium: p.CacheWritePremium, Env: p.Env, Plan: p.Plan, MaxOutputTokens: p.MaxOutputTokens,
 		Perms: p.Perms, Approve: p.Approve, Name: name, declined: p.declined, Hooks: p.Hooks,
 	}
+	sub.sessionModel = model.Provider == nil
 	if m := model; m.Provider != nil {
 		sub.Provider, sub.ProviderName, sub.Model, sub.ContextWindow = m.Provider, m.ProviderName, m.Model, m.Window
 		sub.Fast = false // fast mode is the session model's
@@ -524,6 +532,7 @@ func (t *TaskTool) newSub(task taskSpec, def *AgentDef, model taskModel,
 			sub.Thinking = m.thinking
 		}
 	}
+	sub.sessionThinking = sub.Thinking == p.Thinking && (def == nil || def.Thinking == "")
 	if task.Isolation == "worktree" || def != nil && def.Worktree {
 		if t.Isolate == nil {
 			status, _ = failed("no worktrees here", "failed: it can't have a worktree here: not a git repository, or worktrees are off")

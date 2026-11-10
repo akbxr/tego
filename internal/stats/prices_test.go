@@ -31,6 +31,26 @@ func TestCacheWritePremium(t *testing.T) {
 	}
 }
 
+// A Claude that came out after the tables is priced as the version before
+// it of its generation, not left without a price.
+func TestNewClaudeHasAPrice(t *testing.T) {
+	ps := Prices{Catalog: map[string]Price{"claude-zeta-5-1": {Input: 10, CacheWrite: 12.5}, "claude-zeta-5": {Input: 9}, "claude-eta-9": {Input: 7}}}
+	for model, want := range map[string]float64{
+		"claude-zeta-5-1": 10, "claude-zeta-5-4": 10, "claude-zeta-5.4": 10, "claude-zeta-5-4-20270101": 10,
+		"claude-eta-9-2": 7, "claude-zeta-6": 0, "claude-zeta-6-1": 0, "claude-theta-5-1": 0,
+	} {
+		if p, ok := ps.lookup("anthropic", model); p.Input != want || ok != (want > 0) {
+			t.Errorf("%s: %v %v, want input %v", model, p, ok, want)
+		}
+	}
+	if !ps.CacheWritePremium("anthropic", "claude-zeta-5-4") {
+		t.Error("a new Claude: no cache-write premium")
+	}
+	if p, _ := ps.lookup("anthropic", "claude-fable-5-2"); p.Input != 8 || p.CacheRead != 0.2 {
+		t.Errorf("Fable 5.2: %v", p)
+	}
+}
+
 func TestOutputSpeedSkipsBursts(t *testing.T) {
 	var tot Totals
 	for _, r := range []Record{

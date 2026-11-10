@@ -17,7 +17,7 @@ var claudeAliases = map[string]string{
 	"opus":   "claude-opus-5-5",
 	"sonnet": "claude-sonnet-5-5",
 	"haiku":  "claude-haiku-5-5",
-	"fable":  "claude-fable-5-1",
+	"fable":  "claude-fable-5-2",
 }
 
 // resolveModel is the model an agent definition names: an alias of
