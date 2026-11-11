@@ -54,6 +54,7 @@ func TestSubagentModelsLoad(t *testing.T) {
 	for cfg, msg := range map[string]string{
 		`{"subagent_models": {"small": "anthropic/claude-haiku-5-5"}}`:                        `"small" is taken`,
 		`{"subagent_models": {"main": "anthropic/claude-haiku-5-5"}}`:                         `"main" is taken`,
+		`{"subagent_models": {"default": "anthropic/claude-haiku-5-5"}}`:                      `"default" is taken`,
 		`{"subagent_models": {"My GPT": "openai-codex/gpt-5.6"}}`:                             `name "My GPT"`,
 		`{"subagent_models": {"gpt": ""}}`:                                                    "model is empty",
 		`{"subagent_models": {"gpt": {"model": "openai-codex/gpt-5.6", "thinking": "huge"}}}`: `invalid thinking level "huge"`,

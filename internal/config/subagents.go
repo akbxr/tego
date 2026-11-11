@@ -50,7 +50,7 @@ var subagentModelName = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,31}$`)
 func (c *Config) validateSubagentModels() error {
 	for _, m := range c.SubagentModelList() {
 		switch {
-		case m.Name == "main" || m.Name == "small":
+		case m.Name == "main" || m.Name == "small" || m.Name == "default":
 			return fmt.Errorf("subagent_models: %q is taken by a built-in choice; pick another name", m.Name)
 		case !subagentModelName.MatchString(m.Name):
 			return fmt.Errorf("subagent_models: name %q: use lowercase letters, digits, '.', '_' or '-'", m.Name)

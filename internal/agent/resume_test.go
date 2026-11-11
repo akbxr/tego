@@ -323,3 +323,24 @@ func TestDefaultSubagentModel(t *testing.T) {
 		t.Fatalf("resumed: opus %d, the session's now %d", len(opus.models), len(next.models))
 	}
 }
+
+// A subagent_models name as the default brings its thinking level.
+func TestDefaultSubagentModelThinking(t *testing.T) {
+	main, opus := &modelProvider{}, &modelProvider{}
+	parent := &Agent{Provider: main, ProviderName: "a", Model: "fable", Thinking: "high", UI: nopUI{}}
+	task := &TaskTool{Parent: parent, Env: &tools.Env{Cwd: t.TempDir()}, DefaultModel: "opus",
+		Models: func() []SubagentModel {
+			return []SubagentModel{{Name: "opus", Spec: "a/opus", Thinking: "xhigh", Resolve: func() (SmallModel, error) {
+				return SmallModel{Provider: opus, ProviderName: "a", Model: "opus"}, nil
+			}}}
+		}}
+	if _, err := taskCall(t, task, map[string]string{"name": "A", "prompt": "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(opus.models, main.models) != "[opus:xhigh] []" {
+		t.Fatalf("requests %v %v", opus.models, main.models)
+	}
+	if def := string(task.Def().Schema); !strings.Contains(def, "default (also when omitted): opus (a/opus)") {
+		t.Fatalf("schema: %s", def)
+	}
+}
