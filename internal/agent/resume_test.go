@@ -281,3 +281,45 @@ func TestResumeAfterRestart(t *testing.T) {
 		}
 	}
 }
+
+// subagent_model: a task that names no model runs on it, "main" on the
+// session's; an agent's model and inherit win over it. Resumed after a
+// /model, one on the default stays there.
+func TestDefaultSubagentModel(t *testing.T) {
+	fable, opus, small, next := &modelProvider{}, &modelProvider{}, &modelProvider{}, &modelProvider{}
+	parent := &Agent{Provider: fable, ProviderName: "a", Model: "fable", Thinking: "high", UI: nopUI{}}
+	task := &TaskTool{Parent: parent, Env: &tools.Env{Cwd: t.TempDir()}, DefaultModel: "opus",
+		Small: func() (SmallModel, bool) { return SmallModel{Provider: small, ProviderName: "a", Model: "haiku"}, true },
+		ResolveModel: func(spec string) (SmallModel, error) {
+			if spec != "opus" {
+				return SmallModel{}, fmt.Errorf("no %s", spec)
+			}
+			return SmallModel{Provider: opus, ProviderName: "a", Model: "opus"}, nil
+		},
+		Agents: func() []AgentDef {
+			return []AgentDef{{Name: "plain"}, {Name: "same", Model: "inherit"}, {Name: "quick", Model: "small"}}
+		}}
+	if def := string(task.Def().Schema); !strings.Contains(def, `"enum":["default","main","small"]`) || !strings.Contains(def, "default (also when omitted): opus") {
+		t.Fatalf("schema: %s", def)
+	}
+	for _, spec := range []map[string]string{
+		{"name": "A", "prompt": "x"}, {"name": "B", "prompt": "x", "model": "default"}, {"name": "C", "prompt": "x", "model": "main"},
+		{"name": "D", "prompt": "x", "agent": "plain"}, {"name": "E", "prompt": "x", "agent": "same"}, {"name": "F", "prompt": "x", "agent": "quick"},
+	} {
+		if _, err := taskCall(t, task, spec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := fmt.Sprint(len(opus.models), len(fable.models), len(small.models) >= 1); got != "3 2 true" {
+		t.Fatalf("opus, session's, small: %s", got)
+	}
+	parent.Provider, parent.Model = next, "fable2"
+	for _, name := range []string{"A", "C"} {
+		if _, err := taskCall(t, task, map[string]string{"prompt": "more", "resume": name}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(opus.models) != 4 || len(next.models) != 1 {
+		t.Fatalf("resumed: opus %d, the session's now %d", len(opus.models), len(next.models))
+	}
+}

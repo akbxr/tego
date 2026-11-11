@@ -682,7 +682,7 @@ func (a *app) init(spec, thinking string) error {
 // search. The terminal and tego acp share it.
 func (a *app) setupTools(files []agent.ContextFile) {
 	task := &agent.TaskTool{Parent: a.ag, System: agent.SystemPrompt(a.cwd, files, a.skills, agent.SubagentMode), Env: a.env, Concurrency: a.cfg.Subagents,
-		MaxTurns: a.cfg.SubagentMaxTurns(), Watchdog: a.cfg.SubagentWatchdog(), Small: a.small, Models: a.subagentModels, Agents: a.agents, ResolveModel: a.resolveModel, Isolate: isolator(a.cfg.Dir, a.cwd, a.cfg.SubagentMerge)}
+		MaxTurns: a.cfg.SubagentMaxTurns(), Watchdog: a.cfg.SubagentWatchdog(), Small: a.small, Models: a.subagentModels, Agents: a.agents, ResolveModel: a.resolveModel, DefaultModel: a.cfg.SubagentModel, Isolate: isolator(a.cfg.Dir, a.cwd, a.cfg.SubagentMerge)}
 	a.setupBackground(task)
 	a.ag.Tools = append(tools.Builtins(a.env), task, &agent.TaskStatusTool{BG: a.bg},
 		&agent.TodoTool{Parent: a.ag},

@@ -47,6 +47,10 @@ type TaskTool struct {
 	// main, small or a named model: an alias (opus, sonnet, haiku) or
 	// provider/model. Zero Provider and nil error: the session's model.
 	ResolveModel func(spec string) (SmallModel, error)
+	// DefaultModel is the model a task runs on when it names none (config
+	// subagent_model): a Models name, an alias or provider/model. "": the
+	// session's. "main" still asks for the session's.
+	DefaultModel string
 	// Isolate gives a task ("isolation": "worktree") a git worktree of its
 	// own: the folder to work in, a note on it for the subagent, and finish,
 	// which removes the worktree if nothing is in it and says what became of
@@ -174,17 +178,31 @@ func (t *TaskTool) models() []SubagentModel {
 func (t *TaskTool) modelProperty() string {
 	s, hasSmall := t.small()
 	named := t.models()
-	if !hasSmall && len(named) == 0 {
+	if !hasSmall && len(named) == 0 && t.DefaultModel == "" {
 		return ""
 	}
 	enum := []string{"main"}
 	var desc strings.Builder
+	if t.DefaultModel != "" {
+		enum = []string{"default", "main"}
+		label := t.DefaultModel
+		for _, m := range named {
+			if m.Name == label {
+				label += " (" + m.Spec + ")"
+			}
+		}
+		desc.WriteString("default (also when omitted): " + label + ", the subagents' model, for most tasks. ")
+	}
 	if hasSmall {
 		enum = append(enum, "small")
 		desc.WriteString("small: " + s.Model + ", faster and much cheaper, for simple, well-defined work: finding files or code, " +
 			"reading and summarising, running checks and reporting. ")
 	}
-	desc.WriteString("main (default): the session's model, for anything that needs judgment, design or careful edits.")
+	if t.DefaultModel != "" {
+		desc.WriteString("main: the session's own model, for the tasks that need it most: hard judgment, design, delicate edits.")
+	} else {
+		desc.WriteString("main (default): the session's model, for anything that needs judgment, design or careful edits.")
+	}
 	for _, m := range named {
 		enum = append(enum, m.Name)
 		use := m.Use
@@ -260,7 +278,7 @@ const resumeProperty = `,"resume":{"type":"string","description":"Resume a subag
 type taskSpec struct {
 	Name   string `json:"name"`
 	Prompt string `json:"prompt"`
-	Model  string `json:"model"` // "small", a named model, or main ("")
+	Model  string `json:"model"` // "default" (""), "main", "small" or a named model
 	Agent  string `json:"agent"` // a defined agent, or "" for a general subagent
 	// Isolation "worktree": in a worktree of its own.
 	Isolation string `json:"isolation"`
@@ -343,8 +361,17 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 	asked := make([]string, len(in.Tasks))
 	for i, task := range in.Tasks {
 		asked[i] = task.Model
-		if d := defs[i]; asked[i] == "" && d != nil && !strings.EqualFold(d.Model, "inherit") {
+		if d := defs[i]; asked[i] == "" && d != nil {
 			asked[i] = d.Model // the task's own choice wins over the agent's
+			if strings.EqualFold(d.Model, "inherit") {
+				asked[i] = "main"
+			}
+		}
+		switch {
+		case task.resumed != nil:
+			asked[i] = "main" // it has its model
+		case asked[i] == "" || asked[i] == "default":
+			asked[i] = t.DefaultModel
 		}
 	}
 	models := t.pickModels(asked)
@@ -544,7 +571,9 @@ func (t *TaskTool) newSub(task taskSpec, def *AgentDef, model taskModel,
 		CacheWritePremium: p.CacheWritePremium, Env: p.Env, Plan: p.Plan, MaxOutputTokens: p.MaxOutputTokens,
 		Perms: p.Perms, Approve: p.Approve, Name: name, declined: p.declined, Hooks: p.Hooks,
 	}
-	sub.sessionModel = model.Provider == nil
+	// On the session's model by choice, not as the one a default or a name
+	// gave (or that was unavailable): resumed after a /model, it follows.
+	sub.sessionModel = model.Provider == nil && (task.spec == "" || task.spec == "main")
 	if m := model; m.Provider != nil {
 		sub.Provider, sub.ProviderName, sub.Model, sub.ContextWindow = m.Provider, m.ProviderName, m.Model, m.Window
 		sub.Fast = false // fast mode is the session model's

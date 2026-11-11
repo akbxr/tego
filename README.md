@@ -109,6 +109,7 @@ In my benchmarks, 3 runs per task, tego cost 44% less than oh-my-pi with Sonnet 
   "thinking": "medium",
   "subagents": 8,
   "subagent_max_turns": 150,
+  "subagent_model": "opus",
   "subagent_watchdog": 40,
   "small_model": "anthropic/claude-haiku-5-5",
   "subagent_models": {
@@ -136,6 +137,8 @@ A subagent that ended, whether stopped at its limit, by the watchdog, interrupte
 `subagent_watchdog` checks on a subagent every 40 requests by default (`0` turns it off). The small model reads its task and what it did since the last check, and says whether it is getting somewhere. The first time it is stuck (the same failure again and again, going in circles, or working on something else), the subagent is told and changes course. The second time in a row, it writes its report and stops. The check runs beside the subagent, so it never waits for it, and costs about one small request per 40.
 
 `subagent_models` names more models for subagents, from other subscriptions too. The session's model picks one per task from its name and `use`, or you can ask for one ("review it with gpt"). `thinking` sets one's thinking level. Only models you are logged in for are offered, and a subagent whose model fails to start runs on the session's model and says so.
+
+`subagent_model` is the model of a task that names none: a Claude alias (`opus`, `sonnet`, `haiku`, `fable`), any `provider/model`, or a `subagent_models` name, whose `thinking` then applies. Without it, subagents run on the session's model. With it, the session's model can still ask for itself with `"model": "main"` when a task needs it most. So Fable can lead while the subagents run on Opus, at half the price per token and outside Fable's own weekly limit. An agent file's `model` wins over it, and `inherit` means the session's model.
 
 `"lsp": false` turns off the language servers. `lsp_servers` adds one, changes a built-in one by name or turns it off with `false`:
 

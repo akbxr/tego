@@ -155,7 +155,7 @@ func (t *TaskTool) revive(e *endedSub) error {
 	if model.note != "" {
 		t.Parent.UI.OnInfo(fmt.Sprintf("  [%s] %s; it runs on %s", e.name, model.note, t.Parent.Model))
 	}
-	sub, _, _ := t.newSub(taskSpec{Name: e.name}, def, model, func(_, status string) (string, string) { return status, "" })
+	sub, _, _ := t.newSub(taskSpec{Name: e.name, spec: e.model}, def, model, func(_, status string) (string, string) { return status, "" })
 	e.saved, e.fp = len(msgs), fingerprint(msgs[len(msgs)-1])
 	sub.SetHistory(msgs)
 	e.sub = sub
