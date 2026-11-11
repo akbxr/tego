@@ -67,6 +67,10 @@ func (b *Background) start(t *TaskTool, specs []taskSpec, defs []*AgentDef, mode
 	for i, spec := range specs {
 		b.next++
 		id := fmt.Sprintf("t%d", b.next)
+		for t.Parent.endedID(id) { // one restored from the session file has it
+			b.next++
+			id = fmt.Sprintf("t%d", b.next)
+		}
 		states[i].ID = id
 		ctx, cancel := context.WithCancel(b.ctx)
 		bt := &bgTask{id: id, prompt: spec.Prompt, st: states[i], parent: t.Parent, cancel: cancel}

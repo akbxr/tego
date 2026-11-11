@@ -216,7 +216,8 @@ func (a *Agent) SetHistory(msgs []llm.Message) {
 	a.lastReply = a.historyCachedAt(msgs) // a resumed session's cache may have expired
 	a.ka.verified = -1                    // the keep-alive checks the new history against what it sends
 	a.activateFromHistory(msgs)
-	a.forgetEnded() // their reports may not be in this history
+	a.forgetEnded()  // their reports may not be in this history
+	a.restoreEnded() // those the session file has for this path
 	todos := latestTodos(msgs)
 	a.todoMu.Lock()
 	a.todos = todos

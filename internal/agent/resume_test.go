@@ -4,11 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/akbxr/tego/internal/llm"
+	"github.com/akbxr/tego/internal/session"
 	"github.com/akbxr/tego/internal/tools"
 )
 
@@ -122,7 +126,8 @@ func TestResumeTakesOnce(t *testing.T) {
 func TestEndedKeepsTheLatest(t *testing.T) {
 	a := &Agent{}
 	for i := range endedMax + 2 {
-		a.keepEnded(&endedSub{sub: &Agent{Name: fmt.Sprintf("S%d", i)}, id: fmt.Sprintf("t%d", i)})
+		name := fmt.Sprintf("S%d", i)
+		a.keepEnded(&endedSub{sub: &Agent{Name: name}, name: name, id: fmt.Sprintf("t%d", i)})
 	}
 	if _, err := a.takeEnded("t0"); err == nil {
 		t.Fatal("the oldest was kept past the cap")
@@ -182,5 +187,97 @@ func TestResumeFollowsSessionModel(t *testing.T) {
 	}
 	if subs := parent.Subagents(); len(subs) != 1 || subs[0].Model != "haiku" {
 		t.Fatalf("panel %+v", subs)
+	}
+}
+
+// A subagent that ended is resumed after tego restarts: its history is in
+// the session file. Each later record adds only what is new, and a branch
+// from before it ran doesn't have it.
+func TestResumeAfterRestart(t *testing.T) {
+	base, cwd := t.TempDir(), t.TempDir()
+	s, err := session.New(base, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := s.Path
+	if err := s.Append(llm.Message{Role: llm.RoleUser, Blocks: []llm.Block{{Type: llm.BlockText, Text: "hi"}}}); err != nil {
+		t.Fatal(err)
+	}
+	first := s.Leaf() // where it is asked for
+	prov := &memProvider{}
+	parent := &Agent{Provider: prov, ProviderName: "a", Model: "opus", UI: nopUI{}, Session: s}
+	task := &TaskTool{Parent: parent, Env: &tools.Env{Cwd: cwd}, MaxTurns: 3}
+	if out, err := taskCall(t, task, map[string]string{"name": "Worker", "prompt": "work"}); err != nil || !strings.Contains(out, "stopped at its limit") {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	stopped := prov.sizes[len(prov.sizes)-1]
+	if err := s.Append(llm.Message{Role: llm.RoleAssistant, Blocks: []llm.Block{{Type: llm.BlockText, Text: "it stopped"}}}); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	restart := func() (*Agent, *TaskTool, *memProvider, *infoUI) {
+		t.Helper()
+		s, msgs, err := session.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { s.Close() })
+		prov, ui := &memProvider{}, &infoUI{}
+		p := &Agent{Provider: prov, ProviderName: "a", Model: "fable", UI: ui, Session: s}
+		p.SetHistory(msgs)
+		return p, &TaskTool{Parent: p, Env: &tools.Env{Cwd: cwd}, MaxTurns: 3}, prov, ui
+	}
+	parent, task, prov, ui := restart()
+	out, err := taskCall(t, task, map[string]string{"name": "x", "prompt": "go on", "resume": "worker"})
+	if err != nil || !strings.HasPrefix(out, "## Worker (done)\nfinished") {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if prov.n != 1 || prov.first[0] != "work" || prov.sizes[0] <= stopped {
+		t.Fatalf("resumed without its context: first %q, sizes %v (it had %d)", prov.first, prov.sizes, stopped)
+	}
+	if !slices.Contains(ui.infos, "  [Worker] resumed on fable, the session's model now (it ran on opus)") {
+		t.Fatalf("info %q", ui.infos)
+	}
+	resumedAt := prov.sizes[0]
+	parent.Session.Close()
+
+	// Again: it goes on from all it did, and the file adds only that.
+	parent, task, prov, _ = restart()
+	if _, err := taskCall(t, task, map[string]string{"name": "x", "prompt": "go on", "resume": "Worker"}); err != nil {
+		t.Fatal(err)
+	}
+	if prov.n != 1 || prov.sizes[0] <= resumedAt {
+		t.Fatalf("sizes %v, after %d", prov.sizes, resumedAt)
+	}
+	data, _ := os.ReadFile(path)
+	if n, chained := strings.Count(string(data), `"type":"subagent"`), strings.Count(string(data), `"prev":`); n != 3 || chained != 2 {
+		t.Fatalf("%d records, %d building on the one before", n, chained)
+	}
+
+	// A background task after a restart doesn't take the id of one restored.
+	if _, err := parent.Session.SaveSubagent("bgkey", "", 0, json.RawMessage(`{"name":"Bg","id":"t1"}`),
+		[]llm.Message{{Role: llm.RoleUser, Blocks: []llm.Block{{Type: llm.BlockText, Text: "work"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	parent.Session.Close()
+	parent, task, _, _ = restart()
+	bg := &Background{}
+	t.Cleanup(func() { bg.Close(5 * time.Second) })
+	task.Background = bg
+	in, _ := json.Marshal(map[string]any{"tasks": []map[string]string{{"name": "New", "prompt": "go on"}}, "background": true})
+	if out, err := task.Run(context.Background(), in); err != nil || !strings.Contains(out, "t2 New") {
+		t.Fatalf("%v\n%s", err, out)
+	}
+
+	// Back to where it ran: it is there; before that, it isn't.
+	for _, at := range []string{first, ""} {
+		if _, err := parent.Session.Checkout(at); err != nil {
+			t.Fatal(err)
+		}
+		parent.SetHistory(parent.Session.History(at))
+		if _, err := parent.takeEnded("Worker"); (err == nil) != (at == first) {
+			t.Fatalf("at %q: %v", at, err)
+		}
 	}
 }

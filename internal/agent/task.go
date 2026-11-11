@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/akbxr/tego/internal/llm"
+	"github.com/akbxr/tego/internal/session"
 	"github.com/akbxr/tego/internal/tools"
 )
 
@@ -264,7 +266,9 @@ type taskSpec struct {
 	Isolation string `json:"isolation"`
 	Resume    string `json:"resume"` // an ended subagent to go on with
 
-	resumed *endedSub // the one Resume names, taken out of the kept ones
+	resumed *endedSub        // the one Resume names, taken out of the kept ones
+	spec    string           // the model it was asked to run on ("" = the session's)
+	sess    *session.Session // the session's file when the task was called, to record it in
 }
 
 func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, error) {
@@ -287,6 +291,9 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 			continue
 		}
 		e, err := p.takeEnded(task.Resume)
+		if err == nil && e.sub == nil { // restored from the session file
+			err = t.revive(e) // one that can't be is not given back
+		}
 		if err != nil {
 			for _, done := range in.Tasks[:i] { // give back the ones taken
 				if done.resumed != nil {
@@ -297,10 +304,12 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 		}
 		// It goes on as what it was: its own name, agent and model. One
 		// that ran on the session's model follows it to the one it is now.
-		if was := e.sub.Model; e.sub.followSession(p) {
-			p.UI.OnInfo(fmt.Sprintf("  [%s] resumed on %s, the session's model now (it ran on %s)", e.sub.Name, p.Model, was))
+		was := cmp.Or(e.ranOn, e.sub.Model)
+		e.ranOn = ""
+		if e.sub.followSession(p) || e.sub.sessionModel && was != e.sub.Model {
+			p.UI.OnInfo(fmt.Sprintf("  [%s] resumed on %s, the session's model now (it ran on %s)", e.name, p.Model, was))
 		}
-		in.Tasks[i] = taskSpec{Name: e.sub.Name, Prompt: task.Prompt, Resume: task.Resume, resumed: e}
+		in.Tasks[i] = taskSpec{Name: e.name, Prompt: task.Prompt, Resume: task.Resume, resumed: e, spec: e.model}
 	}
 	defs := make([]*AgentDef, len(in.Tasks))
 	anyAgent := false
@@ -341,6 +350,10 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 	models := t.pickModels(asked)
 	states := make([]*SubagentStatus, len(in.Tasks))
 	for i, task := range in.Tasks {
+		if task.resumed == nil {
+			in.Tasks[i].spec = asked[i]
+		}
+		in.Tasks[i].sess = p.Session
 		name := task.Name
 		if name == "" {
 			name = fmt.Sprintf("task%d", i+1)
@@ -503,8 +516,15 @@ func (t *TaskTool) runOne(ctx context.Context, task taskSpec, def *AgentDef, mod
 	} else if task.resumed != nil {
 		agentName = task.resumed.agent
 	}
-	e := &endedSub{sub: sub, id: st.ID, agent: agentName, task: asked}
+	e := task.resumed // its records in the session file go on
+	if e == nil {
+		e = &endedSub{name: name, model: task.spec}
+	}
+	e.sub, e.id, e.agent, e.task = sub, st.ID, agentName, asked
 	sub.Watchdog, sub.Notices = nil, nil
+	if err := e.save(task.sess); err != nil { // before another task can take it
+		p.UI.OnInfo(fmt.Sprintf("  [%s] its context could not be saved in the session file (%v): it can be resumed until tego exits", name, err))
+	}
 	p.keepEnded(e)
 	if err != nil {
 		report += fmt.Sprintf("\n\n[resume: %q goes on with its context]", e.ref())

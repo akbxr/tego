@@ -38,7 +38,7 @@ import (
 )
 
 type entry struct {
-	Type    string `json:"type"` // header | message | compaction | title | leaf | blob
+	Type    string `json:"type"` // header | message | compaction | title | leaf | blob | subagent
 	ID      string `json:"id,omitempty"`
 	Parent  string `json:"parent,omitempty"`
 	Time    int64  `json:"ts,omitempty"`
@@ -54,6 +54,13 @@ type entry struct {
 	// blob: a media block's Data, referenced by its sha256
 	SHA  string `json:"sha,omitempty"`
 	Data string `json:"data,omitempty"`
+	// subagent (subagents.go): Parent is the node it ended after
+	Key   string          `json:"key,omitempty"`
+	Prev  string          `json:"prev,omitempty"`
+	From  int             `json:"from,omitempty"`
+	Count int             `json:"count,omitempty"`
+	Meta  json.RawMessage `json:"meta,omitempty"`
+	Gzip  string          `json:"gzip,omitempty"`
 }
 
 // A reference block keeps every field of the block but Data, and its type
@@ -108,6 +115,7 @@ type Session struct {
 
 	mu     sync.Mutex         // serialises writes
 	blobs  map[string]blobLoc // sha -> blob entry in the file (under mu)
+	subs   []*subRecord       // subagent records, in file order (under mu)
 	Title  string             // generated title ("" = none yet)
 	Cwd    string             // working directory the session was started in ("" in files without a header)
 	ForkOf string             // id of the session this one was forked or cloned from ("" = none)
@@ -207,6 +215,12 @@ type lightEntry struct {
 	Title   string        `json:"title"`
 	SHA     string        `json:"sha"`
 	Message *outlineEntry `json:"message"`
+	// subagent: all but its history
+	Key   string          `json:"key"`
+	Prev  string          `json:"prev"`
+	From  int             `json:"from"`
+	Count int             `json:"count"`
+	Meta  json.RawMessage `json:"meta"`
 }
 
 type outlineEntry struct {
@@ -292,6 +306,11 @@ func load(path string) (*Session, error) {
 			}
 		case "title":
 			s.Title = e.Title
+		case "subagent":
+			if e.ID != "" && e.Key != "" {
+				s.subs = append(s.subs, &subRecord{id: e.ID, key: e.Key, prev: e.Prev, anchor: e.Parent, from: e.From,
+					count: e.Count, meta: e.Meta, time: time.Unix(e.Time, 0), off: off, size: len(line)})
+			}
 		case "leaf":
 			if _, ok := s.nodes[e.ID]; ok || e.ID == "" {
 				s.leaf = e.ID
@@ -309,7 +328,9 @@ func (s *Session) add(n *Node) *Node {
 		n.Parent = ""
 		s.roots = append(s.roots, n)
 	}
+	s.mu.Lock() // a subagent record takes the leaf from another goroutine
 	s.leaf = n.ID
+	s.mu.Unlock()
 	return n
 }
 
@@ -686,7 +707,9 @@ func (s *Session) Checkout(id string) ([]llm.Message, error) {
 	if _, _, err := s.write(entry{Type: "leaf", ID: id}); err != nil {
 		return nil, err
 	}
+	s.mu.Lock()
 	s.leaf = id
+	s.mu.Unlock()
 	return s.History(id), nil
 }
 
