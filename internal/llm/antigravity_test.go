@@ -314,9 +314,15 @@ func TestParseAntigravityStreamEndings(t *testing.T) {
 			var ae *APIError
 			return errors.As(err, &ae) && ae.retryable()
 		}},
-		{"truncated", agSSE(text), "", func(err error) bool {
+		{"truncated", agSSE(`{"response":{"candidates":[{"content":{"parts":[{"text":"hi"}]}}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":1}}}`), "", func(err error) bool {
 			var se *streamError
 			return errors.As(err, &se)
+		}},
+		// A retired model: the service's notice as text, no counts, no end.
+		{"notice", agSSE(`{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"Gemini 3.5 Flash is no longer available. Please switch to Gemini 3.7 Flash in the latest version of Antigravity."}]}}]}}`), "", func(err error) bool {
+			var se *streamError
+			return !errors.As(err, &se) && err.Error() == "ag: the service answered instead of the model: Gemini 3.5 Flash is no longer available. "+
+				"Please switch to Gemini 3.7 Flash in the latest version of Antigravity." && func() bool { _, ok := retryDelay(err, 0); return !ok }()
 		}},
 		{"thought only", agSSE(`{"response":{"candidates":[{"content":{"parts":[{"thought":true,"text":"hmm"}]},"finishReason":"STOP"}]}}`), "", func(err error) bool {
 			return strings.Contains(err.Error(), "thought-only")

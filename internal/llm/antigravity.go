@@ -958,7 +958,8 @@ func parseAntigravityStream(ctx context.Context, provider string, body io.Reader
 	defer func() { acc.finalize(msg, err != nil) }()
 	cur := -1 // index of the open text/thinking block
 	finish := ""
-	meaningful, thought := false, false
+	meaningful, thought, counted := false, false, false
+	var said strings.Builder // the answer's text, for a notice in its place
 	ids := map[string]bool{}
 
 	open := func(typ BlockType) int {
@@ -1032,6 +1033,9 @@ func parseAntigravityStream(ctx context.Context, provider string, body io.Reader
 						bi := open(BlockText)
 						acc.addText(bi, part.Text)
 						sign(bi, part.ThoughtSignature)
+						if said.Len() < 2000 {
+							said.WriteString(part.Text)
+						}
 						if strings.TrimSpace(part.Text) != "" {
 							meaningful = true
 						}
@@ -1068,6 +1072,7 @@ func parseAntigravityStream(ctx context.Context, provider string, body io.Reader
 			}
 		}
 		if r.UsageMetadata != nil {
+			counted = true
 			msg.Usage = agUsage(r.UsageMetadata)
 			// Antigravity sends nothing while the model thinks, so the
 			// stream only times the answer itself.
@@ -1087,6 +1092,12 @@ func parseAntigravityStream(ctx context.Context, provider string, body io.Reader
 	switch {
 	case finish == "" && !meaningful && !thought:
 		return msg, responseID, &APIError{Provider: provider, Status: 503, Body: "Cloud Code Assist API returned an empty response"}
+	case finish == "" && !counted && !thought && !hasTools:
+		// Text and nothing else, not even token counts: the service's
+		// notice, not the model's answer ("Gemini 3.5 Flash is no longer
+		// available. Please switch to Gemini 3.7 Flash ..." for a retired
+		// model). Asking again gets the same.
+		return msg, responseID, fmt.Errorf("%s: the service answered instead of the model: %s", provider, truncate(strings.TrimSpace(said.String()), 500))
 	case finish == "":
 		return msg, responseID, &streamError{errors.New("Cloud Code Assist stream ended without a finish reason")}
 	case finish != "STOP" && finish != "MAX_TOKENS":
