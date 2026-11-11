@@ -109,7 +109,7 @@ In my benchmarks, 3 runs per task, tego cost 44% less than oh-my-pi with Sonnet 
   "thinking": "medium",
   "subagents": 8,
   "subagent_max_turns": 150,
-  "subagent_model": "opus",
+  "subagent_model": "anthropic/claude-opus-5-5:xhigh",
   "subagent_watchdog": 40,
   "small_model": "anthropic/claude-haiku-5-5",
   "subagent_models": {
@@ -138,7 +138,7 @@ A subagent that ended, whether stopped at its limit, by the watchdog, interrupte
 
 `subagent_models` names more models for subagents, from other subscriptions too. The session's model picks one per task from its name and `use`, or you can ask for one ("review it with gpt"). `thinking` sets one's thinking level. Only models you are logged in for are offered, and a subagent whose model fails to start runs on the session's model and says so.
 
-`subagent_model` is the model of a task that names none: a Claude alias (`opus`, `sonnet`, `haiku`, `fable`), any `provider/model`, or a `subagent_models` name, whose `thinking` then applies. Without it, subagents run on the session's model. With it, the session's model can still ask for itself with `"model": "main"` when a task needs it most. So Fable can lead while the subagents run on Opus, at half the price per token and outside Fable's own weekly limit. An agent file's `model` wins over it, and `inherit` means the session's model.
+`subagent_model` is the model of a task that names none: a Claude alias (`opus`, `sonnet`, `haiku`, `fable`), any `provider/model`, or a `subagent_models` name, whose `thinking` then applies. A `:level` at the end sets the subagents' thinking level, as in `/model opus:high`; without one they think as much as the session. Without it, subagents run on the session's model. With it, the session's model can still ask for itself with `"model": "main"` when a task needs it most. So Fable can lead while the subagents run on Opus, at half the price per token and outside Fable's own weekly limit. An agent file's `model` wins over it (a `:level` works there too), and `inherit` means the session's model.
 
 `"lsp": false` turns off the language servers. `lsp_servers` adds one, changes a built-in one by name or turns it off with `false`:
 

@@ -187,7 +187,7 @@ func (t *TaskTool) modelProperty() string {
 		enum = []string{"default", "main"}
 		label := t.DefaultModel
 		for _, m := range named {
-			if m.Name == label {
+			if name, _ := splitLevel(label); m.Name == name {
 				label += " (" + m.Spec + ")"
 			}
 		}
@@ -223,8 +223,35 @@ type taskModel struct {
 	note     string // why it runs on the session's model instead of the one asked for
 }
 
-// pickModels resolves the models the tasks asked for, each once.
+// splitLevel splits a ":level" thinking suffix off a model spec
+// ("anthropic/claude-opus-5-5:xhigh"); a tag that is no level stays
+// ("ollama/qwen3:8b").
+func splitLevel(spec string) (string, string) {
+	if i := strings.LastIndexByte(spec, ':'); i >= 0 && llm.ThinkingRank(spec[i+1:]) >= 0 {
+		return spec[:i], spec[i+1:]
+	}
+	return spec, ""
+}
+
+// pickModels resolves the models the tasks asked for, each once. A
+// ":level" suffix sets the thinking level.
 func (t *TaskTool) pickModels(asked []string) []taskModel {
+	out := make([]taskModel, len(asked))
+	names := make([]string, len(asked))
+	for i, spec := range asked {
+		names[i], out[i].thinking = splitLevel(spec)
+	}
+	models := t.pickNamed(names)
+	for i := range out {
+		if level := out[i].thinking; level != "" {
+			models[i].thinking = level
+		}
+		out[i] = models[i]
+	}
+	return out
+}
+
+func (t *TaskTool) pickNamed(asked []string) []taskModel {
 	small, hasSmall := t.small()
 	var named map[string]SubagentModel
 	resolved := map[string]taskModel{}
@@ -577,11 +604,11 @@ func (t *TaskTool) newSub(task taskSpec, def *AgentDef, model taskModel,
 	if m := model; m.Provider != nil {
 		sub.Provider, sub.ProviderName, sub.Model, sub.ContextWindow = m.Provider, m.ProviderName, m.Model, m.Window
 		sub.Fast = false // fast mode is the session model's
-		if m.thinking != "" {
-			sub.Thinking = m.thinking
-		}
 	}
-	sub.sessionThinking = sub.Thinking == p.Thinking && (def == nil || def.Thinking == "")
+	if model.thinking != "" { // its own, or the level a ":level" asked for
+		sub.Thinking = model.thinking
+	}
+	sub.sessionThinking = model.thinking == "" && (def == nil || def.Thinking == "")
 	if task.Isolation == "worktree" || def != nil && def.Worktree {
 		if t.Isolate == nil {
 			status, _ = failed("no worktrees here", "failed: it can't have a worktree here: not a git repository, or worktrees are off")

@@ -344,3 +344,32 @@ func TestDefaultSubagentModelThinking(t *testing.T) {
 		t.Fatalf("schema: %s", def)
 	}
 }
+
+// A ":level" suffix sets a subagent's thinking level, and it keeps it
+// when resumed after the session's level changed; a tag that is no level
+// is part of the model.
+func TestModelLevelSuffix(t *testing.T) {
+	main, opus := &modelProvider{}, &modelProvider{}
+	parent := &Agent{Provider: main, ProviderName: "a", Model: "fable", Thinking: "high", UI: nopUI{}}
+	var resolved []string
+	task := &TaskTool{Parent: parent, Env: &tools.Env{Cwd: t.TempDir()}, DefaultModel: "a/opus:xhigh",
+		ResolveModel: func(spec string) (SmallModel, error) {
+			resolved = append(resolved, spec)
+			return SmallModel{Provider: opus, ProviderName: "a", Model: "opus"}, nil
+		}}
+	if _, err := taskCall(t, task, map[string]string{"name": "A", "prompt": "x"}); err != nil {
+		t.Fatal(err)
+	}
+	parent.Thinking = "low"
+	if _, err := taskCall(t, task, map[string]string{"prompt": "more", "resume": "A"}); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(opus.models, main.models, resolved) != "[opus:xhigh opus:xhigh] [] [a/opus]" {
+		t.Fatalf("requests %v %v, resolved %q", opus.models, main.models, resolved)
+	}
+	for spec, want := range map[string]string{"ollama/qwen3:8b": "ollama/qwen3:8b|", "opus:max": "opus|max", "opus": "opus|", "main:low": "main|low"} {
+		if name, level := splitLevel(spec); name+"|"+level != want {
+			t.Errorf("%s: %s|%s", spec, name, level)
+		}
+	}
+}
