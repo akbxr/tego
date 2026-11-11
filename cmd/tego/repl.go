@@ -44,6 +44,7 @@ var builtinCommands = []struct{ name, icon, help string }{
 	{"usage", "▤", "Subscription usage and resets for every logged-in account"},
 	{"stats", "▦", "Requests, tokens and estimated cost: /stats [cache] [24h|7d|30d|90d|all]"},
 	{"mcp", "⌁", "MCP server status and tool counts"},
+	{"restart", "⟳", "Start tego again on this session: a new binary or config.json applies, the model and settings stay"},
 	{"exit", "×", "Quit (alias /quit, Ctrl+D)"},
 }
 
@@ -62,6 +63,7 @@ func (a *app) repl(initial string) error {
 	}()
 	a.offerStaleShells()
 	a.listenPeers()
+	a.startStaleWatch()
 	defer a.peers.hub.Close()
 	defer func() {
 		if a.cancel != nil { // exiting mid-turn: stop it and let it record the abort
@@ -193,6 +195,9 @@ func (a *app) repl(initial string) error {
 		case <-bgTick.C:
 			if a.cancel == nil && a.bg.Running() > 0 {
 				a.tui.Redraw()
+			}
+			if a.cancel == nil {
+				a.checkStale()
 			}
 			a.keepAliveTick()
 		case r := <-a.keepAliveCh:
@@ -637,6 +642,8 @@ func (a *app) command(line string, done chan<- error) bool {
 	switch name {
 	case "exit", "quit", "q":
 		return a.confirmExit()
+	case "restart":
+		return a.restartCommand()
 	case "tasks":
 		a.tasksCommand()
 	case "help", "?":

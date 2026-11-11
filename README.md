@@ -166,6 +166,9 @@ A response's output limit covers its thinking and its answer. On Claude it is 64
 | `/compact`, `/retry` | Summarise the context, retry a failed turn |
 | `/login`, `/accounts`, `/usage` | Accounts and subscription limits |
 | `/stats`, `/mcp`, `/skills` | Usage, MCP servers, skills |
+| `/restart` | Start tego again on this session, on the binary and config installed now |
+
+A session can stay open for days. When the tego binary is replaced (an install or `tego update`) or `config.json` changes, tego says so once while it waits for a prompt. `/restart` then starts it again on the same session, keeping its model, thinking level, permission mode, fast mode and worktree. Background tasks and shells stop, after asking first, and a subagent stopped this way can be resumed after the restart.
 
 Type `/` for the full list. `@` attaches a file, `!cmd` runs a shell command yourself, and Ctrl+V pastes an image. Drag in an image or a video, or type its path. Gemini models get the video itself with its sound, up to 20 minutes per read. A file up to 10 MB in mp4, mov, webm or 3gp (H.264, HEVC, VP8/9 or AV1) is sent as is. Other files, and parts of a video, are re-encoded to 1280px at 2 fps. Other models get frames with their timestamps: 6 to 16 spread over the video's length, without the sound. If you switch to such a model, earlier videos in the session are sent to it as frames. The model can look at part of a video again with `start` and `end` (and `frames`). Video needs `ffmpeg` on PATH.
 

@@ -246,6 +246,9 @@ func (a *app) openSession(path string) {
 type restartError struct {
 	dir  string
 	args []string
+	// keepWorktree: the same session goes on (/restart), in its worktree
+	// as it is, which is not committed or removed on the way.
+	keepWorktree bool
 }
 
 func (r *restartError) Error() string { return "restart in " + r.dir }

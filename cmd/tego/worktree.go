@@ -16,7 +16,7 @@ import (
 // stays unless the user says otherwise. Without a terminal (-p) it stays.
 func (a *app) finishWorktree() {
 	t := a.worktree
-	if t == nil {
+	if t == nil || a.restart != nil && a.restart.keepWorktree {
 		return
 	}
 	say := func(format string, args ...any) {

@@ -247,7 +247,7 @@ func run() error {
 	var notes []string // said once the UI is up
 	var wt *worktree.Tree
 	if o.worktree {
-		if o.resume != "" || o.listResume {
+		if o.listResume {
 			return errors.New("-w and -r don't go together: a session resumes in its own folder, worktree included")
 		}
 		var created bool
@@ -272,6 +272,9 @@ func run() error {
 		// A session from another project runs in that project's folder.
 		if path, err := session.Find(cfg.Dir, cwd, o.resume); err == nil {
 			if dir := sessionDir(path); dir != "" && !sameDir(dir, cwd) {
+				if wt != nil { // -w with -r: the session of that worktree only (/restart)
+					return errors.New("-w and -r don't go together: a session resumes in its own folder, worktree included")
+				}
 				if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 					// A worktree removed since, say: resume it here.
 					notes = append(notes, fmt.Sprintf("the session's folder %s no longer exists, so it resumes here", shortHome(dir)))
@@ -536,7 +539,8 @@ type app struct {
 	store       *auth.Store
 	cwd         string
 	subModels   subModelCache  // subagent_models a task can ask for
-	restart     *restartError  // set by /resume to continue in another project
+	restart     *restartError  // set by /resume to continue in another project, and by /restart
+	stale       *staleWatch    // a new binary or config.json since start (restart.go)
 	worktree    *worktree.Tree // -w: the worktree this session works in
 	undo        *undo.Store    // file snapshots before each prompt (interactive only)
 	ui          *termUI

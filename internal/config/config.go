@@ -245,6 +245,37 @@ func (c *Config) Save() error {
 	return nil
 }
 
+// Changed lists, sorted, the keys whose value in config.json is not what
+// this process loaded or last saved: changed by hand or by another
+// session since. Nil when the file can't be read.
+func (c *Config) Changed() []string {
+	data, err := os.ReadFile(filepath.Join(c.Dir, "config.json"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	var now Config
+	if len(data) > 0 && json.Unmarshal(data, &now) != nil {
+		return nil // being written, or broken: Load says so
+	}
+	_, vals, err := now.keys()
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for k, v := range vals {
+		if !bytes.Equal(v, c.saved[k]) {
+			out = append(out, k)
+		}
+	}
+	for k := range c.saved {
+		if _, ok := vals[k]; !ok {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // keys is the config as the keys of its file, in the file's order.
 func (c *Config) keys() ([]string, map[string]json.RawMessage, error) {
 	data, err := json.Marshal(c)
