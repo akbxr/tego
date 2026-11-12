@@ -32,9 +32,19 @@ type UsageReport struct {
 // kind ("anthropic", "openai-codex", "google-antigravity"); token is a
 // valid OAuth access token; projectID is the Antigravity project.
 func FetchUsage(ctx context.Context, kind, token, projectID string) (*UsageReport, error) {
+	return fetchUsage(ctx, kind, token, projectID, true)
+}
+
+// FetchLimits is FetchUsage without the account's email and organisation
+// (one request less for Anthropic).
+func FetchLimits(ctx context.Context, kind, token, projectID string) (*UsageReport, error) {
+	return fetchUsage(ctx, kind, token, projectID, false)
+}
+
+func fetchUsage(ctx context.Context, kind, token, projectID string, profile bool) (*UsageReport, error) {
 	switch kind {
 	case "anthropic":
-		return anthropicUsage(ctx, token)
+		return anthropicUsage(ctx, token, profile)
 	case "openai-codex":
 		return codexUsage(ctx, token)
 	case "google-antigravity":
@@ -56,7 +66,7 @@ func usageRequest(ctx context.Context, method, url string, body io.Reader, h htt
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncate(strings.TrimSpace(string(raw)), 200))
+		return &UsageError{Status: resp.StatusCode, Message: usageErrorMessage(raw)}
 	}
 	return json.Unmarshal(raw, out)
 }
@@ -122,7 +132,7 @@ var (
 	}
 )
 
-func anthropicUsage(ctx context.Context, token string) (*UsageReport, error) {
+func anthropicUsage(ctx context.Context, token string, withProfile bool) (*UsageReport, error) {
 	h := http.Header{}
 	h.Set("Authorization", "Bearer "+token)
 	h.Set("anthropic-beta", "oauth-2025-04-20")
@@ -141,7 +151,9 @@ func anthropicUsage(ctx context.Context, token string) (*UsageReport, error) {
 	profileDone := make(chan struct{})
 	go func() {
 		defer close(profileDone)
-		_ = usageRequest(ctx, http.MethodGet, base+"/profile", nil, h.Clone(), &profile)
+		if withProfile {
+			_ = usageRequest(ctx, http.MethodGet, base+"/profile", nil, h.Clone(), &profile)
+		}
 	}()
 	var p claudeUsagePayload
 	err := usageRequest(ctx, http.MethodGet, base+"/usage", nil, h, &p)

@@ -39,7 +39,7 @@ func New(cfg ProviderConfig) (Provider, error) {
 		if base == "" {
 			base = anthropicAPIBase
 		}
-		return &anthropicProvider{name: name, base: base, key: key, headers: cfg.Headers, oauth: cfg.OAuth, deviceID: cfg.DeviceID}, nil
+		return &anthropicProvider{name: name, base: base, key: key, headers: cfg.Headers, oauth: cfg.OAuth, deviceID: cfg.DeviceID, onLimits: cfg.OnLimits}, nil
 	case "openai":
 		if base == "" {
 			base = "https://api.openai.com/v1"
@@ -92,6 +92,7 @@ type APIError struct {
 	Status     int    // HTTP status (in-stream errors are mapped to an equivalent status)
 	Body       string // response body snippet / error message
 	RetryAfter time.Duration
+	Header     http.Header // the response's headers, when it came over HTTP
 }
 
 func (e *APIError) Error() string {
@@ -120,6 +121,7 @@ func newAPIError(provider string, resp *http.Response) *APIError {
 		Status:     resp.StatusCode,
 		Body:       strings.TrimSpace(string(b)),
 		RetryAfter: parseRetryAfter(resp.Header),
+		Header:     resp.Header,
 	}
 }
 

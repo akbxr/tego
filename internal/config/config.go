@@ -541,12 +541,19 @@ func (c *Config) NewProvider(name string, store *auth.Store) (llm.Provider, erro
 		m := llm.PoolMember{Label: accts[i].Label(), Provider: p}
 		if c.Accounts == llm.StrategyExpiring && accts[i].Type == "oauth" {
 			kind, cred := c.Kind(name), accts[i]
+			key := LimitKey(name, cred)
 			m.Usage = func(ctx context.Context) (*llm.UsageReport, error) {
-				token, err := store.TokenSource(name, cred.ID).Token(ctx)
-				if err != nil {
-					return nil, err
+				k := c.Limits().Usage(ctx, key, LimitsEvery(kind), func(ctx context.Context) (*llm.UsageReport, error) {
+					token, err := store.TokenSource(name, cred.ID).Token(ctx)
+					if err != nil {
+						return nil, err
+					}
+					return llm.FetchLimits(ctx, kind, token, cred.ProjectID)
+				})
+				if k.Report == nil {
+					return nil, cmp.Or(k.Failed, errors.New("no limits known yet"))
 				}
-				return llm.FetchUsage(ctx, kind, token, cred.ProjectID)
+				return k.Report, nil
 			}
 		}
 		members = append(members, m)
@@ -560,6 +567,30 @@ func (c *Config) NewProvider(name string, store *auth.Store) (llm.Provider, erro
 	return llm.NewPool(name, c.Accounts, members), nil
 }
 
+// Limits is the store of every account's subscription limits, shared by
+// all tego processes; nil without a tego directory.
+func (c *Config) Limits() *llm.LimitStore {
+	if c.Dir == "" {
+		return nil
+	}
+	return llm.Limits(filepath.Join(c.Dir, "limits.json"))
+}
+
+// LimitKey names an account in the limits store.
+func LimitKey(provider string, cred auth.Credential) string {
+	return provider + "/" + cmp.Or(cred.ID, cred.Email)
+}
+
+// LimitsEvery is how old an account's limits get before its usage
+// endpoint is asked again: Anthropic's refuses all but a few calls, and
+// the answers report its limits anyway.
+func LimitsEvery(kind string) time.Duration {
+	if kind == "anthropic" {
+		return llm.LimitsEvery
+	}
+	return 5 * time.Minute
+}
+
 // accountProvider builds the provider for one account (cred nil: env key
 // or keyless endpoint).
 func (c *Config) accountProvider(pc llm.ProviderConfig, name string, cred *auth.Credential, store *auth.Store) (llm.Provider, error) {
@@ -570,6 +601,10 @@ func (c *Config) accountProvider(pc llm.ProviderConfig, name string, cred *auth.
 			pc.ProjectID = cred.ProjectID
 			if pc.Kind == "anthropic" {
 				pc.DeviceID = DeviceID(c.Dir)
+				if limits := c.Limits(); limits != nil {
+					key := LimitKey(name, *cred)
+					pc.OnLimits = func(l []llm.UsageLimit) { limits.Record(key, l, "answer") }
+				}
 			}
 		case "api_key":
 			if pc.APIKey == "" && (pc.KeyEnv == "" || os.Getenv(pc.KeyEnv) == "") {

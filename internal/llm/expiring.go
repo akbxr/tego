@@ -15,7 +15,9 @@ import (
 // the whole prompt cache again on the other one.
 
 const (
-	usageFresh   = 5 * time.Minute // limits read longer ago are read again
+	// Limits read longer ago are read again: from the store all processes
+	// share (LimitStore), which asks a usage endpoint only now and then.
+	usageFresh   = time.Minute
 	usageTimeout = 4 * time.Second // the longest a prompt waits for them
 	burstFull    = 0.9             // a short window (5 hours) this used is skipped
 	weekEmpty    = 0.02            // a week with this little left is skipped

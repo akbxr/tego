@@ -421,4 +421,7 @@ type ProviderConfig struct {
 	// DeviceID is this installation's stable random id (64 hex chars),
 	// sent as metadata.user_id.device_id on Claude subscription requests.
 	DeviceID string `json:"-"`
+	// OnLimits, when set, gets the subscription limits an answer reports
+	// (Anthropic's anthropic-ratelimit-unified-* headers), refusals too.
+	OnLimits func([]UsageLimit) `json:"-"`
 }

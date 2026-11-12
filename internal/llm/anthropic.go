@@ -30,6 +30,7 @@ type anthropicProvider struct {
 	headers         map[string]string
 	oauth           TokenSource
 	deviceID        string
+	onLimits        func([]UsageLimit) // ProviderConfig.OnLimits
 
 	mu          sync.Mutex
 	ccVersion   string // version adopted after a claude_code_version_too_old rejection
@@ -61,6 +62,7 @@ func (p *anthropicProvider) Stream(ctx context.Context, req *Request, onEvent fu
 			return p.send(ctx, t, fast, func(version string) ([]byte, error) { return p.buildBodySpeed(req, version, t, fast) })
 		}
 		resp, err := send()
+		p.noteLimits(req.Model, resp, err)
 		note := ""
 		if err != nil && fast {
 			// A fast mode rate limit or refusal: carry on at standard speed
@@ -69,6 +71,7 @@ func (p *anthropicProvider) Stream(ctx context.Context, req *Request, onEvent fu
 			if note, again = p.fastRejected(err); again {
 				fast = false
 				resp, err = send()
+				p.noteLimits(req.Model, resp, err)
 			}
 		}
 		if err != nil {
@@ -113,6 +116,7 @@ func (p *anthropicProvider) Prewarm(ctx context.Context, req *Request) (Usage, e
 	}
 	fast := p.fastFor(req)
 	resp, err := p.send(ctx, t, fast, func(version string) ([]byte, error) { return p.buildBodySpeed(req, version, t, fast) })
+	p.noteLimits(req.Model, resp, err)
 	msg := &Message{Role: RoleAssistant}
 	defer func() { reportRequest(p.name, req, start, time.Time{}, time.Time{}, msg, err) }()
 	if err != nil {
@@ -141,6 +145,25 @@ func (p *anthropicProvider) Prewarm(ctx context.Context, req *Request) (Usage, e
 	u := Usage{Input: r.Usage.Input, Output: r.Usage.Output, CacheRead: r.Usage.CacheRead, CacheWrite: r.Usage.CacheWrite, Fast: fast}
 	msg.Usage, msg.StopReason, msg.CacheMiss = &u, r.StopReason, r.Diagnostics.miss()
 	return u, nil
+}
+
+// noteLimits passes on the subscription limits the response to a request
+// for model reports, a refusal's too.
+func (p *anthropicProvider) noteLimits(model string, resp *http.Response, err error) {
+	if p.onLimits == nil {
+		return
+	}
+	h := http.Header(nil)
+	var ae *APIError
+	switch {
+	case err == nil && resp != nil:
+		h = resp.Header
+	case errors.As(err, &ae):
+		h = ae.Header
+	}
+	if l := anthropicHeaderLimits(h, model); len(l) > 0 {
+		go p.onLimits(l) // a file write: not in the answer's way
+	}
 }
 
 // send posts the body built for the advertised Claude Code version, adopting

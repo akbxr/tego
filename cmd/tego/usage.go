@@ -1,7 +1,9 @@
 package main
 
 import (
+	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -23,6 +25,9 @@ type accountUsage struct {
 	label  string
 	report *llm.UsageReport
 	err    error
+	at     time.Time // when report was reported
+	from   string    // by whom: "answer" or "endpoint"
+	note   string    // why report is not the usage endpoint's of now
 }
 
 type providerUsage struct {
@@ -67,13 +72,32 @@ func fetchUsage(ctx context.Context, cfg *config.Config, store *auth.Store) []pr
 			go func(slot *accountUsage, c auth.Credential) {
 				defer wg.Done()
 				slot.label = c.Label()
-				token, err := store.TokenSource(provider, c.ID).Token(ctx)
-				if err == nil {
-					slot.report, err = llm.FetchUsage(ctx, kind, token, c.ProjectID)
+				k := cfg.Limits().Usage(ctx, config.LimitKey(provider, c), usageEvery(kind), func(ctx context.Context) (*llm.UsageReport, error) {
+					token, err := store.TokenSource(provider, c.ID).Token(ctx)
+					if err != nil {
+						return nil, err
+					}
+					r, err := llm.FetchUsage(ctx, kind, token, c.ProjectID)
+					if err == nil && c.Email == "" && r.Email != "" {
+						slot.label = r.Email
+					}
+					return r, err
+				})
+				slot.report, slot.at, slot.from = k.Report, k.At, k.From
+				var refusal string
+				switch {
+				case k.Failed != nil:
+					refusal = "usage endpoint: " + k.Failed.Error()
+				case !k.Blocked.IsZero():
+					refusal = fmt.Sprintf("usage endpoint: %s (asked again after %s)", k.Refusal, k.Blocked.Format("15:04"))
 				}
-				slot.err = err
-				if slot.report != nil && c.Email == "" && slot.report.Email != "" {
-					slot.label = slot.report.Email
+				if k.Report == nil {
+					if refusal != "" && kind == "anthropic" {
+						refusal += "; no answer from this account yet"
+					}
+					slot.err = errors.New(cmp.Or(refusal, "no limits known yet"))
+				} else {
+					slot.note = refusal
 				}
 			}(&pu.accounts[i], c)
 		}
@@ -122,6 +146,16 @@ func renderUsage(w io.Writer, c palette, all []providerUsage, took time.Duration
 			}
 			if active[pu.name] == a.label {
 				head += " " + c.green + "◎ in use" + c.reset
+			}
+			if a.report != nil && !a.at.IsZero() && (a.from == "answer" || now.Sub(a.at) >= time.Minute) {
+				when := "from the answers, "
+				if a.from != "answer" {
+					when = ""
+				}
+				head += c.dim + " · " + when + ago(a.at) + c.reset
+			}
+			if a.note != "" {
+				head += c.dim + " · " + a.note + c.reset
 			}
 			if a.err != nil {
 				fmt.Fprintf(w, "  %s●%s %s %s· %s%s\n", c.red, c.reset, head, c.red, firstLine(a.err.Error()), c.reset)
@@ -250,6 +284,16 @@ func shortDuration(d time.Duration) string {
 		return fmt.Sprintf("%dh%dm", s/3600, s%3600/60)
 	}
 	return fmt.Sprintf("%dd%dh", s/86400, s%86400/3600)
+}
+
+// usageEvery is how old limits `usage` shows may be before it asks the
+// usage endpoint: Anthropic's refuses all but a few calls, and the answers
+// of the model report its limits anyway.
+func usageEvery(kind string) time.Duration {
+	if kind == "anthropic" {
+		return 10 * time.Minute
+	}
+	return 0
 }
 
 func firstLine(s string) string {
