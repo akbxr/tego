@@ -231,6 +231,17 @@ func TestAnthropicThinkingSelection(t *testing.T) {
 	if th, _ := anthropicThinking("claude-opus-4-6", ThinkingLow); th.Display != "" {
 		t.Errorf("4.6 should not request display: %+v", th)
 	}
+	// Fable is of the newest generation: without display its thinking
+	// comes back empty, and it takes context editing and deferred tools.
+	p := &anthropicProvider{}
+	for _, m := range []string{"claude-fable-5-2", "claude-fable-5", "claude-fable-latest"} {
+		if th, _ := anthropicThinking(m, ThinkingHigh); th.Display != "summarized" {
+			t.Errorf("%s: %+v", m, th)
+		}
+		if !p.ClearsToolResults(m) || !p.DefersTools(m) {
+			t.Errorf("%s: no context editing or deferred tools", m)
+		}
+	}
 	if th, oc := anthropicThinking("claude-opus-4-6", ThinkingOff); th != nil || oc != nil {
 		t.Error("off should omit thinking")
 	}

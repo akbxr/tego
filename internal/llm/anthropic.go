@@ -741,14 +741,16 @@ func anthropicLegacyThinking(model string) bool {
 	return false
 }
 
-var claudeGenRe = regexp.MustCompile(`(?:opus|sonnet|haiku)-(\d+)(?:-(\d{1,2}))?(?:$|\D)`)
+var claudeGenRe = regexp.MustCompile(`(?:opus|sonnet|haiku|fable|mythos)-(\d+)(?:-(\d{1,2}))?(?:$|\D)`)
 
 // claudeGenAtLeast reports whether the model generation (e.g. opus-4-7 ->
-// 4.7) is at least major.minor. Unparseable ids return false.
+// 4.7, fable-5-2 -> 5.2) is at least major.minor. A Fable id without a
+// version (claude-fable-latest) is of the newest generation; other
+// unparseable ids return false.
 func claudeGenAtLeast(model string, major, minor int) bool {
 	m := claudeGenRe.FindStringSubmatch(strings.ToLower(model))
 	if m == nil {
-		return false
+		return strings.Contains(strings.ToLower(model), "fable")
 	}
 	x, _ := strconv.Atoi(m[1])
 	y := 0
