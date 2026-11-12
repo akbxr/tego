@@ -43,6 +43,7 @@ type Store struct {
 	gitDir, work string
 	mu           sync.Mutex
 	off          string // why snapshots are off ("" = on)
+	linkOnce     sync.Once
 }
 
 // Open returns the store for work under base (tego's folder). Snapshots are
@@ -71,7 +72,62 @@ func Open(base, work string) *Store {
 func (s *Store) Off() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.off == "" {
+		s.off = s.tooBig() // found too big by another session
+	}
 	return s.off
+}
+
+// tooBigFile marks a folder that took longer than snapshotTimeout to
+// snapshot; it holds when.
+const tooBigFile = "too-big"
+
+// tooBigFor is how long such a folder is not snapshotted again: trying
+// costs up to snapshotTimeout before every first prompt, and leaves
+// hundreds of MB of half a snapshot until the next maintenance.
+const tooBigFor = 7 * 24 * time.Hour
+
+// tooBig says why the folder is not snapshotted when it was found too big
+// lately, "" otherwise.
+func (s *Store) tooBig() string {
+	data, err := os.ReadFile(filepath.Join(s.gitDir, tooBigFile))
+	if err != nil {
+		return ""
+	}
+	at, err := time.Parse(time.RFC3339, strings.TrimSpace(string(data)))
+	if err != nil || time.Since(at) > tooBigFor {
+		return ""
+	}
+	return fmt.Sprintf("the folder took over %s to snapshot on %s (tried again after %s)",
+		snapshotTimeout, at.Format("Jan 2"), at.Add(tooBigFor).Format("Jan 2"))
+}
+
+// giveUp turns snapshots off for the folder after one took too long, in
+// every session for tooBigFor, and drops what it wrote.
+func (s *Store) giveUp() {
+	_ = os.WriteFile(filepath.Join(s.gitDir, tooBigFile), []byte(time.Now().Format(time.RFC3339)+"\n"), 0o600)
+	s.mu.Lock()
+	s.off = s.tooBig()
+	s.mu.Unlock()
+	// The killed git add leaves its lock and the objects it wrote. No
+	// session starts another snapshot here now; one already running ends
+	// within snapshotTimeout, and only then are unreachable objects dropped.
+	_ = os.Remove(filepath.Join(s.gitDir, "index.lock"))
+	go func() {
+		time.Sleep(snapshotTimeout + 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		_, _ = s.git(ctx, nil, "prune", "--expire=now")
+	}()
+}
+
+// dropStaleLock removes the index lock a git killed mid-snapshot left
+// behind: with it every later snapshot of the folder fails.
+func (s *Store) dropStaleLock() {
+	lock := filepath.Join(s.gitDir, "index.lock")
+	if fi, err := os.Stat(lock); err == nil && time.Since(fi.ModTime()) > 2*snapshotTimeout {
+		_ = os.Remove(lock)
+	}
 }
 
 func (s *Store) git(ctx context.Context, stdin []byte, args ...string) (string, error) {
@@ -118,11 +174,14 @@ func (s *Store) Snapshot(ctx context.Context) (string, error) {
 	if err := s.init(ctx); err != nil {
 		return "", err
 	}
+	s.linkOnce.Do(func() { link(ctx, s.gitDir, s.work) })
+	s.dropStaleLock()
 	if _, err := s.git(ctx, nil, "add", "-A", "--ignore-errors", "."); err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			s.mu.Lock()
-			s.off = fmt.Sprintf("the folder took over %s to snapshot", snapshotTimeout)
-			s.mu.Unlock()
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
+			s.giveUp()
+		case ctx.Err() != nil:
+			_ = os.Remove(filepath.Join(s.gitDir, "index.lock")) // stopped: the lock is this git's
 		}
 		return "", err
 	}
@@ -190,6 +249,12 @@ func (s *Store) Restore(ctx context.Context, tree, current string) (restored, re
 	if err != nil {
 		return nil, nil, err
 	}
+	if lost, err := s.lost(ctx, tree, restore); err != nil {
+		return nil, nil, err
+	} else if len(lost) > 0 {
+		return nil, nil, fmt.Errorf("the snapshot no longer has %d of the files (%s): they were stored in the project's git, "+
+			"which has deleted them since; nothing was restored", len(lost), strings.Join(lost[:min(len(lost), 4)], ", "))
+	}
 	if _, err := s.git(ctx, nil, "read-tree", tree); err != nil {
 		return nil, nil, err
 	}
@@ -214,6 +279,50 @@ func (s *Store) Restore(ctx context.Context, tree, current string) (restored, re
 	return restore, removed, nil
 }
 
+// lost lists the paths of tree whose contents are gone: a file committed
+// in the project is stored once, in the project's git (link), and a
+// version its history no longer holds is deleted by its gc.
+func (s *Store) lost(ctx context.Context, tree string, paths []string) ([]string, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	want := make(map[string]bool, len(paths))
+	for _, p := range paths {
+		want[p] = true
+	}
+	out, err := s.git(ctx, nil, "ls-tree", "-r", "-z", tree)
+	if err != nil {
+		return nil, err
+	}
+	byID := map[string][]string{}
+	var ids []string
+	for _, line := range strings.Split(strings.TrimSuffix(out, "\x00"), "\x00") {
+		meta, p, ok := strings.Cut(line, "\t")
+		f := strings.Fields(meta)
+		if !ok || len(f) < 3 || f[1] != "blob" || !want[p] {
+			continue
+		}
+		if byID[f[2]] == nil {
+			ids = append(ids, f[2])
+		}
+		byID[f[2]] = append(byID[f[2]], p)
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	out, err = s.git(ctx, []byte(strings.Join(ids, "\n")+"\n"), "cat-file", "--batch-check")
+	if err != nil {
+		return nil, err
+	}
+	var lost []string
+	for _, line := range strings.Split(out, "\n") {
+		if id, ok := strings.CutSuffix(line, " missing"); ok {
+			lost = append(lost, byID[id]...)
+		}
+	}
+	return lost, nil
+}
+
 // Log is the list of snapshots of one session, kept next to the shadow
 // repository so it survives a restart and a resume.
 func (s *Store) logPath(session string) string {
@@ -235,6 +344,8 @@ func (s *Store) Entries(session string) []Entry {
 func (s *Store) Add(session string, e Entry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	unlock := lockLogs(s.gitDir) // maintenance rewrites the logs
+	defer unlock()
 	list := s.Entries(session)
 	if n := len(list); n > 0 && list[n-1].Tree == e.Tree && list[n-1].Prompt == "" && e.Prompt == "" {
 		return nil // an /undo of nothing new

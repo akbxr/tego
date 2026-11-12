@@ -359,6 +359,7 @@ func (s *acpServer) open(cwd string, servers []acp.MCPServer, id string) (*acpSe
 	ag.KeepAlive, ag.KeepAliveAuto = cfg.CacheKeepAlive()
 	ap := &app{cfg: cfg, store: s.store, cwd: cwd, ag: ag, env: env, skills: skills, agentDefs: agent.LoadAgents(cfg.Dir, cwd),
 		undo: undo.Open(cfg.Dir, cwd), notice: sess.OnInfo}
+	undo.MaintainSoon(cfg.Dir)
 	ap.takesMessages = s.cfg.SessionMessages
 	ap.setupTools(files)
 	ap.bg.OnDone = sess.backgroundDone

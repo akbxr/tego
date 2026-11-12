@@ -328,6 +328,7 @@ func run() error {
 		fast: o.fast || cfg.Fast, perms: perms, worktree: wt, keepAliveCh: make(chan keepAliveResult, 1)}
 	if app.interactive {
 		app.undo = undo.Open(cfg.Dir, cwd)
+		undo.MaintainSoon(cfg.Dir)
 	}
 	imageIcon, videoIcon, audioIcon = app.icons.image, app.icons.video, app.icons.audio
 	// Loaded before the TUI starts: its autocomplete reads them from another goroutine.
