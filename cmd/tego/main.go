@@ -636,6 +636,7 @@ func (a *app) init(spec, thinking string) error {
 		mode = agent.Headless // -p: nobody can answer a question
 	}
 	a.ag = &agent.Agent{
+		Asides:          a.interactive, // /btw
 		System:          agent.SystemPrompt(a.cwd, files, a.skills, mode),
 		Env:             func() string { return agent.EnvNote(a.cwd) },
 		Notices:         a.env.ShellNotices,

@@ -45,6 +45,7 @@ var builtinCommands = []struct{ name, icon, help string }{
 	{"stats", "▦", "Requests, tokens and estimated cost: /stats [cache] [24h|7d|30d|90d|all]"},
 	{"mcp", "⌁", "MCP server status and tool counts"},
 	{"restart", "⟳", "Start tego again on this session: a new binary or config.json applies, the model and settings stay"},
+	{"btw", "◆", "Ask a side question about the session, even while it works: /btw <question>; the answer stays out of the conversation"},
 	{"exit", "×", "Quit (alias /quit, Ctrl+D)"},
 }
 
@@ -98,8 +99,13 @@ func (a *app) repl(initial string) error {
 				}
 				a.tui.AddHistory(line)
 				if a.cancel != nil {
-					// Busy: a prompt steers the running turn; commands and
-					// shell lines wait for it to end.
+					// Busy: a prompt steers the running turn; /btw is answered
+					// on the side now; other commands and shell lines wait for
+					// the turn to end.
+					if q, ok := btwArgs(line); ok {
+						a.btwCommand(q, true)
+						continue
+					}
 					steer := steerable(line)
 					if steer {
 						line = a.tokenizeImages(line)
@@ -644,6 +650,8 @@ func (a *app) command(line string, done chan<- error) bool {
 		return a.confirmExit()
 	case "restart":
 		return a.restartCommand()
+	case "btw":
+		a.btwCommand(args, false)
 	case "tasks":
 		a.tasksCommand()
 	case "help", "?":

@@ -63,6 +63,9 @@ type Agent struct {
 	Session       *session.Session
 	SessionID     string
 	LongCache     bool // ask the provider to keep the prompt cache for an hour
+	// Asides keeps the last request a turn sent, so that a side question
+	// (/btw, AsideRequest) asked while the turn runs reads its cache.
+	Asides bool
 	// Env returns the date and git branch (EnvNote), reported after a
 	// prompt when they differ from what the conversation last saw.
 	Env func() string
@@ -167,6 +170,8 @@ type Agent struct {
 	videoMu      sync.Mutex
 	videoFrames  map[[32]byte][]llm.Block // video blocks as frames, for models that can't watch (video.go)
 	mediaDropped int                      // the oldest images requests leave out, as last told (media.go)
+	asideMu      sync.Mutex
+	aside        asideState // side questions (aside.go)
 
 	audioMu    sync.Mutex
 	audioTexts map[[32]byte]string // audio blocks as transcripts, for models that can't hear (audio.go)
@@ -426,6 +431,7 @@ func (a *Agent) loop(ctx context.Context) error {
 		// idle: since the cache was last read (a keep-alive counts)
 		sent, prev, idle := a.noteSent(req), a.sent, a.now().Sub(a.lastReply)
 		req.Messages = a.mediaBudget(a.audioAsText(ctx, a.videoAsFrames(ctx, req.Messages)), true)
+		a.noteAside(req)
 		msg, err := a.Provider.Stream(ctx, req, a.onEvent)
 		if err == nil && req.ClearToolResults != nil {
 			msg.ClearTrigger = req.ClearToolResults.TriggerToolUses
@@ -476,6 +482,7 @@ func (a *Agent) loop(ctx context.Context) error {
 			return final
 		}
 		a.append(*msg)
+		a.noteAsideReply(msg)
 		a.UI.OnTurnEnd(msg)
 		if len(calls) == 0 {
 			// The user wrote while this answer streamed: answer that too.

@@ -38,7 +38,7 @@ tego -m openai-codex/gpt-5.6 -t high # model and thinking level
 
 **Your subscriptions.** Log in with Claude Pro/Max, ChatGPT Plus/Pro or a Google account through Antigravity, or use an API key for any OpenAI-compatible provider. Ollama and LM Studio need no key. With several accounts per provider, tego moves to the next one when an account hits its limit. `tego usage` shows the 5-hour and weekly limits of all of them. Weekly quota left at an account's reset is lost, so `/accounts expiring` (`"accounts": "expiring"`) sends a new prompt to the account that would lose the most per hour if unused: the share of its week left divided by the hours until it resets, skipping accounts whose 5-hour window is 90% used. A prompt whose session's cache is still warm stays on its account, since moving writes the whole cache again. Claude's answers carry their account's limits, and all tego processes share what they report in `~/.tego/limits.json`; Anthropic's usage endpoint, which refuses all but a few calls, is asked only for an account no answer reported on in the last hour, and not for an hour after it refused.
 
-**An inline UI.** No full-screen takeover, so scrollback, search and copy work as usual. Markdown, code and diffs render in place. A footer shows the model, git branch, context use and tokens. You can type while the agent works. Enter steers the running turn and Alt+Enter queues a follow-up.
+**An inline UI.** No full-screen takeover, so scrollback, search and copy work as usual. Markdown, code and diffs render in place. A footer shows the model, git branch, context use and tokens. You can type while the agent works. Enter steers the running turn and Alt+Enter queues a follow-up. `/btw <question>` is answered at once from the conversation so far, the tool calls running included, without tools and without the turn or the next prompt seeing it; it reads the conversation's prompt cache, so on a 13k-token conversation a side question cost 150 new input tokens. Questions in a row form a side thread.
 
 **Tools.** `read`, `write`, `edit`, `bash`, `grep`, `glob`, `web_search`, parallel subagents and a live todo list. One edit call can change several places in a file. Bash streams its output, and `background: true` keeps a dev server running between turns. Read-only calls run in parallel.
 
@@ -162,6 +162,7 @@ A response's output limit covers its thinking and its answer. On Claude it is 64
 | `/model`, `/thinking` | Switch model or thinking level, e.g. `/model opus:high` |
 | `/resume`, `/new` | Pick, delete or rename sessions from any project |
 | `/tree`, `/fork`, `/clone` | Branch a session |
+| `/btw <question>` | Ask about the session on the side, even while it works; the answer stays out of the conversation |
 | `/undo` | Restore the files from before a prompt |
 | `/plan [prompt]` | Plan mode on or off, also Shift+Tab |
 | `/fast [on\|off]` | Fast mode on or off, Claude Opus 4.8+ |

@@ -121,6 +121,7 @@ const (
 	liveThinking
 	liveResult // a tool call's result, before the batch's results land
 	liveInfo   // a notice
+	liveAside  // a side question's answer (/btw): name is the question
 )
 
 // newPrintUI writes the answer to stdout and everything else to stderr,
@@ -318,6 +319,10 @@ func (u *termUI) showLive(segs []liveSeg) {
 		case liveInfo:
 			u.mu.Lock()
 			u.infoLocked(s.text)
+			u.mu.Unlock()
+		case liveAside:
+			u.mu.Lock()
+			u.asideLocked(s.name, s.text)
 			u.mu.Unlock()
 		}
 	}
@@ -548,6 +553,36 @@ func (u *termUI) OnInfo(msg string) {
 func (u *termUI) infoLocked(msg string) {
 	u.endStream()
 	fmt.Fprintf(u.diag, "%s%s%s\n", u.dc.yellow, msg, u.dc.reset)
+}
+
+// AsideAsked shows that a side question (/btw) was sent.
+func (u *termUI) AsideAsked(question string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.endStream()
+	fmt.Fprintf(u.diag, "%s◇ btw: %s (answering…)%s\n", u.dc.dim, oneLineCut(question, 100), u.dc.reset)
+}
+
+// Aside shows a side question's answer as a block of its own, between the
+// turn's output: the question, then the answer as markdown.
+func (u *termUI) Aside(question, answer string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.live = append(u.live, liveSeg{kind: liveAside, name: question, text: answer})
+	u.asideLocked(question, answer)
+}
+
+func (u *termUI) asideLocked(question, answer string) {
+	u.endStream()
+	fmt.Fprintf(u.diag, "%s◆ btw:%s %s%s%s\n", u.dc.cyan+u.dc.bold, u.dc.reset, u.dc.cyan, oneLineCut(question, 160), u.dc.reset)
+	if u.md == nil { // not a terminal: raw text
+		fmt.Fprintln(u.out, answer)
+	} else {
+		md := markdown.NewStream(u.out, markdown.Options{Width: u.width, Height: u.height, Color: u.c.reset != ""})
+		md.Write(answer)
+		md.Close()
+	}
+	fmt.Fprintln(u.diag)
 }
 
 func (u *termUI) Errorf(format string, a ...any) {
