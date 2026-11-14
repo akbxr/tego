@@ -25,14 +25,7 @@ func (a *app) startMCP() {
 	}
 	a.mcp = mcp.StartWith(cfgs, a.cwd, filepath.Join(a.cfg.Dir, "logs"), mcpOptions(a.cfg))
 	a.ag.Dynamic = a.mcp.Tools
-	switch a.cfg.MCPTools {
-	case "eager":
-		a.ag.LazyThreshold = -1
-	case "lazy":
-		a.ag.LazyThreshold = 0
-	default: // auto: a couple of small servers stay inline, big ones are deferred
-		a.ag.LazyThreshold = 10
-	}
+	a.ag.MCPTools = a.cfg.MCPTools
 }
 
 // waitMCP gives servers still connecting a bounded head start before the

@@ -55,14 +55,15 @@ type Agent struct {
 	Tools            []tools.Tool
 	Dynamic          func() []tools.Tool // extra tools that may change between requests (MCP); goroutine-safe
 	Hooks            ToolHooks           // see every tool call before and after (extensions); nil: none
-	// LazyThreshold: when there are more Dynamic tools than this, they are
-	// deferred behind tool_search instead of sent with every request.
-	// 0 = always defer, negative = never.
-	LazyThreshold int
-	Messages      []llm.Message
-	Session       *session.Session
-	SessionID     string
-	LongCache     bool // ask the provider to keep the prompt cache for an hour
+	// MCPTools says when Dynamic tools are deferred behind tool_search
+	// instead of sent with every request: "lazy" always, "eager" never,
+	// "" or "auto" where the provider loads deferred tools itself (Claude),
+	// and elsewhere once they take over mcpInlineTokens (toolsearch.go).
+	MCPTools  string
+	Messages  []llm.Message
+	Session   *session.Session
+	SessionID string
+	LongCache bool // ask the provider to keep the prompt cache for an hour
 	// Asides keeps the last request a turn sent, so that a side question
 	// (/btw, AsideRequest) asked while the turn runs reads its cache.
 	Asides bool
@@ -181,7 +182,7 @@ type Agent struct {
 }
 
 // toolList is what the next request advertises: the static tools plus MCP
-// tools. With many MCP tools (see LazyThreshold) a tool_search tool stands
+// tools. When MCP tools are deferred (MCPTools, lazy) a tool_search tool stands
 // in for them and they stay out of the context until the model searches.
 // Providers that support deferred tools get every MCP tool marked deferred
 // (from index deferFrom on) and load the matches through references in the
@@ -197,7 +198,7 @@ func (a *Agent) toolList() (list []tools.Tool, deferFrom int) {
 		return a.Tools, len(a.Tools)
 	}
 	out := a.Tools[:len(a.Tools):len(a.Tools)]
-	if !a.lazy(len(dyn)) {
+	if !a.lazy(dyn) {
 		out = append(out, dyn...)
 		return out, len(out)
 	}

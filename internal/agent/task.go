@@ -593,7 +593,7 @@ func (t *TaskTool) newSub(task taskSpec, def *AgentDef, model taskModel,
 	p, name := t.Parent, task.Name
 	sub = &Agent{
 		Provider: p.Provider, ProviderName: p.ProviderName, Model: p.Model, Thinking: p.Thinking, Fast: p.Fast,
-		System: t.System, Tools: tools.Builtins(t.Env), Dynamic: p.Dynamic, LazyThreshold: p.LazyThreshold, SessionID: p.SessionID + "-" + name,
+		System: t.System, Tools: tools.Builtins(t.Env), Dynamic: p.Dynamic, MCPTools: p.MCPTools, SessionID: p.SessionID + "-" + name,
 		ContextWindow: p.ContextWindow, AutoCompact: true, MaxTurns: t.MaxTurns, Subagent: true, ToolStat: p.ToolStat,
 		CacheWritePremium: p.CacheWritePremium, Env: p.Env, Plan: p.Plan, MaxOutputTokens: p.MaxOutputTokens,
 		Perms: p.Perms, Approve: p.Approve, Name: name, declined: p.declined, Hooks: p.Hooks,

@@ -38,7 +38,7 @@ func names(defs []llm.Tool) []string {
 }
 
 func TestDeferredMCPToolsLoadOnSearch(t *testing.T) {
-	a := &Agent{UI: nopUI{}, Dynamic: catalog, LazyThreshold: 10}
+	a := &Agent{UI: nopUI{}, Dynamic: catalog, MCPTools: "lazy"}
 	defs := names(a.toolDefs())
 	if len(defs) != 1 || defs[0] != "tool_search" {
 		t.Fatalf("lazy mode should advertise only tool_search, got %v", defs)
@@ -70,19 +70,50 @@ func TestDeferredMCPToolsLoadOnSearch(t *testing.T) {
 	}
 }
 
+// deferring is a provider that loads deferred tools itself, as Claude does.
+type deferring struct{ countingProvider }
+
+func (deferring) ClearsToolResults(string) bool { return false }
+func (deferring) DefersTools(string) bool       { return true }
+
+// big is n MCP tools of about 650 tokens each, as the Blender server's.
+func big(n int) func() []tools.Tool {
+	return func() []tools.Tool {
+		var out []tools.Tool
+		for i := range n {
+			out = append(out, fakeMCP{fmt.Sprintf("mcp__blender__tool%d", i), strings.Repeat("Run a step in Blender. ", 110)})
+		}
+		return out
+	}
+}
+
 func TestMCPToolModes(t *testing.T) {
-	eager := &Agent{UI: nopUI{}, Dynamic: catalog, LazyThreshold: -1}
+	eager := &Agent{UI: nopUI{}, Dynamic: catalog, MCPTools: "eager"}
 	if n := len(eager.toolDefs()); n != 32 {
 		t.Fatalf("eager mode sends all tools, got %d", n)
 	}
-	few := &Agent{UI: nopUI{}, Dynamic: func() []tools.Tool { return catalog()[30:] }, LazyThreshold: 10}
-	if n := names(few.toolDefs()); len(n) != 2 || n[0] == "tool_search" {
-		t.Fatalf("auto mode keeps few tools inline, got %v", n)
+	few := func() []tools.Tool { return catalog()[30:] }
+	for _, mode := range []string{"", "auto"} {
+		// Elsewhere than Claude, small servers stay inline, big ones are deferred.
+		if n := names((&Agent{UI: nopUI{}, Dynamic: few, MCPTools: mode}).toolDefs()); len(n) != 2 || n[0] == "tool_search" {
+			t.Errorf("%q: few small tools should stay inline, got %v", mode, n)
+		}
+		if n := names((&Agent{UI: nopUI{}, Dynamic: big(9), MCPTools: mode}).toolDefs()); len(n) != 1 || n[0] != "tool_search" {
+			t.Errorf("%q: 9 big tools should be deferred, got %v", mode, n)
+		}
+		// On Claude every MCP tool is deferred, however few.
+		c := &Agent{Provider: &deferring{}, UI: nopUI{}, Dynamic: few, MCPTools: mode}
+		if loaded, deferred := defNames(c.toolDefs()); len(loaded) != 1 || loaded[0] != "tool_search" || len(deferred) != 2 {
+			t.Errorf("%q on Claude: loaded %v, deferred %v", mode, loaded, deferred)
+		}
+	}
+	if toolTokens(big(9)()) < 5000 {
+		t.Errorf("big tools take %d tokens", toolTokens(big(9)()))
 	}
 }
 
 func TestResumeKeepsUsedMCPToolsLoaded(t *testing.T) {
-	a := &Agent{UI: nopUI{}, Dynamic: catalog, LazyThreshold: 0}
+	a := &Agent{UI: nopUI{}, Dynamic: catalog, MCPTools: "lazy"}
 	a.SetHistory([]llm.Message{{Role: llm.RoleAssistant, Blocks: []llm.Block{
 		{Type: llm.BlockToolUse, ID: "1", Name: "mcp__studio__tool7", Input: json.RawMessage(`{}`)}}}})
 	if defs := names(a.toolDefs()); len(defs) != 2 || defs[1] != "mcp__studio__tool7" {

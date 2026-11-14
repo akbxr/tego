@@ -407,14 +407,7 @@ func (s *acpServer) open(cwd string, servers []acp.MCPServer, id string) (*acpSe
 	if untrusted := ap.loadExtensions(acpExtHost{sess}); ap.ext != nil {
 		go sess.watchExtensions(untrusted)
 	}
-	switch cfg.MCPTools {
-	case "eager":
-		ag.LazyThreshold = -1
-	case "lazy":
-		ag.LazyThreshold = 0
-	default:
-		ag.LazyThreshold = 10
-	}
+	ag.MCPTools = cfg.MCPTools
 
 	s.mu.Lock()
 	if old := s.sessions[sess.id]; old != nil { // loaded again: the newest wins

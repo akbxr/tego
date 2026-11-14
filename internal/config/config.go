@@ -37,7 +37,7 @@ type Config struct {
 	SubagentMerge   bool                           `json:"subagent_merge,omitempty"`     // merge the commits of a worktree subagent that succeeded into the session's branch
 	SubagentModel   string                         `json:"subagent_model,omitempty"`     // the model of a task that names none: an alias (opus), provider/model or a subagent_models name ("": the session's)
 	SessionMessages bool                           `json:"session_messages,omitempty"`   // open sessions take messages from other sessions (session_send), and an idle terminal session starts a turn to answer
-	MCPTools        string                         `json:"mcp_tools,omitempty"`          // "auto" (default: deferred behind tool_search above 10 tools), "lazy", "eager"
+	MCPTools        string                         `json:"mcp_tools,omitempty"`          // "auto" (default: deferred behind tool_search on Claude, elsewhere above ~2k tokens), "lazy", "eager"
 	MCPIdle         string                         `json:"mcp_idle,omitempty"`           // local MCP servers stop after this long unused and start at their next call (default "10m"; "off": run all session)
 	Accounts        string                         `json:"accounts,omitempty"`           // with several logins per provider: "fallback" (default: switch on limits), "round-robin" or "expiring" (the account whose weekly quota runs out unused soonest)
 	Icons           string                         `json:"icons,omitempty"`              // status-line icons: "nerd" (Nerd Font glyphs) or "unicode" (default)

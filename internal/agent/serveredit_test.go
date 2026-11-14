@@ -39,7 +39,7 @@ func mcpCatalog(n int) []tools.Tool {
 
 func lazyAgent(p llm.Provider) *Agent {
 	cat := mcpCatalog(12)
-	return &Agent{Provider: p, UI: nopUI{}, Tools: []tools.Tool{echoTool{}}, LazyThreshold: 10,
+	return &Agent{Provider: p, UI: nopUI{}, Tools: []tools.Tool{echoTool{}}, MCPTools: "lazy",
 		Dynamic: func() []tools.Tool { return cat }}
 }
 

@@ -11,8 +11,38 @@ import (
 	"github.com/akbxr/tego/internal/tools"
 )
 
-func (a *Agent) lazy(n int) bool {
-	return a.LazyThreshold >= 0 && n > a.LazyThreshold
+// mcpInlineTokens: under "auto", on a provider that can't load deferred
+// tools itself, MCP tools whose definitions take at most this many tokens
+// are sent with every request: loading them later would change the tool
+// list, and with it the whole prompt cache.
+const mcpInlineTokens = 2000
+
+// lazy reports whether the MCP tools dyn stay behind tool_search. Under
+// "auto" they do wherever the provider defers tools (Claude): the model
+// loads one by searching, without the prompt cache changing, so tools it
+// never uses cost nothing. The nine tools of one Blender server were 6k
+// tokens in every request of every session, used in none of them.
+func (a *Agent) lazy(dyn []tools.Tool) bool {
+	switch a.MCPTools {
+	case "eager":
+		return false
+	case "lazy":
+		return true
+	}
+	if a.defersTools() {
+		return true
+	}
+	return toolTokens(dyn) > mcpInlineTokens
+}
+
+// toolTokens estimates what the definitions of ts take in a request.
+func toolTokens(ts []tools.Tool) int {
+	n := 0
+	for _, t := range ts {
+		d := t.Def()
+		n += len(d.Name) + len(d.Description) + len(d.Schema) + 16
+	}
+	return n / 4
 }
 
 func (a *Agent) activate(names ...string) {
