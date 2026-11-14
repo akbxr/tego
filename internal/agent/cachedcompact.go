@@ -163,7 +163,7 @@ func (a *Agent) cachedSummary(ctx context.Context, tail []llm.Message, focus, tr
 	req.Messages = append(slices.Clip(a.Messages), llm.Message{Role: llm.RoleUser, Blocks: []llm.Block{{Type: llm.BlockText, Text: instr}}})
 	req.Class = llm.ClassCompaction
 	req.CachePrefix = s.n
-	req.Messages = a.audioAsText(ctx, a.videoAsFrames(ctx, req.Messages))
+	req.Messages = a.mediaBudget(a.audioAsText(ctx, a.videoAsFrames(ctx, req.Messages)), false)
 	msg, err := a.Provider.Stream(ctx, &req, func(llm.Event) {})
 	if err != nil {
 		if ctx.Err() != nil {

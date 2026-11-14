@@ -164,8 +164,9 @@ type Agent struct {
 	endedMu sync.Mutex
 	ended   []*endedSub // ended subagents a task can resume (resume.go)
 
-	videoMu     sync.Mutex
-	videoFrames map[[32]byte][]llm.Block // video blocks as frames, for models that can't watch (video.go)
+	videoMu      sync.Mutex
+	videoFrames  map[[32]byte][]llm.Block // video blocks as frames, for models that can't watch (video.go)
+	mediaDropped int                      // the oldest images requests leave out, as last told (media.go)
 
 	audioMu    sync.Mutex
 	audioTexts map[[32]byte]string // audio blocks as transcripts, for models that can't hear (audio.go)
@@ -424,7 +425,7 @@ func (a *Agent) loop(ctx context.Context) error {
 		}
 		// idle: since the cache was last read (a keep-alive counts)
 		sent, prev, idle := a.noteSent(req), a.sent, a.now().Sub(a.lastReply)
-		req.Messages = a.audioAsText(ctx, a.videoAsFrames(ctx, req.Messages))
+		req.Messages = a.mediaBudget(a.audioAsText(ctx, a.videoAsFrames(ctx, req.Messages)), true)
 		msg, err := a.Provider.Stream(ctx, req, a.onEvent)
 		if err == nil && req.ClearToolResults != nil {
 			msg.ClearTrigger = req.ClearToolResults.TriggerToolUses

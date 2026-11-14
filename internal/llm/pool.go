@@ -92,6 +92,13 @@ func (p *Pool) TakesVideo(model string) bool {
 	return len(p.members) > 0 && TakesVideo(p.members[0].Provider, model)
 }
 
+func (p *Pool) MaxMedia(model string) (images, bytes int) {
+	if len(p.members) == 0 {
+		return 0, 0
+	}
+	return MaxMedia(p.members[0].Provider, model)
+}
+
 func (p *Pool) TakesAudio(model string) bool {
 	return len(p.members) > 0 && TakesAudio(p.members[0].Provider, model)
 }

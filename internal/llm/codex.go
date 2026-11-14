@@ -29,6 +29,9 @@ type codexProvider struct {
 
 func (p *codexProvider) Name() string { return p.name }
 
+// MaxMedia: OpenAI takes 1,500 images and 512 MB a request.
+func (p *codexProvider) MaxMedia(string) (images, bytes int) { return 1500, 400 << 20 }
+
 // ImplicitPrefixCache: OpenAI caches prompt prefixes on its own.
 func (p *codexProvider) ImplicitPrefixCache(string) bool { return true }
 

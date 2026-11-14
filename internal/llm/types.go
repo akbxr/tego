@@ -276,6 +276,23 @@ func TakesVideo(p Provider, model string) bool {
 	return ok && v.TakesVideo(model)
 }
 
+// MediaLimits is implemented by providers that refuse a request with more
+// images than some count or size: Anthropic's "Too much media: 0 document
+// pages + 624 images > 600" ended a subagent that watched videos as frames.
+type MediaLimits interface {
+	// MaxMedia is the most images, and the most bytes of their base64
+	// data, one request to model may carry (0: no limit).
+	MaxMedia(model string) (images, bytes int)
+}
+
+// MaxMedia reports p's limits on the images of one request (0: none).
+func MaxMedia(p Provider, model string) (images, bytes int) {
+	if m, ok := p.(MediaLimits); ok {
+		return m.MaxMedia(model)
+	}
+	return 0, 0
+}
+
 // AudioInput is implemented by providers some of whose models take audio
 // blocks (BlockAudio).
 type AudioInput interface {

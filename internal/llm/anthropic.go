@@ -41,6 +41,11 @@ type anthropicProvider struct {
 
 func (p *anthropicProvider) Name() string { return p.name }
 
+// MaxMedia: the API takes 600 images a request ("document pages +
+// images"), in a request of at most 32 MB; requests with 31 MB of images
+// went through.
+func (p *anthropicProvider) MaxMedia(string) (images, bytes int) { return 600, 30 << 20 }
+
 // ClearsToolResults: context editing (clear_tool_uses) and custom tool
 // search (defer_loading + tool_reference) need Claude 4.5 or newer.
 func (p *anthropicProvider) ClearsToolResults(model string) bool {

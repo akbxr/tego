@@ -541,3 +541,13 @@ func TestEagerInputOnlyForWriteAndEdit(t *testing.T) {
 		}
 	}
 }
+
+func TestMaxMedia(t *testing.T) {
+	pool := NewPool("anthropic", StrategyFallback, []PoolMember{{Label: "a", Provider: &anthropicProvider{}}, {Label: "b", Provider: &anthropicProvider{}}})
+	if n, b := MaxMedia(pool, "claude-opus-5-5"); n != 600 || b != 30<<20 {
+		t.Errorf("anthropic pool: %d images, %d bytes", n, b)
+	}
+	if n, b := MaxMedia(&antigravityProvider{}, "gemini-3.8-flash"); n != 0 || b != 0 {
+		t.Errorf("antigravity: %d, %d", n, b)
+	}
+}

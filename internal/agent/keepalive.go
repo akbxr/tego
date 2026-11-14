@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"time"
@@ -105,6 +106,10 @@ func (a *Agent) KeepAliveDue() *llm.Request {
 		m.Blocks = slices.Clone(m.Blocks)
 		req.Messages = append(req.Messages, m)
 	}
+	// As the last request sent them: video as frames, sound as text (both
+	// converted then, so kept), the oldest images left out over the limit.
+	ctx := context.Background()
+	req.Messages = a.mediaBudget(a.audioAsText(ctx, a.videoAsFrames(ctx, req.Messages)), false)
 	req.Messages = append(req.Messages, llm.Message{Role: llm.RoleUser, Blocks: []llm.Block{{Type: llm.BlockText, Text: keepAlivePrompt}}})
 	return &req
 }
