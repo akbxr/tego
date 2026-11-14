@@ -269,7 +269,7 @@ func (r *restartError) exec() error {
 			env = append(env, kv)
 		}
 	}
-	return syscall.Exec(exe, append([]string{os.Args[0]}, r.args...), env)
+	return syscall.Exec(exe, append([]string{os.Args[0]}, r.args...), withHerdrEnv(env))
 }
 
 // sessionDir is the folder a session file was started in ("" if unknown).

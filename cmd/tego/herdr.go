@@ -27,6 +27,32 @@ import (
 
 const herdrSource = "tego" // integration id; also the agent name users see
 
+// herdrEnv is the HERDR_ENV tego started with. takeHerdrEnv removes it
+// from tego's environment: herdr integrations report to $HERDR_PANE_ID
+// only when HERDR_ENV=1, and another agent run by tego (claude or omp
+// from bash) reported tego's pane as its own. Herdr then ignored tego in
+// that pane for as long as the pane lived. HERDR_PANE_ID and the rest
+// stay, for the herdr CLI.
+var herdrEnv string
+
+// takeHerdrEnv keeps HERDR_ENV for tego alone; call it before tego starts
+// anything.
+func takeHerdrEnv() {
+	if v, ok := os.LookupEnv("HERDR_ENV"); ok {
+		herdrEnv = v
+		_ = os.Unsetenv("HERDR_ENV")
+	}
+}
+
+// withHerdrEnv adds HERDR_ENV back to env, for tego itself started again
+// (/restart).
+func withHerdrEnv(env []string) []string {
+	if herdrEnv == "" {
+		return env
+	}
+	return append(env, "HERDR_ENV="+herdrEnv)
+}
+
 type herdrReporter struct {
 	bin, pane string
 
@@ -45,7 +71,7 @@ type herdrReporter struct {
 // newHerdr returns a reporter when tego runs in a herdr pane, else nil.
 func newHerdr() *herdrReporter {
 	h := &herdrReporter{bin: os.Getenv("HERDR_BIN_PATH"), pane: os.Getenv("HERDR_PANE_ID")}
-	if os.Getenv("HERDR_ENV") != "1" || h.bin == "" || h.pane == "" || os.Getenv("HERDR_SOCKET_PATH") == "" {
+	if herdrEnv != "1" || h.bin == "" || h.pane == "" || os.Getenv("HERDR_SOCKET_PATH") == "" {
 		return nil
 	}
 	h.wake, h.stop, h.stopped = make(chan struct{}, 1), make(chan struct{}), make(chan struct{})

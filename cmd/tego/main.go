@@ -184,6 +184,7 @@ func parseArgs(args []string) (*options, error) {
 
 func main() {
 	dropMallocStackLogging()
+	takeHerdrEnv()
 	err := run()
 	var rs *restartError
 	if errors.As(err, &rs) {

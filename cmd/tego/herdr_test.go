@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -20,6 +21,8 @@ func TestHerdrReports(t *testing.T) {
 	t.Setenv("HERDR_PANE_ID", "w1:p1")
 	t.Setenv("HERDR_BIN_PATH", bin)
 	t.Setenv("HERDR_SOCKET_PATH", filepath.Join(dir, "sock"))
+	defer func() { herdrEnv = "" }()
+	takeHerdrEnv()
 	h := newHerdr()
 	if h == nil {
 		t.Fatal("no reporter inside herdr")
@@ -76,8 +79,29 @@ func TestHerdrReports(t *testing.T) {
 		t.Fatalf("session report = %q", got[2])
 	}
 
-	t.Setenv("HERDR_ENV", "")
+	herdrEnv = ""
 	if newHerdr() != nil {
 		t.Fatal("reporter outside herdr")
+	}
+}
+
+// The programs tego runs don't get HERDR_ENV: an agent with a herdr
+// integration (claude, omp) run from bash reported tego's pane as its
+// own, and herdr then ignored tego there. tego started again gets it back.
+func TestHerdrEnvStaysWithTego(t *testing.T) {
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_PANE_ID", "w1:p1")
+	defer func() { herdrEnv = "" }()
+	takeHerdrEnv()
+	out, err := exec.Command("sh", "-c", `echo "env=${HERDR_ENV:-none} pane=$HERDR_PANE_ID"`).Output()
+	if err != nil || strings.TrimSpace(string(out)) != "env=none pane=w1:p1" {
+		t.Fatalf("a child sees %q (%v)", out, err)
+	}
+	if env := withHerdrEnv([]string{"A=1"}); len(env) != 2 || env[1] != "HERDR_ENV=1" {
+		t.Fatalf("restart env %q", env)
+	}
+	herdrEnv = ""
+	if env := withHerdrEnv([]string{"A=1"}); len(env) != 1 {
+		t.Fatalf("outside herdr: %q", env)
 	}
 }
