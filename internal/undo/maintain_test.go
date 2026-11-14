@@ -191,3 +191,29 @@ func TestTooBig(t *testing.T) {
 		t.Fatalf("still off after a week: %q", off)
 	}
 }
+
+// A store snapshotted within the hour is left alone: its latest snapshot
+// may not be logged yet. The first tego to see the folder only starts the
+// clock.
+func TestMaintainLeavesActiveStores(t *testing.T) {
+	needGit(t)
+	ctx := context.Background()
+	base, work := t.TempDir(), t.TempDir()
+	write(t, work, "a.txt", "a\n")
+	s := Open(base, work)
+	tree, err := s.Snapshot(ctx) // not logged yet
+	if err != nil {
+		t.Fatal(err)
+	}
+	MaintainSoon(base)
+	if _, err := os.Stat(filepath.Join(base, "snapshots", ".maintained")); err != nil {
+		t.Fatal("the first run did not start the clock")
+	}
+	Maintain(ctx, filepath.Join(base, "snapshots"), time.Now())
+	if !isDir(s.gitDir) {
+		t.Fatal("an active store was removed")
+	}
+	if out, err := s.git(ctx, nil, "rev-parse", "refs/tego/latest^{tree}"); err != nil || strings.TrimSpace(out) != tree {
+		t.Fatalf("the unlogged snapshot was dropped: %q %v", out, err)
+	}
+}

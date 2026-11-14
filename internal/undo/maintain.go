@@ -96,8 +96,18 @@ func lockLogs(gitDir string) (unlock func()) {
 // tego process has in the last day (Maintain).
 func MaintainSoon(base string) {
 	dir := filepath.Join(base, "snapshots")
+	if !isDir(dir) {
+		return
+	}
 	stamp := filepath.Join(dir, ".maintained")
-	if fi, err := os.Stat(stamp); err == nil && time.Since(fi.ModTime()) < maintainEvery || !isDir(dir) {
+	fi, err := os.Stat(stamp)
+	if err != nil {
+		// The first tego to see the folder starts the clock: tidying
+		// begins a day later, not under a tego that just started.
+		_ = os.WriteFile(stamp, nil, 0o600)
+		return
+	}
+	if time.Since(fi.ModTime()) < maintainEvery {
 		return
 	}
 	go func() {
@@ -151,14 +161,15 @@ func maintain(ctx context.Context, gitDir string, now time.Time) {
 		}
 		return
 	}
+	if fi, err := os.Stat(filepath.Join(gitDir, "index")); err == nil && now.Sub(fi.ModTime()) < pruneGrace {
+		// Snapshotted within the hour: one may be being taken and not yet
+		// logged, and rechaining would drop it. Tidied another day.
+		return
+	}
 	unlock := lockLogs(gitDir)
 	trees, dropped := trimLogs(gitDir, now.Add(-keepFor))
 	unlock()
-	idle := true
-	if fi, err := os.Stat(filepath.Join(gitDir, "index")); err == nil && now.Sub(fi.ModTime()) < pruneGrace {
-		idle = false // a snapshot is being taken
-	}
-	if len(trees) == 0 && idle {
+	if len(trees) == 0 {
 		_ = os.RemoveAll(gitDir)
 		return
 	}
