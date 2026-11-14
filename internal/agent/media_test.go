@@ -80,6 +80,7 @@ func TestMediaDrop(t *testing.T) {
 	for _, c := range []struct {
 		n, each, maxN, maxB, want int
 	}{
+		{0, 1, 600, 1000, 0}, // no images at all
 		{600, 1, 600, 0, 0},
 		{601, 1, 600, 0, 150}, // a quarter of the limit at a time
 		{750, 1, 600, 0, 150},
@@ -89,7 +90,6 @@ func TestMediaDrop(t *testing.T) {
 		{20, 100, 0, 1000, 10},       // 1000 over: 4 steps
 		{3, 5000, 0, 1000, 2},        // the newest stays, however big
 		{700, 100, 600, 50_000, 250}, // the bytes ask for more than the count
-
 	} {
 		if got := mediaDrop(sizes(c.n, c.each), c.maxN, c.maxB); got != c.want {
 			t.Errorf("mediaDrop(%d×%d, %d, %d) = %d, want %d", c.n, c.each, c.maxN, c.maxB, got, c.want)
@@ -135,6 +135,13 @@ func TestMediaBudget(t *testing.T) {
 	}
 	if len(ui.infos) != 1 {
 		t.Errorf("told again: %q", ui.infos)
+	}
+
+	// No images: the request goes as it is.
+	none := &limitedProvider{images: 8, bytes: 100}
+	c := &Agent{Provider: none, UI: nopUI{}, Model: "m"}
+	if err := c.Run(context.Background(), "hi"); err != nil || none.sent[0] != 0 {
+		t.Fatalf("no images: %v", err)
 	}
 
 	// Without a limit nothing changes.

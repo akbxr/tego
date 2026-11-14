@@ -46,7 +46,7 @@ func (a *Agent) mediaBudget(msgs []llm.Message, notify bool) []llm.Message {
 		}
 	}
 	k := mediaDrop(sizes, maxN, maxB)
-	if k == 0 {
+	if k <= 0 {
 		return msgs
 	}
 	if notify && k > a.mediaDropped {
@@ -109,6 +109,9 @@ func (a *Agent) mediaBudget(msgs []llm.Message, notify bool) []llm.Message {
 // in steps of a quarter of each limit. The newest image always stays.
 func mediaDrop(sizes []int, maxN, maxB int) int {
 	n, k := len(sizes), 0
+	if n == 0 {
+		return 0
+	}
 	if maxN > 0 && n > maxN {
 		step := max(1, maxN/4)
 		k = (n - maxN + step - 1) / step * step
