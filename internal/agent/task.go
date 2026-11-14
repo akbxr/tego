@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -434,23 +433,7 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 	p.subMu.Lock()
 	p.subs = states
 	p.subMu.Unlock()
-
-	slots := make(chan struct{}, limit)
-	reports := make([]string, len(in.Tasks))
-	var wg sync.WaitGroup
-	for i, task := range in.Tasks {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			status, report := t.runOne(ctx, task, defs[i], models[i], states[i], slots, live)
-			reports[i] = fmt.Sprintf("## %s (%s)", task.Name, status)
-			if report != "" {
-				reports[i] += "\n" + report
-			}
-		}()
-	}
-	wg.Wait()
-	return strings.Join(reports, "\n\n"), ctx.Err()
+	return t.runCall(ctx, in.Tasks, defs, models, states, limit, live)
 }
 
 // shellOwners numbers the subagents' shell owners.
@@ -574,7 +557,10 @@ func (t *TaskTool) runOne(ctx context.Context, task taskSpec, def *AgentDef, mod
 	if e == nil {
 		e = &endedSub{name: name, model: task.spec}
 	}
-	e.sub, e.id, e.agent, e.task = sub, st.ID, agentName, asked
+	p.subMu.Lock()
+	id := st.ID // a background task's, also one a message moved there (handover.go)
+	p.subMu.Unlock()
+	e.sub, e.id, e.agent, e.task = sub, id, agentName, asked
 	sub.Watchdog, sub.Notices = nil, nil
 	if err := e.save(task.sess); err != nil { // before another task can take it
 		p.UI.OnInfo(fmt.Sprintf("  [%s] its context could not be saved in the session file (%v): it can be resumed until tego exits", name, err))

@@ -41,6 +41,7 @@ type bgTask struct {
 	report string
 	parent *Agent
 	cancel context.CancelFunc
+	unlink func() bool // ends Close's hold on one a task call ran first (adopt)
 
 	ended     bool
 	delivered bool // its report was handed to the session
@@ -54,23 +55,13 @@ const bgKeep = 30
 func (b *Background) start(t *TaskTool, specs []taskSpec, defs []*AgentDef, models []taskModel, states []*SubagentStatus) string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.ctx == nil {
-		b.ctx, b.cancel = context.WithCancel(context.Background())
-	}
+	b.initLocked()
 	if b.slots == nil {
 		b.slots = make(chan struct{}, t.concurrency())
 	}
-	if b.change == nil {
-		b.change = make(chan struct{})
-	}
 	started := make([]string, len(specs))
 	for i, spec := range specs {
-		b.next++
-		id := fmt.Sprintf("t%d", b.next)
-		for t.Parent.endedID(id) { // one restored from the session file has it
-			b.next++
-			id = fmt.Sprintf("t%d", b.next)
-		}
+		id := b.newIDLocked(t.Parent)
 		states[i].ID = id
 		ctx, cancel := context.WithCancel(b.ctx)
 		bt := &bgTask{id: id, prompt: spec.Prompt, st: states[i], parent: t.Parent, cancel: cancel}
@@ -87,6 +78,49 @@ func (b *Background) start(t *TaskTool, specs []taskSpec, defs []*AgentDef, mode
 	b.pruneLocked()
 	return fmt.Sprintf("Started in the background: %s. You and the user can go on; each report comes in a message when its task ends "+
 		"(task_status checks, waits for, messages or cancels them). Don't do their work yourself meanwhile.", strings.Join(started, ", "))
+}
+
+func (b *Background) initLocked() {
+	if b.ctx == nil {
+		b.ctx, b.cancel = context.WithCancel(context.Background())
+	}
+	if b.change == nil {
+		b.change = make(chan struct{})
+	}
+}
+
+// newIDLocked numbers a new task.
+func (b *Background) newIDLocked(parent *Agent) string {
+	b.next++
+	id := fmt.Sprintf("t%d", b.next)
+	for parent.endedID(id) { // one restored from the session file has it
+		b.next++
+		id = fmt.Sprintf("t%d", b.next)
+	}
+	return id
+}
+
+// adopt makes a subagent a task call runs a background task, once a
+// message ended the call's wait (handover.go): cancel stops it. Close and
+// Reset stop it too, and its end must be told with adoptedDone.
+func (b *Background) adopt(parent *Agent, prompt string, st *SubagentStatus, cancel context.CancelFunc) *bgTask {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.initLocked()
+	id := b.newIDLocked(parent)
+	parent.setSub(st, func(s *SubagentStatus) { s.ID = id })
+	bt := &bgTask{id: id, prompt: prompt, st: st, parent: parent, cancel: cancel, unlink: context.AfterFunc(b.ctx, cancel)}
+	b.tasks = append(b.tasks, bt)
+	b.wg.Add(1)
+	b.pruneLocked()
+	return bt
+}
+
+// adoptedDone ends an adopted task with its status and report.
+func (b *Background) adoptedDone(bt *bgTask, status, report string) {
+	bt.unlink()
+	b.finish(bt, status, report)
+	b.wg.Done()
 }
 
 func (b *Background) finish(bt *bgTask, status, report string) {
