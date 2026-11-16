@@ -59,6 +59,11 @@ type ccTurn struct {
 	promptIndex int    // main thread: 1-based number of that prompt
 	prevReq     string // main thread: request-id of the previous request
 	prevMsg     string // id of the previous assistant message in this session
+	// onConversation: a side request on the conversation's cached prefix
+	// (a /btw question), sent with its thinking, effort, cache TTL and
+	// tools, which the utility betas refuse ("block_binding: Extra inputs
+	// are not permitted"): it goes with the conversation's betas.
+	onConversation bool
 }
 
 // ccSession is what a session remembers between requests.
@@ -135,7 +140,7 @@ func (p *anthropicProvider) finish(t *ccTurn, requestID, messageID string) {
 // setClaudeCodeHeaders adds the per-request Claude Code headers.
 func setClaudeCodeHeaders(h http.Header, t *ccTurn, version string) {
 	betas := claudeAgentBetas
-	if t.class == ClassAuxiliary {
+	if t.class == ClassAuxiliary && !t.onConversation {
 		betas = claudeUtilityBetas
 	}
 	h.Set("Accept", "application/json")

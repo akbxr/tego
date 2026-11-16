@@ -61,6 +61,7 @@ func (p *anthropicProvider) Stream(ctx context.Context, req *Request, onEvent fu
 		var t *ccTurn
 		if p.oauth != nil {
 			t = p.turn(ctx, p.sessionID(req), req.Class, req.Messages)
+			t.onConversation = req.Class == ClassAuxiliary && req.CachePrefix > 0
 		}
 		fast := p.fastFor(req)
 		send := func() (*http.Response, error) {
