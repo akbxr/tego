@@ -686,6 +686,21 @@ func (a *Agent) Subagents() []SubagentStatus {
 	return out
 }
 
+// TellSubagent gives text from the user to the running subagent name of
+// the latest task call; false if none such runs.
+func (a *Agent) TellSubagent(name, text string) bool {
+	a.subMu.Lock()
+	var in *subInbox
+	for _, s := range a.subs {
+		if s.Name == name && s.State == SubRunning && s.inbox != nil {
+			in = s.inbox
+			break
+		}
+	}
+	a.subMu.Unlock()
+	return in != nil && in.tell(text)
+}
+
 func (a *Agent) setSub(s *SubagentStatus, fn func(*SubagentStatus)) {
 	a.subMu.Lock()
 	fn(s)

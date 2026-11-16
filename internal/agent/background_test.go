@@ -344,6 +344,9 @@ func TestBackgroundMessage(t *testing.T) {
 	if err != nil || !strings.Contains(out, "Sent to t1") {
 		t.Fatalf("%v %s", err, out)
 	}
+	if !bg.Tell("t1", "and skip the lexer") || bg.Tell("t9", "x") { // from the user, the agents panel
+		t.Fatal("Tell")
+	}
 	close(gate)
 	select {
 	case <-done:
@@ -352,8 +355,11 @@ func TestBackgroundMessage(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(seen) != 2 || !strings.Contains(seen[1], messageNote+"only look at the parser") {
+	if len(seen) != 2 || !strings.Contains(seen[1], messageNote+"only look at the parser") || !strings.Contains(seen[1], userNote+"and skip the lexer") {
 		t.Fatalf("requests: %q", seen)
+	}
+	if bg.Tell("t1", "late") {
+		t.Fatal("an ended task took a message")
 	}
 	if rep := bg.Take(); !strings.Contains(rep, "narrowed") {
 		t.Fatalf("report: %s", rep)

@@ -522,7 +522,7 @@ func stripSGR(s string) string {
 
 // agentsCommand lets the user pick a subagent of the latest task call, or
 // a background one, and prints what it did: its prompt, tool calls and
-// latest answer.
+// latest answer. Tab messages a running one.
 func (a *app) agentsCommand() {
 	subs := append(a.ag.Subagents(), a.bg.Statuses()...)
 	if len(subs) == 0 {
@@ -532,6 +532,7 @@ func (a *app) agentsCommand() {
 	c := a.ui.c
 	items := make([]lineedit.PickItem, len(subs))
 	sel := 0
+	running := false
 	for i, s := range subs {
 		items[i] = lineedit.PickItem{Label: stripSGR(subRow(c, s, false))}
 		if p := strings.Join(strings.Fields(s.Prompt), " "); p != "" {
@@ -540,16 +541,57 @@ func (a *app) agentsCommand() {
 		if s.State == agent.SubRunning && subs[sel].State != agent.SubRunning {
 			sel = i
 		}
+		running = running || s.State == agent.SubRunning
 	}
-	idx, err := a.tui.Pick("Subagents · enter: show its activity", items, "", sel)
-	if err != nil || idx < 0 {
+	o := lineedit.PickOptions{Title: "Subagents · enter: show its activity", Selected: sel}
+	if running {
+		o.Tab = "message it"
+	}
+	r, err := a.tui.PickWith(items, o)
+	if err != nil || r.Index < 0 {
 		return
 	}
 	// Fresh: it may have moved on while picking.
-	if fresh := append(a.ag.Subagents(), a.bg.Statuses()...); idx < len(fresh) && fresh[idx].Name == subs[idx].Name {
+	if fresh := append(a.ag.Subagents(), a.bg.Statuses()...); r.Index < len(fresh) && fresh[r.Index].Name == subs[r.Index].Name {
 		subs = fresh
 	}
-	a.printSubagent(subs[idx])
+	if r.Action == lineedit.PickTab {
+		a.messageSubagent(subs[r.Index])
+		return
+	}
+	a.printSubagent(subs[r.Index])
+}
+
+// messageSubagent asks the user for a message and gives it to s, which
+// reads it before its next request; the session's model hears of it with
+// its next request.
+func (a *app) messageSubagent(s agent.SubagentStatus) {
+	name := s.Name
+	if s.ID != "" {
+		name = s.ID + " " + s.Name
+	}
+	if s.State != agent.SubRunning {
+		a.ui.Dim("%s isn't running (%s): only a running subagent takes messages", name, s.State)
+		return
+	}
+	text, err := a.tui.Ask("Message for "+name, "")
+	if text = strings.TrimSpace(text); err != nil || text == "" {
+		return
+	}
+	var ok bool
+	if s.ID != "" {
+		ok = a.bg.Tell(s.ID, text)
+	} else {
+		ok = a.ag.TellSubagent(s.Name, text)
+	}
+	if !ok {
+		a.ui.Dim("%s ended meanwhile: the message didn't reach it", name)
+		return
+	}
+	a.ui.Dim("✉ to %s: %s", name, clipRunes(text, 200))
+	// A note for the session's next request, so its instructions don't
+	// undo the user's.
+	a.peers.hold(fmt.Sprintf("The user sent your subagent %s this message directly, which it reads before its next request:\n%s", name, text))
 }
 
 // printSubagent prints what a subagent did: its prompt, tool calls and

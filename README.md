@@ -132,7 +132,7 @@ In my benchmarks, 3 runs per task, tego cost 44% less than oh-my-pi with Sonnet 
 
 `subagent_max_turns` is how many requests a subagent may make, 150 by default. `0` means no limit. The last request has no tool calls: the subagent writes its report (what is done, what is left), so the session's model can go on from there. An agent file's `maxTurns` overrides it, up or down. With a limit of 20 or more, a subagent is told to start wrapping up a tenth of the limit before it (at least 5 requests before), so it finishes the change in progress instead of being cut off in the middle of it.
 
-A background subagent can be given a message while it runs: the session's model calls `task_status` with `ids` and `message`, and the subagent reads it before its next request. This corrects or narrows a task without stopping it and losing what it has done.
+A background subagent can be given a message while it runs: the session's model calls `task_status` with `ids` and `message`, and the subagent reads it before its next request. This corrects or narrows a task without stopping it and losing what it has done. You can message a running subagent yourself too: open the agents panel (←← on an empty editor, or `/agents`), pick it and press Tab. The session's model is told what you sent it.
 
 A message you send while tego waits for subagents doesn't wait for them to finish. The ones still at work go on in the background, and tego reads your message at once. It can then pass the message on to them, stop them or let them finish. Esc before that still stops them with the turn.
 

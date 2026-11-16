@@ -321,6 +321,21 @@ func (b *Background) Send(ids []string, text string) (sent, ended, unknown []str
 	return sent, ended, unknown
 }
 
+// Tell gives text from the user to the running task id; false if it isn't
+// running.
+func (b *Background) Tell(id, text string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	bt := b.findLocked(id)
+	if bt == nil || bt.ended {
+		return false
+	}
+	bt.parent.subMu.Lock()
+	in := bt.st.inbox
+	bt.parent.subMu.Unlock()
+	return in != nil && in.tell(text)
+}
+
 // Stop stops the task id for the user: no report, no OnDone. False if it
 // isn't running (it ended meanwhile, or there is no such task).
 func (b *Background) Stop(id string) bool {

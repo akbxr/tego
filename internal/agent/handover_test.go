@@ -65,6 +65,9 @@ func TestMessageMovesCallTasksToBackground(t *testing.T) {
 	f.prov.open("quick job")
 	subState(t, parent, "Quick", SubDone)
 	subState(t, parent, "Slow", SubRunning)
+	if parent.TellSubagent("Quick", "x") || !parent.TellSubagent("Slow", "keep it short") {
+		t.Fatal("TellSubagent: only a running one takes the user's message")
+	}
 
 	parent.SteerArrived()
 	out, err := awaitCall(t, call, "after the message")
