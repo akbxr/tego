@@ -1,11 +1,16 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
+	"image"
+	"image/jpeg"
 	"strings"
 	"testing"
 
+	"github.com/akbxr/tego/internal/images"
 	"github.com/akbxr/tego/internal/llm"
 )
 
@@ -162,5 +167,45 @@ func TestMediaBudgetRevivesRefusedHistory(t *testing.T) {
 	}
 	if prov.sent[0] != 476 {
 		t.Errorf("sent %v images", prov.sent)
+	}
+}
+
+// An image over images.ManyEdge in the history (an MCP server's 4K render,
+// sent before tego sized those) is downscaled in every request, the same
+// way each time, and the history keeps it.
+func TestFitImages(t *testing.T) {
+	enc := func(w, h int) llm.Block {
+		var buf bytes.Buffer
+		if err := jpeg.Encode(&buf, image.NewGray(image.Rect(0, 0, w, h)), nil); err != nil {
+			t.Fatal(err)
+		}
+		return llm.Block{Type: llm.BlockImage, MediaType: "image/jpeg", Data: base64.StdEncoding.EncodeToString(buf.Bytes())}
+	}
+	big, small := enc(2160, 3840), enc(1800, 1000)
+	msgs := []llm.Message{
+		{Role: llm.RoleUser, Blocks: []llm.Block{{Type: llm.BlockText, Text: "look"}, small}},
+		{Role: llm.RoleUser, Blocks: []llm.Block{{Type: llm.BlockToolResult, ToolUseID: "1", Content: "here", Images: []llm.Block{small, big}}}},
+		{Role: llm.RoleUser, Blocks: []llm.Block{big}},
+	}
+	a := &Agent{}
+	out := a.fitImages(msgs)
+	if &out[0] == &msgs[0] || out[0].Blocks[1].Data != small.Data {
+		t.Fatal("first message")
+	}
+	fit := out[1].Blocks[0].Images[1]
+	if w, h, err := images.Size(fit); err != nil || w != 882 || h != 1568 || out[1].Blocks[0].Images[0].Data != small.Data {
+		t.Fatalf("tool result image: %dx%d %v", w, h, err)
+	}
+	if out[2].Blocks[0].Data != fit.Data {
+		t.Fatal("the same image downscaled twice differently")
+	}
+	if msgs[1].Blocks[0].Images[1].Data != big.Data || msgs[2].Blocks[0].Data != big.Data {
+		t.Fatal("history changed")
+	}
+	if again := a.fitImages(msgs); again[2].Blocks[0].Data != fit.Data {
+		t.Fatal("next request differs")
+	}
+	if fine := msgs[:1]; &a.fitImages(fine)[0] != &fine[0] {
+		t.Fatal("copied messages with no large image")
 	}
 }

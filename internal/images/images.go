@@ -15,6 +15,7 @@ import (
 	"io"
 	"os"
 	"runtime/debug"
+	"strings"
 
 	"github.com/akbxr/tego/internal/llm"
 )
@@ -23,6 +24,9 @@ const (
 	// MaxLongEdge is the long edge Anthropic recommends; larger images are
 	// downscaled server-side anyway, costing latency and tokens.
 	MaxLongEdge = 1568
+	// ManyEdge is the longest edge Anthropic takes in a request with more
+	// than 20 images; it refuses the whole request over one larger image.
+	ManyEdge    = 2000
 	softBytes   = 15 << 18   // 3.75 MiB: re-encode above this
 	hardBytes   = 5 << 20    // provider limit per image (decoded)
 	hardEdge    = 8000       // provider limit per edge
@@ -75,6 +79,44 @@ func Load(path string) (llm.Block, Info, error) {
 		return llm.Block{}, Info{}, err
 	}
 	return FromBytes(data, path)
+}
+
+// FromBlock normalizes an image block (base64 data, as an MCP server or an
+// editor sends it) as FromBytes does.
+func FromBlock(b llm.Block, source string) (llm.Block, Info, error) {
+	data, err := base64.StdEncoding.DecodeString(b.Data)
+	if err != nil {
+		return llm.Block{}, Info{}, fmt.Errorf("%s: bad base64 image data: %v", source, err)
+	}
+	return FromBytes(data, source)
+}
+
+// Size is an image block's width and height, read from its header without
+// decoding the rest.
+func Size(b llm.Block) (int, int, error) {
+	r := base64.NewDecoder(base64.StdEncoding, strings.NewReader(b.Data))
+	head := make([]byte, 30)
+	n, _ := io.ReadFull(r, head)
+	head = head[:n]
+	mt := MediaType(head)
+	if mt == "" {
+		return 0, 0, errors.New("not a PNG, JPEG, GIF or WebP image")
+	}
+	if mt == "image/webp" {
+		return webpSize(head)
+	}
+	var cfg image.Config
+	var err error
+	rest := io.MultiReader(bytes.NewReader(head), r)
+	switch mt {
+	case "image/png":
+		cfg, err = png.DecodeConfig(rest)
+	case "image/jpeg":
+		cfg, err = jpeg.DecodeConfig(rest)
+	case "image/gif":
+		cfg, err = gif.DecodeConfig(rest)
+	}
+	return cfg.Width, cfg.Height, err
 }
 
 // FromBytes normalizes encoded image data (PNG, JPEG, GIF or WebP, detected

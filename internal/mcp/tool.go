@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	imgs "github.com/akbxr/tego/internal/images"
 	"github.com/akbxr/tego/internal/llm"
 )
 
@@ -110,7 +111,14 @@ func (r *callResult) render() (string, []llm.Block) {
 			hasText = true
 		case "image":
 			if supportedImage(c.MimeType) && c.Data != "" {
-				images = append(images, llm.Block{Type: llm.BlockImage, MediaType: c.MimeType, Data: c.Data})
+				// Sized as a read image is: a 4K render as sent made every
+				// request with over 20 images fail.
+				img, _, err := imgs.FromBlock(llm.Block{Type: llm.BlockImage, MediaType: c.MimeType, Data: c.Data}, "image")
+				if err != nil {
+					parts = append(parts, fmt.Sprintf("[image omitted: %v]", err))
+					continue
+				}
+				images = append(images, img)
 			} else {
 				parts = append(parts, fmt.Sprintf("[image %s omitted: unsupported type]", c.MimeType))
 			}

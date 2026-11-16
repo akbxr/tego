@@ -1,11 +1,13 @@
 package agent
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
 
+	"github.com/akbxr/tego/internal/images"
 	"github.com/akbxr/tego/internal/llm"
 )
 
@@ -18,6 +20,7 @@ import (
 // prefix and the prompt cache holds, and a resumed session leaves out the
 // same. The history itself keeps the images. notify reports a step.
 func (a *Agent) mediaBudget(msgs []llm.Message, notify bool) []llm.Message {
+	msgs = a.fitImages(msgs)
 	if a.Provider == nil {
 		return msgs
 	}
@@ -102,6 +105,90 @@ func (a *Agent) mediaBudget(msgs []llm.Message, notify bool) []llm.Message {
 		out[i].Blocks = blocks
 	}
 	return out
+}
+
+// fitImages returns msgs with every image whose long edge is over
+// images.ManyEdge downscaled: Anthropic refuses a request with more than 20
+// images if one is larger, and an image an MCP server sent before tego
+// downscaled those stayed in the history, failing every request after
+// the 20th image, resumes included. Only headers are read; a downscaled
+// image is kept, so every request sends the same one and the prompt
+// cache holds. The history keeps the original.
+func (a *Agent) fitImages(msgs []llm.Message) []llm.Message {
+	large := func(b llm.Block) bool {
+		if b.Type != llm.BlockImage || b.Data == "" {
+			return false
+		}
+		w, h, err := images.Size(b)
+		return err == nil && max(w, h) > images.ManyEdge
+	}
+	var out []llm.Message
+	for i, m := range msgs {
+		if m.Role != llm.RoleUser {
+			continue
+		}
+		var blocks []llm.Block
+		for j, b := range m.Blocks {
+			switch {
+			case large(b):
+				b = a.fitImage(b)
+			case b.Type == llm.BlockToolResult && slices.ContainsFunc(b.Images, large):
+				imgs := slices.Clone(b.Images)
+				for k, img := range imgs {
+					if large(img) {
+						imgs[k] = a.fitImage(img)
+					}
+				}
+				b.Images = imgs
+			default:
+				if blocks != nil {
+					blocks = append(blocks, b)
+				}
+				continue
+			}
+			if blocks == nil {
+				blocks = append(make([]llm.Block, 0, len(m.Blocks)), m.Blocks[:j]...)
+			}
+			blocks = append(blocks, b)
+		}
+		if blocks == nil {
+			continue
+		}
+		if out == nil {
+			out = slices.Clone(msgs)
+		}
+		out[i].Blocks = blocks
+	}
+	if out == nil {
+		return msgs
+	}
+	return out
+}
+
+// fitImage downscales one image, once; one it can't (WebP) becomes a line
+// saying so.
+func (a *Agent) fitImage(b llm.Block) llm.Block {
+	key := sha256.Sum256([]byte(b.Data))
+	a.videoMu.Lock()
+	fit, ok := a.imageFits[key]
+	a.videoMu.Unlock()
+	if ok {
+		return fit
+	}
+	fit, info, err := images.FromBlock(b, "image")
+	if err == nil && max(info.Width, info.Height) > images.ManyEdge {
+		err = fmt.Errorf("%dx%d is still too large", info.Width, info.Height)
+	}
+	if err != nil {
+		fit = llm.Block{Type: llm.BlockText, Text: fmt.Sprintf("[an image left out: larger than %d px on a side, and it could not be downscaled: %v]", images.ManyEdge, err)}
+	}
+	a.videoMu.Lock()
+	if a.imageFits == nil {
+		a.imageFits = map[[32]byte]llm.Block{}
+	}
+	a.imageFits[key] = fit
+	a.videoMu.Unlock()
+	return fit
 }
 
 // mediaDrop is how many of the oldest images (of the sizes given, oldest

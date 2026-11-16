@@ -153,6 +153,7 @@ func fakeServer() {
 			case "image":
 				respond(m.ID, map[string]any{"content": []any{
 					map[string]any{"type": "text", "text": "here"},
+					map[string]any{"type": "image", "data": onePixel, "mimeType": "image/png"},
 					map[string]any{"type": "image", "data": "aGVsbG8=", "mimeType": "image/png"},
 				}})
 			case "fail":
@@ -266,7 +267,7 @@ func TestStdio(t *testing.T) {
 	}
 
 	text, imgs, err := tm["mcp__fake__image"].RunImages(context.Background(), nil)
-	if err != nil || text != "here" || len(imgs) != 1 || imgs[0].MediaType != "image/png" || imgs[0].Data != "aGVsbG8=" {
+	if err != nil || !strings.HasPrefix(text, "here\n\n[image omitted: image: not a PNG") || len(imgs) != 1 || imgs[0].MediaType != "image/png" || imgs[0].Data != onePixel {
 		t.Fatalf("image: %q %+v %v", text, imgs, err)
 	}
 

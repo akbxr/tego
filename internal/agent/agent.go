@@ -170,6 +170,7 @@ type Agent struct {
 
 	videoMu      sync.Mutex
 	videoFrames  map[[32]byte][]llm.Block // video blocks as frames, for models that can't watch (video.go)
+	imageFits    map[[32]byte]llm.Block   // images too large for a request, downscaled (media.go)
 	mediaDropped int                      // the oldest images requests leave out, as last told (media.go)
 	asideMu      sync.Mutex
 	aside        asideState // side questions (aside.go)

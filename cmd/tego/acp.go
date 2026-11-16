@@ -19,6 +19,7 @@ import (
 	"github.com/akbxr/tego/internal/agent"
 	"github.com/akbxr/tego/internal/auth"
 	"github.com/akbxr/tego/internal/config"
+	imgs "github.com/akbxr/tego/internal/images"
 	"github.com/akbxr/tego/internal/llm"
 	"github.com/akbxr/tego/internal/lsp"
 	"github.com/akbxr/tego/internal/mcp"
@@ -900,7 +901,12 @@ func promptContent(blocks []acp.ContentBlock) (string, []llm.Block) {
 		case "text":
 			text = append(text, b.Text)
 		case "image":
-			images = append(images, llm.Block{Type: llm.BlockImage, MediaType: b.MimeType, Data: b.Data})
+			img, _, err := imgs.FromBlock(llm.Block{Type: llm.BlockImage, MediaType: b.MimeType, Data: b.Data}, "attached image")
+			if err != nil {
+				text = append(text, fmt.Sprintf("[%v]", err))
+				continue
+			}
+			images = append(images, img)
 		case "resource":
 			if r := b.Resource; r != nil && r.Text != "" {
 				text = append(text, fmt.Sprintf("<file path=%q>\n%s\n</file>", uriPath(r.URI), r.Text))

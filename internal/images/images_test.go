@@ -5,11 +5,15 @@ import (
 	"encoding/base64"
 	"image"
 	"image/color"
+	"image/gif"
+	"image/jpeg"
 	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/akbxr/tego/internal/llm"
 )
 
 func TestFindPaths(t *testing.T) {
@@ -115,6 +119,36 @@ func TestResize(t *testing.T) {
 		if p := out.Pix[i : i+4]; p[0] != 200 || p[1] != 100 || p[2] != 50 || p[3] != 128 {
 			t.Fatalf("pixel %d = %v", i/4, p)
 		}
+	}
+}
+
+// Size reads the header only, past what comes before a JPEG's frame.
+func TestSize(t *testing.T) {
+	enc := func(f func(*bytes.Buffer) error) llm.Block {
+		var buf bytes.Buffer
+		if err := f(&buf); err != nil {
+			t.Fatal(err)
+		}
+		return llm.Block{Type: llm.BlockImage, Data: base64.StdEncoding.EncodeToString(buf.Bytes())}
+	}
+	img := image.NewNRGBA(image.Rect(0, 0, 2250, 1326))
+	jpg := enc(func(b *bytes.Buffer) error { return jpeg.Encode(b, img, nil) })
+	raw, _ := base64.StdEncoding.DecodeString(jpg.Data)
+	// A 60 KB APP1 segment (EXIF) between the start and the frame header.
+	app1 := append([]byte{0xff, 0xd8, 0xff, 0xe1, 0xea, 0x62}, make([]byte, 0xea60)...)
+	exif := llm.Block{Type: llm.BlockImage, Data: base64.StdEncoding.EncodeToString(append(app1, raw[2:]...))}
+	for name, b := range map[string]llm.Block{
+		"png":  enc(func(b *bytes.Buffer) error { return png.Encode(b, img) }),
+		"jpeg": jpg,
+		"exif": exif,
+		"gif":  enc(func(b *bytes.Buffer) error { return gif.Encode(b, img, nil) }),
+	} {
+		if w, h, err := Size(b); err != nil || w != 2250 || h != 1326 {
+			t.Errorf("%s: %dx%d %v", name, w, h, err)
+		}
+	}
+	if _, _, err := Size(llm.Block{Data: "aGVsbG8="}); err == nil {
+		t.Error("text taken for an image")
 	}
 }
 
