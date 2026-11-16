@@ -106,10 +106,15 @@ func (p *Pool) expiringPick(req *Request, newTurn bool) (int, string) {
 	if best < 0 { // no limits read: as fallback does
 		return from, ""
 	}
-	if best == from {
+	// A session's first prompt and its title go out together, both
+	// moving from the account last used: one line says so.
+	label := p.members[best].Label
+	if best == from || label == p.told {
+		p.told = label
 		return best, ""
 	}
-	return best, fmt.Sprintf("%s: using %s, %s", p.name, p.members[best].Label, bestQuota.String(now))
+	p.told = label
+	return best, fmt.Sprintf("%s: using %s, %s", p.name, label, bestQuota.String(now))
 }
 
 // cacheWarm reports whether req's session made a request within the

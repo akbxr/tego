@@ -45,6 +45,7 @@ type Pool struct {
 	rr       int                  // round-robin cursor
 	sessions map[string]int       // session -> account for the turn in progress
 	lastUse  map[string]time.Time // session -> its last answered request
+	told     string               // expiring: the account last picked or said, so concurrent requests say it once
 	fetching chan struct{}        // closed when the usage refresh in flight ends
 	now      func() time.Time
 }

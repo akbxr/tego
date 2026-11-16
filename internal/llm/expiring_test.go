@@ -73,6 +73,16 @@ func TestExpiringPicksQuotaLostSoonest(t *testing.T) {
 	if len(notes) != 1 || notes[0] != "fake: using budi, 100% of the week left, resets in 11h0m" {
 		t.Fatalf("notes %q", notes)
 	}
+	// A request that left the account last used (info) at the same time,
+	// the session's title: it goes to budi too, without saying it again.
+	ep.Pool.mu.Lock()
+	ep.current = 0 // the first hasn't answered yet
+	i, note := ep.expiringPick(prompt("title"), true)
+	ep.current = 1
+	ep.Pool.mu.Unlock()
+	if i != 1 || note != "" {
+		t.Fatalf("second pick: %d %q", i, note)
+	}
 	st := ep.Status()
 	if !st[1].Active || st[0].Quota != "79% of the week left, resets in 3d14h" {
 		t.Fatalf("status %+v", st)
