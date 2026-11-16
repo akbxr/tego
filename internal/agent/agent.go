@@ -180,6 +180,9 @@ type Agent struct {
 
 	toolMu    sync.Mutex
 	activated map[string]bool // deferred MCP tools loaded into the request
+
+	holdMu sync.Mutex
+	hold   <-chan struct{} // calls that may change files wait for it to close (hold.go)
 }
 
 // toolList is what the next request advertises: the static tools plus MCP

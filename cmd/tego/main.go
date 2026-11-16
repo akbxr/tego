@@ -554,6 +554,8 @@ type app struct {
 	stale       *staleWatch    // a new binary or config.json since start (restart.go)
 	worktree    *worktree.Tree // -w: the worktree this session works in
 	undo        *undo.Store    // file snapshots before each prompt (interactive only)
+	snapMu      sync.Mutex
+	snapping    chan struct{} // closed when the latest snapshot is recorded (undo.go)
 	ui          *termUI
 	ag          *agent.Agent
 	env         *tools.Env
@@ -761,6 +763,7 @@ func (a *app) resume(ref string) error {
 // closeSession closes the current session file, deleting it if nothing was
 // ever recorded so aborted launches leave no empty sessions behind.
 func (a *app) closeSession() {
+	a.snapshotted() // its git, cut off at exit, could leave a lock
 	s := a.ag.Session
 	if s == nil {
 		return

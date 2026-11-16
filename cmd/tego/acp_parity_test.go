@@ -74,8 +74,12 @@ func TestACPUndo(t *testing.T) {
 	if err := os.WriteFile(a, []byte("one\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// A change on disk by a command (the editor's terminal runs none here:
+	// it is made before the next request). The command waits for the
+	// snapshot taken beside the first request.
 	model := &scripted{replies: []func(context.Context) *llm.Message{
-		func(context.Context) *llm.Message { // a change on disk, as a command would make
+		useTool("c1", "bash", map[string]any{"command": "echo two > a.txt && echo new > new.txt"}),
+		func(context.Context) *llm.Message {
 			_ = os.WriteFile(a, []byte("two\n"), 0o644)
 			_ = os.WriteFile(filepath.Join(project, "new.txt"), []byte("new\n"), 0o644)
 			return say("changed")
@@ -108,7 +112,7 @@ func TestACPUndo(t *testing.T) {
 	if data, _ := os.ReadFile(a); string(data) != "two\n" {
 		t.Fatalf("a.txt after the second /undo: %q", data)
 	}
-	if len(model.prompts) != 1 {
+	if len(model.prompts) != 2 || model.prompts[0] != "change a" || model.prompts[1] != "change a" { // its two requests, no /undo
 		t.Fatalf("model prompts %q", model.prompts)
 	}
 }

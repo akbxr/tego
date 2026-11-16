@@ -52,6 +52,7 @@ func (a *Agent) runCalls(ctx context.Context, calls []llm.Block) []llm.Block {
 			}
 		}
 		if m-n == 1 {
+			a.waitHold(ctx, calls[rest[n]])
 			results[rest[n]] = a.execute(ctx, calls[rest[n]])
 			n = m
 			continue

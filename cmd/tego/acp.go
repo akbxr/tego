@@ -468,6 +468,7 @@ func (sess *acpSession) close() {
 		sess.mcp.Close()
 	}
 	sess.app.closedNotices()
+	sess.app.snapshotted() // its git, cut off at exit, could leave a lock
 	s := sess.ag.Session
 	s.Close()
 	if len(sess.ag.Messages) == 0 {

@@ -12,19 +12,49 @@ import (
 	"github.com/akbxr/tego/internal/undo"
 )
 
-// snapshotFiles records the files before a prompt runs, for /undo.
+// snapshotFiles records the files before a prompt runs, for /undo. It
+// runs beside the prompt's first request, which waited for it before: up
+// to seconds after a large new file (6.6 s for a 200 MB render). The calls
+// that may change files wait for it (agent.HoldTools), and so does /undo.
 func (a *app) snapshotFiles(ctx context.Context, prompt string) {
 	if a.undo == nil || a.undo.Off() != "" {
+		a.ag.HoldTools(nil)
 		return
 	}
-	tree, err := a.undo.Snapshot(ctx)
-	if err != nil {
-		if why := a.undo.Off(); why != "" {
-			a.dim("/undo is off for this session: %s", why)
+	key, line := a.undoKey(), session.Oneline(prompt, 70)
+	done := make(chan struct{})
+	a.snapMu.Lock()
+	prev := a.snapping
+	a.snapping = done
+	a.snapMu.Unlock()
+	a.ag.HoldTools(done)
+	// Its own time limit ends it, not the turn's end: one stopped at once
+	// would leave nothing to undo.
+	ctx = context.WithoutCancel(ctx)
+	go func() {
+		defer close(done)
+		if prev != nil {
+			<-prev // in order, as they are listed
 		}
-		return
+		tree, err := a.undo.Snapshot(ctx)
+		if err != nil {
+			if why := a.undo.Off(); why != "" {
+				a.dim("/undo is off for this session: %s", why)
+			}
+			return
+		}
+		_ = a.undo.Add(key, undo.Entry{Tree: tree, Prompt: line, Time: time.Now()})
+	}()
+}
+
+// snapshotted waits for the snapshot in progress, if any.
+func (a *app) snapshotted() {
+	a.snapMu.Lock()
+	done := a.snapping
+	a.snapMu.Unlock()
+	if done != nil {
+		<-done
 	}
-	_ = a.undo.Add(a.undoKey(), undo.Entry{Tree: tree, Prompt: session.Oneline(prompt, 70), Time: time.Now()})
 }
 
 // dim shows a line for the user: dim in the terminal, a notice in an
@@ -70,6 +100,7 @@ func (c undoChoice) when() string {
 // something for, newest first, and the snapshot of the files now (cur).
 // A message instead says why there are none.
 func (a *app) undoChoices(ctx context.Context) (cur string, choices []undoChoice, msg string, err error) {
+	a.snapshotted()
 	entries := a.undo.Entries(a.undoKey())
 	if len(entries) == 0 {
 		return "", nil, "nothing to undo yet: tego snapshots the files before each prompt", nil
