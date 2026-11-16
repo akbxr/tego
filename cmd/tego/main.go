@@ -114,6 +114,9 @@ type options struct {
 	worktree                bool   // -w: work in a worktree
 	worktreeName            string // its name ("": a new one)
 	prompt                  []string
+	// Not in the usage: session_start's id for the session it starts, and
+	// the sessions a restarted tego still owes a notice (peer.Watchers).
+	sessionID, watchers string
 }
 
 func parseArgs(args []string) (*options, error) {
@@ -160,6 +163,10 @@ func parseArgs(args []string) (*options, error) {
 			o.permissions, err = val()
 		case "--no-session":
 			o.noSession = true
+		case "--session-id":
+			o.sessionID, err = val()
+		case "--watchers":
+			o.watchers, err = val()
 		case "-v", "--version":
 			fmt.Println("tego", version)
 			os.Exit(0)
@@ -326,7 +333,8 @@ func run() error {
 		return fmt.Errorf("invalid permission mode %q (yolo, edits or ask)", perms)
 	}
 	app := &app{cfg: cfg, store: store, cwd: cwd, noSession: o.noSession, interactive: !o.print, out: os.Stdout, icons: icons(cfg.Icons),
-		fast: o.fast || cfg.Fast, perms: perms, worktree: wt, keepAliveCh: make(chan keepAliveResult, 1)}
+		fast: o.fast || cfg.Fast, perms: perms, worktree: wt, keepAliveCh: make(chan keepAliveResult, 1), firstID: o.sessionID}
+	app.peers.watchers.Set(o.watchers)
 	if app.interactive {
 		app.undo = undo.Open(cfg.Dir, cwd)
 		undo.MaintainSoon(cfg.Dir)
@@ -541,6 +549,7 @@ type app struct {
 	store       *auth.Store
 	cwd         string
 	subModels   subModelCache  // subagent_models a task can ask for
+	firstID     string         // --session-id: the id the first new session takes
 	restart     *restartError  // set by /resume to continue in another project, and by /restart
 	stale       *staleWatch    // a new binary or config.json since start (restart.go)
 	worktree    *worktree.Tree // -w: the worktree this session works in
@@ -722,7 +731,9 @@ func (a *app) newSession() error {
 	if a.noSession {
 		return nil
 	}
-	s, err := session.New(a.cfg.Dir, a.cwd)
+	id := a.firstID // --session-id: the first session's, which session_start chose
+	a.firstID = ""
+	s, err := session.NewWithID(a.cfg.Dir, a.cwd, id)
 	if err != nil {
 		return err
 	}
@@ -754,6 +765,7 @@ func (a *app) closeSession() {
 	if s == nil {
 		return
 	}
+	a.closedNotices()
 	s.Close()
 	if len(a.ag.Messages) == 0 {
 		_ = os.Remove(s.Path)

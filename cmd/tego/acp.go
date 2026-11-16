@@ -466,6 +466,7 @@ func (sess *acpSession) close() {
 	if sess.mcp != nil {
 		sess.mcp.Close()
 	}
+	sess.app.closedNotices()
 	s := sess.ag.Session
 	s.Close()
 	if len(sess.ag.Messages) == 0 {
@@ -725,7 +726,12 @@ func (sess *acpSession) endRunLocked(run *acpRun, resp acp.PromptResponse, err e
 		sess.run, sess.waiting = sess.waiting[0], sess.waiting[1:]
 		sess.run.after = run.sent
 		close(sess.run.ready)
+		return
 	}
+	if err == nil && resp.StopReason == "cancelled" {
+		err = context.Canceled
+	}
+	sess.app.idleNotices(err) // idle: tell the sessions waiting for that
 }
 
 // runPrompt runs what the editor sent: a command, or a prompt for the agent.

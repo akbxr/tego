@@ -61,6 +61,9 @@ func (a *app) restartArgs() []string {
 	if a.noSession {
 		args = append(args, "--no-session")
 	}
+	if w := a.peers.watchers.String(); w != "" { // they still wait for this session's notice
+		args = append(args, "--watchers", w)
+	}
 	return args
 }
 

@@ -208,3 +208,98 @@ func TestACPTakesSessionMessages(t *testing.T) {
 		t.Fatalf("not held for the next prompt: %q", n)
 	}
 }
+
+// noticeSink is a session that asked for notices, in this process.
+type noticeSink struct {
+	id  string
+	got chan peer.Message
+}
+
+func (n *noticeSink) Open() []peer.Open { return []peer.Open{{ID: n.id}} }
+func (n *noticeSink) Deliver(m peer.Message) peer.Outcome {
+	n.got <- m
+	return peer.Outcome{Status: "steered"}
+}
+
+func (n *noticeSink) next(t *testing.T) peer.Message {
+	t.Helper()
+	select {
+	case m := <-n.got:
+		return m
+	case <-time.After(5 * time.Second):
+		t.Fatal("no notice")
+		return peer.Message{}
+	}
+}
+
+// A session asked for a notice tells its sender when it next goes idle,
+// with its last answer, and when it closes; a sender that only watches
+// starts no turn; a restart keeps the watchers.
+func TestTerminalNotices(t *testing.T) {
+	model := &scripted{replies: []func(context.Context) *llm.Message{
+		func(context.Context) *llm.Message { return say("the tests pass") },
+	}}
+	a := peerApp(t, model)
+	sink := &noticeSink{id: "20261116-090000-aaaaaa", got: make(chan peer.Message, 4)}
+	hub, err := peer.Listen(a.cfg.Dir, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hub.Close()
+	id := a.ag.Session.ID
+	done := make(chan error, 1)
+
+	msg := peer.Message{To: id, From: sink.id, Text: "run the tests", Hops: 1, CanReply: true, Notify: true}
+	if out := a.receivePeer(msg, done); out.Status != "started" {
+		t.Fatalf("idle: %+v", out)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	a.finishJob(nil)
+	a.idleNotices(nil)
+	n := sink.next(t)
+	if n.Notice != peer.NoticeFinished || n.Text != "the tests pass" || n.Hops != 1 || n.From != id || n.To != sink.id {
+		t.Fatalf("notice %+v", n)
+	}
+	a.idleNotices(nil) // told once
+	select {
+	case m := <-sink.got:
+		t.Fatalf("a second notice %+v", m)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// Only watching: idle answers at once, with the last answer.
+	watch := peer.Message{To: id, From: sink.id, Hops: 1, CanReply: true, Notify: true}
+	if out := a.receivePeer(watch, done); out.Status != "idle" || out.Note != "the tests pass" {
+		t.Fatalf("watch while idle: %+v", out)
+	}
+	// Mid-turn it waits, without steering the turn.
+	_, cancel := context.WithCancel(context.Background())
+	a.cancel = cancel
+	if out := a.receivePeer(watch, done); out.Status != "watching" || len(a.takeSteering()) != 0 {
+		t.Fatalf("watch while busy: %+v", out)
+	}
+	a.cancel = nil
+
+	// A restart keeps the watcher for the restarted tego.
+	a.restart = &restartError{}
+	if args := strings.Join(a.restartArgs(), " "); !strings.Contains(args, "--watchers "+sink.id+":1") {
+		t.Fatalf("restart args %q", args)
+	}
+	a.closedNotices()
+	select {
+	case m := <-sink.got:
+		t.Fatalf("notice on a restart %+v", m)
+	case <-time.After(100 * time.Millisecond):
+	}
+	a.restart = nil
+
+	a.closedNotices()
+	if n := sink.next(t); n.Notice != peer.NoticeClosed {
+		t.Fatalf("closing: %+v", n)
+	}
+	if got := noticeStatus(context.Canceled); got != peer.NoticeInterrupted {
+		t.Fatalf("interrupted: %q", got)
+	}
+}

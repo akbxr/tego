@@ -255,6 +255,9 @@ func (a *app) repl(initial string) error {
 			if a.cancel == nil && err == nil {
 				a.startBackgroundReports(done)
 			}
+			if a.cancel == nil { // idle: tell the sessions waiting for that
+				a.idleNotices(err)
+			}
 		}
 	}
 }

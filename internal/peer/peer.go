@@ -44,6 +44,12 @@ type Message struct {
 	Hops      int       `json:"hops"`      // messages in the chain that led to this one, this one included
 	CanReply  bool      `json:"can_reply"` // the sender takes messages
 	Sent      time.Time `json:"sent"`
+	// Notify asks the receiver to tell the sender once when it next goes
+	// idle or closes (notice.go). With no Text it only asks that.
+	Notify bool `json:"notify,omitempty"`
+	// Notice makes this such a notice, Text the receiver's last answer:
+	// NoticeFinished, NoticeInterrupted, NoticeClosed or "failed: <error>".
+	Notice string `json:"notice,omitempty"`
 }
 
 // Outcome is what the receiving session did with a message.
@@ -52,7 +58,9 @@ type Outcome struct {
 	// "started" (it was idle and started a turn to answer), "held" (it
 	// waits for its user's next prompt), "queued" (the receiver was busy
 	// with its screen; it is handled shortly) or "gone" (no such session
-	// is open there any more).
+	// is open there any more). A message that only asks for a notice gets
+	// "watching" (a turn runs) or "idle" (none does; Note is its last
+	// answer).
 	Status string `json:"status"`
 	Note   string `json:"note,omitempty"`
 }

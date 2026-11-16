@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -153,18 +154,37 @@ func randHex(n int) string {
 	return hex.EncodeToString(b)
 }
 
-func New(base, cwd string) (*Session, error) { return create(base, cwd, "") }
+func New(base, cwd string) (*Session, error) { return create(base, cwd, "", "") }
 
-func create(base, cwd, forkOf string) (*Session, error) {
+// NewID is the id of a new session, as New makes them.
+func NewID() string { return time.Now().Format("20060102-150405") + "-" + randHex(3) }
+
+var idPattern = regexp.MustCompile(`^\d{8}-\d{6}-[0-9a-f]{6}$`)
+
+// NewWithID is New with the session's id chosen before (NewID), so that
+// another process knows it; "" makes one. An id in use is an error.
+func NewWithID(base, cwd, id string) (*Session, error) {
+	if id != "" && !idPattern.MatchString(id) {
+		return nil, fmt.Errorf("session id %q is not one tego makes", id)
+	}
+	return create(base, cwd, "", id)
+}
+
+func create(base, cwd, forkOf, id string) (*Session, error) {
 	dir := Dir(base, cwd)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	id := time.Now().Format("20060102-150405") + "-" + randHex(3)
+	flags := os.O_CREATE | os.O_RDWR | os.O_APPEND
+	if id == "" {
+		id = NewID()
+	} else {
+		flags |= os.O_EXCL
+	}
 	path := filepath.Join(dir, id+".jsonl")
 	// Read as well: History reads the messages back (and still can once the
 	// file is moved or deleted).
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
+	f, err := os.OpenFile(path, flags, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -175,7 +195,7 @@ func create(base, cwd, forkOf string) (*Session, error) {
 
 // NewFrom starts a new session holding history (fork/clone of forkOf).
 func NewFrom(base, cwd string, history []llm.Message, forkOf string) (*Session, error) {
-	s, err := create(base, cwd, forkOf)
+	s, err := create(base, cwd, forkOf, "")
 	if err != nil {
 		return nil, err
 	}

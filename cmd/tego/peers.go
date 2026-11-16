@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -35,6 +36,9 @@ type peerState struct {
 	busy atomic.Bool  // the terminal runs a turn
 	in   chan peerDelivery
 	hub  *peer.Hub
+
+	// watchers wait to hear when the session next goes idle or closes.
+	watchers peer.Watchers
 }
 
 type peerDelivery struct {
@@ -90,6 +94,9 @@ func (a *app) setupPeers() {
 	a.ag.Tools = append(a.ag.Tools, &peer.SessionsTool{Base: a.cfg.Dir, Cwd: a.cwd, Self: a.peerSelf})
 	if a.cfg.SessionMessages {
 		a.ag.Tools = append(a.ag.Tools, &peer.SendTool{Base: a.cfg.Dir, Self: a.peerSelf, CanReply: a.takesMessages})
+	}
+	if a.takesMessages { // a started session's notice must reach it
+		a.ag.Tools = append(a.ag.Tools, &startTool{a: a})
 	}
 	notes := a.ag.Notices
 	a.ag.Notices = func() string {
@@ -157,6 +164,16 @@ func (a *app) receivePeer(m peer.Message, done chan<- error) peer.Outcome {
 	if s := a.ag.Session; s == nil || s.ID != m.To {
 		return peer.Outcome{Status: "gone"}
 	}
+	if onlyWatch(m) {
+		if a.cancel == nil {
+			return peer.Outcome{Status: "idle", Note: lastAnswer(a.ag.LastText())}
+		}
+		a.peers.watchers.Add(m)
+		a.ui.Dim("✉ session %s waits to hear when this turn ends", m.From)
+		a.tui.Redraw()
+		return peer.Outcome{Status: "watching"}
+	}
+	a.peers.watchers.Add(m)
 	if a.cancel != nil {
 		a.pendMu.Lock()
 		a.peers.steer = append(a.peers.steer, m)
@@ -196,7 +213,65 @@ func (a *app) startPeerTurn(msgs []peer.Message, done chan<- error) {
 
 // echoPeer shows a message from another session as a prompt.
 func (a *app) echoPeer(m peer.Message) {
-	a.echoPrompt("✉ " + m.Label() + "\n" + strings.TrimSpace(m.Text))
+	text := strings.TrimSpace(m.Text)
+	if m.Notice != "" {
+		text = clipRunes(text, 600)
+	}
+	a.echoPrompt(strings.TrimRight("✉ "+m.Label()+"\n"+text, "\n"))
+}
+
+// onlyWatch: m only asks for a notice.
+func onlyWatch(m peer.Message) bool {
+	return m.Notify && m.Notice == "" && strings.TrimSpace(m.Text) == ""
+}
+
+// lastAnswer is an answer for an "idle" outcome's note.
+func lastAnswer(s string) string {
+	return clipRunes(strings.TrimSpace(s), 8000)
+}
+
+func clipRunes(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n]) + "…"
+	}
+	return s
+}
+
+// noticeStatus is how a turn that ended with err ended, for a notice.
+func noticeStatus(err error) string {
+	switch {
+	case err == nil:
+		return peer.NoticeFinished
+	case errors.Is(err, context.Canceled):
+		return peer.NoticeInterrupted
+	}
+	return "failed: " + clipRunes(err.Error(), 300)
+}
+
+// idleNotices tells the sessions waiting for it that the terminal's
+// session went idle after a job that ended with err.
+func (a *app) idleNotices(err error) {
+	ws := a.peers.watchers.Take()
+	if len(ws) == 0 {
+		return
+	}
+	self, answer := a.peerSelf(), a.ag.LastText()
+	go peer.Notify(context.Background(), a.cfg.Dir, self, ws, noticeStatus(err), answer)
+}
+
+// closedNotices tells them the session closed (tego exits, or the user
+// switched to another session); not on a restart, which keeps them.
+func (a *app) closedNotices() {
+	if a.restart != nil {
+		return
+	}
+	ws := a.peers.watchers.Take()
+	if len(ws) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	peer.Notify(ctx, a.cfg.Dir, a.peerSelf(), ws, peer.NoticeClosed, a.ag.LastText())
 }
 
 // takePeerSteering is the messages for the running turn, as user messages.
@@ -277,6 +352,15 @@ func (p *acpPeers) Deliver(m peer.Message) peer.Outcome {
 		return peer.Outcome{Status: "gone"}
 	}
 	sess.mu.Lock()
+	if onlyWatch(m) {
+		defer sess.mu.Unlock()
+		if sess.run == nil {
+			return peer.Outcome{Status: "idle", Note: lastAnswer(sess.ag.LastText())}
+		}
+		sess.app.peers.watchers.Add(m)
+		return peer.Outcome{Status: "watching"}
+	}
+	sess.app.peers.watchers.Add(m)
 	if run := sess.run; run != nil && run.ctx.Err() == nil {
 		sess.addSteerLocked(m.Prompt(), nil)
 		sess.mu.Unlock()
