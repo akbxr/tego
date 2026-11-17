@@ -80,6 +80,7 @@ export default function (tego: any) {
   tego.on("tool_result", (e: any) => e.tool === "read" ? { output: e.output.replace(/SECRET/g, "[redacted]") } : undefined);
   tego.on("input", (e: any) => e.text === "ping" ? { handled: true } : { text: e.text + " (please be brief)" });
   tego.on("turn_end", (e: any, ctx: any) => ctx.ui.notify("turn ended: " + e.text));
+  tego.on("stop", (e: any) => e.rounds < 2 && !/PASS/.test(e.text) ? { continue: "the tests fail, round " + e.rounds } : undefined);
   tego.registerTool({
     name: "pick_color", description: "Ask the user for a color",
     parameters: { type: "object", properties: { why: { type: "string" } } },
@@ -135,6 +136,19 @@ func TestTypeScriptExtension(t *testing.T) {
 	}
 	if _, handled := m.Input(ctx, "ping"); !handled {
 		t.Fatal("ping not handled")
+	}
+	// stop: another turn while the tests fail, for two rounds
+	if !m.Wants(EventStop) || m.Wants(EventSessionStart) {
+		t.Fatal("Wants")
+	}
+	if name, why := m.Stop(ctx, "FAIL", 1); name != "guard" || why != "the tests fail, round 1" {
+		t.Fatalf("stop: %q %q", name, why)
+	}
+	if _, why := m.Stop(ctx, "PASS", 0); why != "" {
+		t.Fatalf("stop after PASS: %q", why)
+	}
+	if _, why := m.Stop(ctx, "FAIL", 2); why != "" {
+		t.Fatalf("stop at round 2: %q", why)
 	}
 	// tools
 	tl := m.Tools(func(n string) bool { return n == "read" })

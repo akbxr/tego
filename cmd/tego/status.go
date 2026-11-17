@@ -49,6 +49,7 @@ type statusBar struct {
 	shells    func() int
 	shellPort func() string // the one running shell's ":3000", or ""
 	plan      func() bool   // plan mode is on
+	goal      func() string // the /goal segment, "" without one
 }
 
 func newStatusBar(c palette, cwd string, ic iconSet) *statusBar {
@@ -123,6 +124,11 @@ func (b *statusBar) status(width int) []string {
 	var parts []string
 	if b.plan != nil && b.plan() {
 		parts = append(parts, c.yellow+c.bold+"⏸ plan mode"+c.reset)
+	}
+	if b.goal != nil {
+		if g := b.goal(); g != "" {
+			parts = append(parts, c.magenta+c.bold+g+c.reset)
+		}
 	}
 	parts = append(parts, c.cyan+"◆ "+s.model+c.reset)
 	parts = append(parts, c.blue+b.icons.folder+" "+b.cwd+c.reset)

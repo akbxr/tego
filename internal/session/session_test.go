@@ -200,6 +200,38 @@ func TestTitlePersistsAndNamesTheSession(t *testing.T) {
 	}
 }
 
+// A resumed session keeps its /goal; one cleared stays cleared, and a
+// file from before goals has none.
+func TestGoalPersists(t *testing.T) {
+	s, err := New(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Append(msg(llm.RoleUser, "hi"))
+	reopen := func() string {
+		t.Helper()
+		re, _, err := Open(s.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer re.Close()
+		return re.Goal()
+	}
+	if g := reopen(); g != "" {
+		t.Fatalf("goal before one was set: %q", g)
+	}
+	_ = s.SetGoal("all tests pass")
+	_ = s.Append(msg(llm.RoleAssistant, "ok"))
+	if g := reopen(); g != "all tests pass" {
+		t.Fatalf("goal %q", g)
+	}
+	_ = s.SetGoal("")
+	s.Close()
+	if g := reopen(); g != "" {
+		t.Fatalf("cleared goal %q", g)
+	}
+}
+
 func TestListAllFindAndDelete(t *testing.T) {
 	defer func(c string) { trashCommand = c }(trashCommand)
 	trashCommand = "" // never fill the real Trash from a test

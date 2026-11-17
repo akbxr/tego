@@ -39,7 +39,7 @@ import (
 )
 
 type entry struct {
-	Type    string `json:"type"` // header | message | compaction | title | leaf | blob | subagent
+	Type    string `json:"type"` // header | message | compaction | title | goal | leaf | blob | subagent
 	ID      string `json:"id,omitempty"`
 	Parent  string `json:"parent,omitempty"`
 	Time    int64  `json:"ts,omitempty"`
@@ -52,6 +52,8 @@ type entry struct {
 	Messages []llm.Message `json:"messages,omitempty"`
 	// title
 	Title string `json:"title,omitempty"`
+	// goal: the /goal condition set ("" once it is cleared)
+	Goal string `json:"goal,omitempty"`
 	// blob: a media block's Data, referenced by its sha256
 	SHA  string `json:"sha,omitempty"`
 	Data string `json:"data,omitempty"`
@@ -118,6 +120,7 @@ type Session struct {
 	blobs  map[string]blobLoc // sha -> blob entry in the file (under mu)
 	subs   []*subRecord       // subagent records, in file order (under mu)
 	Title  string             // generated title ("" = none yet)
+	goal   string             // the /goal condition (under mu)
 	Cwd    string             // working directory the session was started in ("" in files without a header)
 	ForkOf string             // id of the session this one was forked or cloned from ("" = none)
 }
@@ -233,6 +236,7 @@ type lightEntry struct {
 	Cwd     string        `json:"cwd"`
 	ForkOf  string        `json:"fork_of"`
 	Title   string        `json:"title"`
+	Goal    string        `json:"goal"`
 	SHA     string        `json:"sha"`
 	Message *outlineEntry `json:"message"`
 	// subagent: all but its history
@@ -326,6 +330,8 @@ func load(path string) (*Session, error) {
 			}
 		case "title":
 			s.Title = e.Title
+		case "goal":
+			s.goal = e.Goal
 		case "subagent":
 			if e.ID != "" && e.Key != "" {
 				s.subs = append(s.subs, &subRecord{id: e.ID, key: e.Key, prev: e.Prev, anchor: e.Parent, from: e.From,
@@ -626,6 +632,33 @@ func (s *Session) SetTitle(title string) error {
 	s.mu.Unlock()
 	_, _, err := s.write(entry{Type: "title", Title: title, Time: time.Now().Unix()})
 	return err
+}
+
+// SetGoal records the /goal condition, "" when it is cleared, so a resumed
+// session keeps working toward it.
+func (s *Session) SetGoal(cond string) error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	if s.goal == cond {
+		s.mu.Unlock()
+		return nil
+	}
+	s.goal = cond
+	s.mu.Unlock()
+	_, _, err := s.write(entry{Type: "goal", Goal: cond, Time: time.Now().Unix()})
+	return err
+}
+
+// Goal is the /goal condition set, "" if none.
+func (s *Session) Goal() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.goal
 }
 
 func (s *Session) appendNode(e entry) error {

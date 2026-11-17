@@ -45,6 +45,15 @@ var acpCommands = []acpCommand{
 		func(sess *acpSession, _ context.Context, _ string) slashResult {
 			return slashResult{job: sess.ag.Continue}
 		}},
+	{"goal", "Work toward a condition until a check after each turn finds it holds; /goal shows how it goes, /goal clear ends it", "condition",
+		func(sess *acpSession, _ context.Context, args string) slashResult {
+			reply, prompt := sess.app.goalCommand(args)
+			if prompt == "" {
+				return slashResult{reply: reply}
+			}
+			sess.app.dim("%s", reply)
+			return slashResult{prompt: prompt}
+		}},
 	{"plan", "Plan mode on or off; with a prompt, plan it now", "prompt (optional)",
 		func(sess *acpSession, _ context.Context, args string) slashResult {
 			if args == "" {

@@ -45,6 +45,7 @@ var builtinCommands = []struct{ name, icon, help string }{
 	{"stats", "▦", "Requests, tokens and estimated cost: /stats [cache] [24h|7d|30d|90d|all]"},
 	{"mcp", "⌁", "MCP server status and tool counts"},
 	{"restart", "⟳", "Start tego again on this session: a new binary or config.json applies, the model and settings stay"},
+	{"goal", "◎", "Work toward a condition until a check after each turn finds it holds: /goal <condition>; /goal shows how it goes, /goal clear ends it"},
 	{"btw", "◆", "Ask a side question about the session, even while it works: /btw <question>; the answer stays out of the conversation"},
 	{"exit", "×", "Quit (alias /quit, Ctrl+D)"},
 }
@@ -221,12 +222,12 @@ func (a *app) repl(initial string) error {
 			a.redrawWanted.Store(false)
 			a.redrawConversation()
 		case err := <-done:
-			a.finishJob(err)
+			checked := a.finishJob(err)
 			if errors.Is(err, context.Canceled) {
 				// Interrupted: unsent messages go back to the editor, like pi.
 				a.restorePending(a.tui.Input())
 			}
-			if err == nil && a.pendingCount() == 0 {
+			if err == nil && a.pendingCount() == 0 && (checked || !a.continues()) {
 				a.notifyDone() // nothing left to do: tell the user
 			}
 			planned := a.planTurn
@@ -254,6 +255,11 @@ func (a *app) repl(initial string) error {
 			// interrupt or error: they go with the next prompt then.
 			if a.cancel == nil && err == nil {
 				a.startBackgroundReports(done)
+			}
+			// Another turn without the user: an extension asks for it, or
+			// the goal is not met yet. Not after a check that started none.
+			if a.cancel == nil && err == nil && !checked {
+				a.startContinuation(done)
 			}
 			if a.cancel == nil { // idle: tell the sessions waiting for that
 				a.idleNotices(err)
@@ -284,6 +290,7 @@ func (a *app) dispatch(line string, done chan<- error) bool {
 // startPrompt sends line to the agent as a new turn.
 func (a *app) startPrompt(line string, done chan<- error) {
 	a.peers.hops.Store(0) // the user's: a new chain
+	a.goalFresh()
 	a.echoPrompt(line)
 	a.maybeTitle(line)
 	a.planTurn = a.plan.Load()
@@ -369,7 +376,12 @@ func (a *app) startJob(done chan<- error, fn func(ctx context.Context) error) {
 	go func() { done <- fn(ctx) }()
 }
 
-func (a *app) finishJob(err error) {
+// finishJob ends the job that ran; checked reports a goal check that
+// started no turn.
+func (a *app) finishJob(err error) (checked bool) {
+	a.goalMu.Lock()
+	checked, a.goal.checked = a.goal.checked, false
+	a.goalMu.Unlock()
 	a.cancel()
 	a.cancel = nil
 	a.peers.busy.Store(false)
@@ -383,7 +395,9 @@ func (a *app) finishJob(err error) {
 		a.ui.Errorf("%v", err)
 		a.ui.Dim("(/retry to try again)")
 	}
-	a.usageLine(a.jobBefore, time.Since(a.jobStart))
+	if !checked || err != nil {
+		a.usageLine(a.jobBefore, time.Since(a.jobStart))
+	}
 	a.status.update(func(s *statusInfo) { s.busy = false })
 	a.tui.SetBusy(false)
 	a.refreshStatus()
@@ -393,6 +407,7 @@ func (a *app) finishJob(err error) {
 		a.reloadProvider = ""
 		a.afterLogin(p)
 	}
+	return checked
 }
 
 // refreshStatus snapshots agent state for the footer. Call it from the
@@ -401,6 +416,9 @@ func (a *app) refreshStatus() {
 	if a.tui == nil {
 		return
 	}
+	a.goalMu.Lock()
+	a.goalSyncLocked() // a session switched to shows its goal
+	a.goalMu.Unlock()
 	u := a.ag.Usage()
 	title := sessionTitle(a.ag.Messages)
 	if a.ag.Session != nil && a.ag.Session.Title != "" {
@@ -633,6 +651,7 @@ func (a *app) runSkill(name, args, line string, done chan<- error) {
 			req = "Apply this skill to the current task."
 		}
 		prompt := fmt.Sprintf("<skill name=%q path=%q>\n%s\n</skill>\n\n%s", s.Name, s.Path, strings.TrimSpace(string(body)), req)
+		a.goalFresh()
 		a.echoPrompt(line)
 		a.maybeTitle(line)
 		a.jobMsg = line
@@ -655,6 +674,18 @@ func (a *app) command(line string, done chan<- error) bool {
 		return a.restartCommand()
 	case "btw":
 		a.btwCommand(args, false)
+	case "goal":
+		reply, prompt := a.goalCommand(args)
+		if prompt == "" {
+			a.dim("%s", reply)
+		} else {
+			a.peers.hops.Store(0)
+			a.echoPrompt(line)
+			a.dim("%s", reply)
+			a.maybeTitle(args)
+			a.jobMsg = "goal: " + args
+			a.startJob(done, func(ctx context.Context) error { return a.runTurn(ctx, prompt) })
+		}
 	case "tasks":
 		a.tasksCommand()
 	case "help", "?":

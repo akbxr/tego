@@ -49,6 +49,7 @@ const (
 	ToolCall     = "tool_call"     // Tool, Input, Agent; may Block or ChangeInput
 	ToolResult   = "tool_result"   // Tool, Input, Output, IsError, Agent; may ChangeOutput
 	TurnEnd      = "turn_end"      // Text: the final answer
+	Stop         = "stop"          // Text, Rounds: the turn ended well; may Continue
 	SessionEnd   = "session_end"
 )
 
@@ -68,7 +69,8 @@ type Event struct {
 	Output    string          // tool_result
 	IsError   bool            // tool_result
 	Agent     string          // "" for the session's agent, else the subagent's name
-	Text      string          // input: the prompt; turn_end: the answer
+	Text      string          // input: the prompt; turn_end, stop: the answer
+	Rounds    int             // stop: turns in a row extensions asked for since the user's prompt
 	Cwd       string          // session_start
 	SessionID string          // session_start
 }
@@ -94,6 +96,7 @@ type Result struct {
 	output  *string
 	text    *string
 	handled bool
+	cont    string
 }
 
 // Pass changes nothing.
@@ -114,6 +117,10 @@ func ChangeText(s string) Result { return Result{text: &s} }
 
 // Handled takes the prompt: nothing is sent to the model (input).
 func Handled() Result { return Result{handled: true} }
+
+// Continue gives the agent another turn (stop), with why as its prompt:
+// what is left, such as the tests that fail.
+func Continue(why string) Result { return Result{cont: why} }
 
 // Ctx is how handlers, tools and commands reach tego and the user.
 type Ctx struct {
@@ -414,6 +421,7 @@ func (x *Extension) dispatch(method string, params json.RawMessage) (res any, er
 				IsError   bool            `json:"is_error"`
 				Agent     string          `json:"agent"`
 				Text      string          `json:"text"`
+				Rounds    int             `json:"rounds"`
 				Cwd       string          `json:"cwd"`
 				SessionID string          `json:"session_id"`
 				Model
@@ -429,7 +437,7 @@ func (x *Extension) dispatch(method string, params json.RawMessage) (res any, er
 			x.mu.Unlock()
 		}
 		return x.runEvent(Event{Name: p.Event, Tool: d.Tool, Input: d.Input, Output: d.Output, IsError: d.IsError,
-			Agent: d.Agent, Text: d.Text, Cwd: d.Cwd, SessionID: d.SessionID, Model: d.Model})
+			Agent: d.Agent, Text: d.Text, Rounds: d.Rounds, Cwd: d.Cwd, SessionID: d.SessionID, Model: d.Model})
 	case "tool/execute":
 		var p struct {
 			Name  string          `json:"name"`
@@ -472,6 +480,8 @@ func (x *Extension) runEvent(e Event) (map[string]any, error) {
 		switch {
 		case r.block:
 			return map[string]any{"block": true, "reason": r.reason}, nil
+		case r.cont != "":
+			return map[string]any{"continue": r.cont}, nil
 		case r.handled:
 			out["handled"] = true
 			if r.text != nil {

@@ -38,6 +38,7 @@ const (
 	EventToolCall     = "tool_call"     // {tool, input, agent} -> {block?, reason?, input?}
 	EventToolResult   = "tool_result"   // {tool, input, output, is_error, agent} -> {output?}
 	EventTurnEnd      = "turn_end"      // {text}
+	EventStop         = "stop"          // {text, rounds} -> {continue?}: the turn ended well; continue asks for another
 	EventSessionEnd   = "session_end"   // {}
 )
 

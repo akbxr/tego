@@ -755,6 +755,7 @@ func (sess *acpSession) runPrompt(ctx context.Context, text string, images []llm
 		}
 	}
 	sess.app.peers.hops.Store(0) // the user's prompt: a new chain of session messages
+	sess.app.goalFresh()
 	return sess.turn(ctx, text, images)
 }
 
@@ -775,9 +776,11 @@ func (sess *acpSession) turn(ctx context.Context, text string, images []llm.Bloc
 // followUps runs, once a prompt ended well, what would start a turn of its
 // own in the terminal: steering sent too late for the turn, the reports of
 // background tasks that ended after its last request, and prompts
-// extensions sent. The session is idle (and
-// what comes later waits for the next prompt) only when none is left.
+// extensions sent, and the turns an extension's stop handler or the goal
+// asks for. The session is idle (and what comes later waits for the next
+// prompt) only when none is left.
 func (sess *acpSession) followUps(ctx context.Context, run *acpRun, resp acp.PromptResponse) (acp.PromptResponse, error) {
+	checked := false // since the latest turn
 	for resp.StopReason == "end_turn" {
 		sess.mu.Lock()
 		var reports, next string
@@ -792,12 +795,26 @@ func (sess *acpSession) followUps(ctx context.Context, run *acpRun, resp acp.Pro
 			reports = sess.app.bg.Take()
 		case len(sess.queued) > 0:
 			next, sess.queued = sess.queued[0], sess.queued[1:]
+		case !checked && !sess.plan.Load() && sess.app.continues():
+			sess.mu.Unlock()
+			checked = true
+			if next := sess.app.continuation(ctx); next != "" {
+				var err error
+				if resp, err = result(ctx, sess.app.runContinuation(ctx, next)); err != nil {
+					return resp, err
+				}
+				checked = false
+			} else if ctx.Err() != nil {
+				resp = acp.PromptResponse{StopReason: stopReason(ctx, nil)}
+			}
+			continue
 		default:
 			sess.endRunLocked(run, resp, nil)
 			sess.mu.Unlock()
 			return resp, nil
 		}
 		sess.mu.Unlock()
+		checked = false
 		var err error
 		switch {
 		case steer != nil: // not shown: the editor showed it when it was sent

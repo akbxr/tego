@@ -74,6 +74,34 @@ func (m *Manager) Input(ctx context.Context, text string) (string, bool) {
 	return text, handled
 }
 
+// Wants reports whether a running extension handles event.
+func (m *Manager) Wants(event string) bool {
+	for _, e := range m.running() {
+		if e.subscribed(event) {
+			return true
+		}
+	}
+	return false
+}
+
+// Stop asks the extensions, once a turn ended well, whether the agent is
+// done: one that answers {continue: why} (tests that fail, say) gets
+// another turn, with why as its prompt. The first such answer wins. rounds
+// is how many turns in a row they asked for since the user's prompt.
+func (m *Manager) Stop(ctx context.Context, text string, rounds int) (ext, why string) {
+	m.event(ctx, EventStop, map[string]any{"text": text, "rounds": rounds}, func(name string, raw json.RawMessage) bool {
+		var r struct {
+			Continue string `json:"continue"`
+		}
+		if json.Unmarshal(raw, &r) != nil || strings.TrimSpace(r.Continue) == "" {
+			return false
+		}
+		ext, why = name, strings.TrimSpace(r.Continue)
+		return true
+	})
+	return ext, why
+}
+
 // BeforeTool lets extensions block a tool call (a reason) or change its
 // input (nil: unchanged). agent is "" for the session's agent, else the
 // subagent's name.

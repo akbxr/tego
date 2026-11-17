@@ -88,6 +88,8 @@ async function runEvent(event, data) {
     } else if (event === "input") {
       if (r.text !== undefined) data.text = result.text = String(r.text);
       if (r.handled) return { ...result, handled: true };
+    } else if (event === "stop") {
+      if (r.continue) return { continue: String(r.continue) };
     }
   }
   return result;

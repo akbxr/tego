@@ -108,6 +108,12 @@ func TestExtension(t *testing.T) {
 		}
 		return ChangeText(e.Text + "!")
 	})
+	x.On(Stop, func(e Event, ctx *Ctx) Result {
+		if e.Rounds < 3 && strings.Contains(e.Text, "FAIL") {
+			return Continue(fmt.Sprintf("fix the tests (round %d)", e.Rounds))
+		}
+		return Pass()
+	})
 	type colorIn struct {
 		Why string `json:"why"`
 	}
@@ -145,7 +151,7 @@ func TestExtension(t *testing.T) {
 	}
 
 	init := f.request("initialize", map[string]any{"protocol_version": 1, "cwd": "/work", "session_id": "s1"}, answer)
-	if js(init["events"]) != `["tool_call","tool_result","input"]` || init["name"] != "guard" ||
+	if js(init["events"]) != `["tool_call","tool_result","input","stop"]` || init["name"] != "guard" ||
 		!strings.Contains(js(init["tools"]), `"name":"pick_color"`) || !strings.Contains(js(init["tools"]), `"name":"boom","parameters":{"properties":{},"type":"object"}`) ||
 		js(init["commands"]) != `[{"description":"Say hello","name":"hello"}]` {
 		t.Fatalf("initialize %s", js(init))
@@ -170,6 +176,12 @@ func TestExtension(t *testing.T) {
 	}
 	if r := event(Input, map[string]any{"text": "ping"}); js(r) != `{"handled":true}` {
 		t.Errorf("ping: %s", js(r))
+	}
+	if r := event(Stop, map[string]any{"text": "2 FAIL", "rounds": 1}); js(r) != `{"continue":"fix the tests (round 1)"}` {
+		t.Errorf("stop: %s", js(r))
+	}
+	if r := event(Stop, map[string]any{"text": "ok", "rounds": 0}); js(r) != `{}` {
+		t.Errorf("stop when done: %s", js(r))
 	}
 	tool := func(name string, input any) map[string]any {
 		return f.request("tool/execute", map[string]any{"name": name, "input": input}, answer)

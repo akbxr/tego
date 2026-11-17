@@ -354,6 +354,7 @@ func run() error {
 		}
 		app.status.agents = app.runningAgents
 		app.status.plan = app.plan.Load
+		app.status.goal = app.goalLabel
 		app.status.shells = func() int {
 			if e := app.footerEnv.Load(); e != nil {
 				return e.RunningShells()
@@ -496,11 +497,31 @@ func run() error {
 			app.pstat = newProgStatus(func(s string) { os.Stdout.WriteString(s) })
 			app.pstat.set(statusRecord{state: "working", msg: prompt})
 		}
+		if cond, ok := strings.CutPrefix(prompt, "/goal "); ok {
+			reply, p := app.goalCommand(strings.TrimSpace(cond))
+			if p == "" {
+				return errors.New(reply)
+			}
+			app.ui.Dim("%s", reply)
+			prompt = p
+		}
 		err := app.withInterrupt(func(ctx context.Context) error {
 			if err := app.runTurn(ctx, prompt); err != nil {
 				return err
 			}
-			return app.drainBackground(ctx) // their reports, before exiting
+			if err := app.drainBackground(ctx); err != nil { // their reports, before exiting
+				return err
+			}
+			// Turns an extension asks for, or the goal's until it holds.
+			for next := app.continuation(ctx); next != ""; next = app.continuation(ctx) {
+				if err := app.runContinuation(ctx, next); err != nil {
+					return err
+				}
+				if err := app.drainBackground(ctx); err != nil {
+					return err
+				}
+			}
+			return nil
 		})
 		app.ui.Finish()
 		if app.pstat != nil {
@@ -556,6 +577,8 @@ type app struct {
 	undo        *undo.Store    // file snapshots before each prompt (interactive only)
 	snapMu      sync.Mutex
 	snapping    chan struct{} // closed when the latest snapshot is recorded (undo.go)
+	goalMu      sync.Mutex
+	goal        goalRun // the session's /goal (goal.go)
 	ui          *termUI
 	ag          *agent.Agent
 	env         *tools.Env
@@ -803,6 +826,7 @@ func (a *app) extTurn(ctx context.Context, prompt string, run func(ctx context.C
 	if a.ext != nil {
 		a.ext.Emit(ext.EventTurnEnd, map[string]any{"text": a.ag.LastText()})
 	}
+	a.goalFailed(err)
 	return err
 }
 

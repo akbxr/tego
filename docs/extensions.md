@@ -83,9 +83,29 @@ export default function (tego) {
 | `tool_call` | `{tool, input, agent}` | `{block: true, reason}`, or `{input}` to change it |
 | `tool_result` | `{tool, input, output, is_error, agent}` | `{output}` |
 | `turn_end` | `{text}`, the final answer | |
+| `stop` | `{text, rounds}`, once a turn ended well | `{continue: why}` for another turn, with `why` as its prompt |
 | `session_end` | `{}` | |
 
 Handlers run in order: those of one extension, then the next extension's. Each sees what the ones before it changed. A `block` stops the rest. Tool names are tego's: `read`, `write`, `edit`, `bash`, `grep`, `glob`, `web_search`, `task`, `mcp__<server>__<tool>`, and the extensions' own.
+
+`stop` lets an extension check the work before the agent hands back to you. This one runs the tests, and while they fail the agent gets another turn with their output:
+
+```ts
+// ~/.tego/extensions/tests.ts
+import { execSync } from "node:child_process";
+
+export default function (tego: any) {
+  tego.on("stop", (e: any, ctx: any) => {
+    try {
+      execSync("go test ./...", { cwd: ctx.cwd, stdio: "pipe" });
+    } catch (err: any) {
+      return { continue: "go test ./... fails:\n" + String(err.stdout).slice(-3000) };
+    }
+  });
+}
+```
+
+`rounds` is how many turns in a row the extensions asked for since your last prompt. After three, tego doesn't give another: it shows the reason and the session waits for you. Your next prompt starts the count again. A turn that was interrupted, failed or ran in plan mode is not checked, nor one that ended with background tasks still running: those are checked once their reports' turn ends. The first `continue` wins. In Go, return `extension.Continue(why)`.
 
 ## Go
 

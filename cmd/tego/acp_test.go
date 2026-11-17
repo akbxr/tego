@@ -20,14 +20,26 @@ import (
 // scripted is a model that answers from a script, one reply per request;
 // past its end it says "done". Titles get a fixed answer.
 type scripted struct {
-	mu      sync.Mutex
-	replies []func(ctx context.Context) *llm.Message
-	prompts []string // each request's last user text that is not a reminder
+	mu       sync.Mutex
+	replies  []func(ctx context.Context) *llm.Message
+	prompts  []string // each request's last user text that is not a reminder
+	verdicts []string // answers to goal checks, in order (then MET)
+	checks   []string // what each goal check read
 }
 
 func (s *scripted) Name() string { return "fake" }
 
 func (s *scripted) Stream(ctx context.Context, req *llm.Request, onEvent func(llm.Event)) (*llm.Message, error) {
+	if req.Class == llm.ClassAuxiliary && strings.Contains(req.System, "whether a goal holds") {
+		s.mu.Lock()
+		v := "MET: the record shows it"
+		if len(s.verdicts) > 0 {
+			v, s.verdicts = s.verdicts[0], s.verdicts[1:]
+		}
+		s.checks = append(s.checks, req.Messages[0].Blocks[0].Text)
+		s.mu.Unlock()
+		return &llm.Message{Role: llm.RoleAssistant, Blocks: []llm.Block{{Type: llm.BlockText, Text: v}}, StopReason: "end_turn"}, nil
+	}
 	if req.Class == llm.ClassAuxiliary {
 		return &llm.Message{Role: llm.RoleAssistant, Blocks: []llm.Block{{Type: llm.BlockText, Text: "Test title"}}, StopReason: "end_turn"}, nil
 	}
