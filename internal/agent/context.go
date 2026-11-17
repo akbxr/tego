@@ -324,11 +324,31 @@ func SystemPrompt(cwd string, files []ContextFile, skills []Skill, mode PromptMo
 	}
 	if len(skills) > 0 {
 		b.WriteString("\n# Skills\nSkills are instruction files for specialised tasks. When a task matches a skill, read its SKILL.md with the read tool before acting.\n")
+		var verify []string
 		for _, s := range skills {
 			fmt.Fprintf(&b, "- %s: %s (%s)\n", s.Name, s.Description, s.Path)
+			if isVerifySkill(s.Name) {
+				verify = append(verify, s.Name)
+			}
+		}
+		switch len(verify) {
+		case 0:
+		case 1:
+			fmt.Fprintf(&b, "The skill %s says how this project checks a change end to end. Before you report a change done or commit it, "+
+				"read and follow it.\n", verify[0])
+		default:
+			fmt.Fprintf(&b, "The skills %s say how this project checks a change end to end. Before you report a change done or commit it, "+
+				"read and follow the one that matches it.\n", strings.Join(verify, ", "))
 		}
 	}
 	return b.String()
+}
+
+// isVerifySkill reports a skill that says how to check changes: "verify",
+// or "verify-web", "verify_api" and the like.
+func isVerifySkill(name string) bool {
+	n := strings.ToLower(name)
+	return n == "verify" || strings.HasPrefix(n, "verify-") || strings.HasPrefix(n, "verify_")
 }
 
 // toolCandidates are the interpreters, package managers and build tools

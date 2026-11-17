@@ -35,6 +35,22 @@ func TestSystemPromptModes(t *testing.T) {
 	}
 }
 
+// A verify skill gets a line saying to follow it before a change is done.
+func TestVerifySkillLine(t *testing.T) {
+	skills := []Skill{{Name: "lint", Description: "d", Path: "/l"}, {Name: "verify", Description: "boot the app", Path: "/v"}}
+	p := SystemPrompt(t.TempDir(), nil, skills, Interactive)
+	if !strings.Contains(p, "The skill verify says how this project checks a change end to end. Before you report a change done or commit it, read and follow it.") {
+		t.Fatalf("no verify line:\n%s", p)
+	}
+	skills = append(skills, Skill{Name: "Verify-web", Path: "/w"})
+	if p := SystemPrompt(t.TempDir(), nil, skills, Interactive); !strings.Contains(p, "The skills verify, Verify-web say") {
+		t.Fatal("two verify skills")
+	}
+	if p := SystemPrompt(t.TempDir(), nil, skills[:1], Interactive); strings.Contains(p, "checks a change end to end") || isVerifySkill("verifyx") {
+		t.Fatal("a line without a verify skill")
+	}
+}
+
 func TestSystemPromptIsStable(t *testing.T) {
 	p := SystemPrompt(t.TempDir(), nil, nil, Interactive)
 	if strings.Contains(p, "Date:") || strings.Contains(p, "branch") {
