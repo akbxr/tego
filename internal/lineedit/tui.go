@@ -115,6 +115,7 @@ type TUI struct {
 	oldState     *term.State
 	wakeR, wakeW int
 	winch        chan os.Signal
+	stderr       *stderrGuard // fd 2 goes to /dev/null while the TUI draws
 
 	// input reader pause/stop, guarded by inMu (never held with mu acquired after it)
 	inMu     sync.Mutex
@@ -177,6 +178,10 @@ func Start(o Options) (*TUI, error) {
 		return nil, err
 	}
 	t.oldState = old
+	if term.IsTerminal(2) {
+		t.stderr = newStderrGuard()
+		t.stderr.on()
+	}
 	t.winch = make(chan os.Signal, 1)
 	signal.Notify(t.winch, syscall.SIGWINCH)
 
@@ -400,6 +405,7 @@ func (t *TUI) Suspend() (resume func()) {
 	if t.oldState != nil {
 		_ = term.Restore(t.inFd, t.oldState)
 	}
+	t.stderr.off()
 	var once sync.Once
 	return func() {
 		once.Do(t.resume)
@@ -416,6 +422,7 @@ func (t *TUI) resume() {
 		_, _ = term.MakeRaw(t.inFd)
 		t.width, t.height = termSize(t.outFd)
 	}
+	t.stderr.on()
 	t.suspended = false
 	t.inMu.Lock()
 	t.paused = false
@@ -456,6 +463,7 @@ func (t *TUI) Close() {
 	if t.oldState != nil && !wasSuspended {
 		_ = term.Restore(t.inFd, t.oldState)
 	}
+	t.stderr.close()
 	t.mu.Unlock()
 
 	close(t.done)
