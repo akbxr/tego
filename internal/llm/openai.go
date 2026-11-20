@@ -194,13 +194,15 @@ func openaiMessages(out []oaMessage, msgs []Message) []oaMessage {
 	return append(out, pending...)
 }
 
-// openaiReasoningModel reports model ids that accept reasoning_effort.
+// openaiReasoningModel reports model ids that accept reasoning_effort: OpenAI's
+// reasoning models, and Gemini (Google's OpenAI-compatible endpoint and proxies
+// in front of AI Studio or the Gemini app map it to the thinking level).
 func openaiReasoningModel(model string) bool {
 	m := strings.ToLower(model)
 	if i := strings.LastIndexByte(m, '/'); i >= 0 {
 		m = m[i+1:]
 	}
-	for _, p := range []string{"o1", "o3", "o4", "gpt-5"} {
+	for _, p := range []string{"o1", "o3", "o4", "gpt-5", "gemini"} {
 		if strings.HasPrefix(m, p) {
 			return true
 		}

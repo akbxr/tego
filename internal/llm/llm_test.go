@@ -345,9 +345,32 @@ func TestUpperEffortLevels(t *testing.T) {
 		{"o3", ThinkingXHigh, "high"},
 		{"gpt-5.6", ThinkingOff, ""},
 		{"gpt-5.6", ThinkingMedium, "medium"},
+		{"gemini-4-neon", ThinkingMax, "high"},
 	} {
 		if got := openaiEffort(c.model, c.level); got != c.want {
 			t.Errorf("openai %s %s: %q, want %q", c.model, c.level, got, c.want)
+		}
+	}
+	// reasoning_effort goes to reasoning models only: OpenAI's and Gemini (Google's
+	// endpoint, AI Studio and Gemini app proxies, OpenRouter's google/gemini-*).
+	for _, c := range []struct{ model, level, want string }{
+		{"gemini-4-neon", ThinkingHigh, "high"},
+		{"google/gemini-3.8-flash", ThinkingMedium, "medium"},
+		{"gemini-4-neon", ThinkingOff, ""},
+		{"openai/gpt-5.6", ThinkingLow, "low"},
+		{"llama-4-maverick", ThinkingHigh, ""},
+	} {
+		body, err := openaiBody(&Request{Model: c.model, Thinking: c.level,
+			Messages: []Message{{Role: RoleUser, Blocks: []Block{{Type: BlockText, Text: "hi"}}}}}, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var r struct {
+			ReasoningEffort string `json:"reasoning_effort"`
+		}
+		json.Unmarshal(body, &r)
+		if r.ReasoningEffort != c.want {
+			t.Errorf("openai body %s %s: reasoning_effort %q, want %q", c.model, c.level, r.ReasoningEffort, c.want)
 		}
 	}
 	// Antigravity stops at high: max runs as gemini-3.8-flash-high.
