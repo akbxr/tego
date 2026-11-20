@@ -46,6 +46,9 @@ type TaskTool struct {
 	// main, small or a named model: an alias (opus, sonnet, haiku) or
 	// provider/model. Zero Provider and nil error: the session's model.
 	ResolveModel func(spec string) (SmallModel, error)
+	// AnyModel tells the session's model which other models a task can
+	// name, resolved by ResolveModel ("" or nil: only the choices listed).
+	AnyModel func() string
 	// DefaultModel is the model a task runs on when it names none (config
 	// subagent_model): a Models name, an alias or provider/model. "": the
 	// session's. "main" still asks for the session's.
@@ -173,11 +176,15 @@ func (t *TaskTool) models() []SubagentModel {
 }
 
 // modelProperty is the tasks' "model" property, when there is a model
-// besides the session's: the small one, named ones.
+// besides the session's: the small one, named ones, any other.
 func (t *TaskTool) modelProperty() string {
 	s, hasSmall := t.small()
 	named := t.models()
-	if !hasSmall && len(named) == 0 && t.DefaultModel == "" {
+	anyModel := ""
+	if t.AnyModel != nil && t.ResolveModel != nil {
+		anyModel = t.AnyModel()
+	}
+	if !hasSmall && len(named) == 0 && t.DefaultModel == "" && anyModel == "" {
 		return ""
 	}
 	enum := []string{"main"}
@@ -210,6 +217,10 @@ func (t *TaskTool) modelProperty() string {
 		}
 		fmt.Fprintf(&desc, " %s: %s, %s.", m.Name, m.Spec, strings.TrimRight(use, ". "))
 	}
+	if anyModel != "" {
+		descJSON, _ := json.Marshal(desc.String() + " " + anyModel)
+		return `,"model":{"type":"string","description":` + string(descJSON) + `}`
+	}
 	enumJSON, _ := json.Marshal(enum)
 	descJSON, _ := json.Marshal(desc.String())
 	return `,"model":{"type":"string","enum":` + string(enumJSON) + `,"description":` + string(descJSON) + `}`
@@ -220,6 +231,7 @@ type taskModel struct {
 	SmallModel
 	thinking string
 	note     string // why it runs on the session's model instead of the one asked for
+	unknown  error  // ResolveModel's error, for a model that is not one of the named
 }
 
 // splitLevel splits a ":level" thinking suffix off a model spec
@@ -279,7 +291,7 @@ func (t *TaskTool) pickNamed(asked []string) []taskModel {
 		if m, ok := named[name]; !ok && t.ResolveModel != nil {
 			// An agent's model: an alias or provider/model.
 			if sm, err := t.ResolveModel(name); err != nil {
-				tm.note = fmt.Sprintf("model %s is unavailable: %v", name, err)
+				tm.note, tm.unknown = fmt.Sprintf("model %s is unavailable: %v", name, err), err
 			} else {
 				tm = taskModel{SmallModel: sm}
 			}
@@ -304,7 +316,7 @@ const resumeProperty = `,"resume":{"type":"string","description":"Resume a subag
 type taskSpec struct {
 	Name   string `json:"name"`
 	Prompt string `json:"prompt"`
-	Model  string `json:"model"` // "default" (""), "main", "small" or a named model
+	Model  string `json:"model"` // "default" (""), "main", "small", a named model, an alias or provider/model
 	Agent  string `json:"agent"` // a defined agent, or "" for a general subagent
 	// Isolation "worktree": in a worktree of its own.
 	Isolation string `json:"isolation"`
@@ -401,6 +413,18 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 		}
 	}
 	models := t.pickModels(asked)
+	// A model the task itself names (not its agent's) that can't run is a
+	// mistake to fix, not a reason to run the task on another model.
+	for i, task := range in.Tasks {
+		if err := models[i].unknown; err != nil && task.resumed == nil && task.Model != "" {
+			for _, done := range in.Tasks {
+				if done.resumed != nil {
+					p.keepEnded(done.resumed)
+				}
+			}
+			return "", fmt.Errorf("task %s: model %s: %v. Name another model, or omit model", cmp.Or(task.Name, fmt.Sprint(i+1)), task.Model, err)
+		}
+	}
 	states := make([]*SubagentStatus, len(in.Tasks))
 	for i, task := range in.Tasks {
 		if task.resumed == nil {

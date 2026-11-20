@@ -474,7 +474,7 @@ func (c *Config) ParseModel(spec string, store *auth.Store) (provider, model str
 	case strings.HasPrefix(lower, "gpt") || strings.HasPrefix(lower, "o1") || strings.HasPrefix(lower, "o3") || strings.HasPrefix(lower, "o4") || strings.HasPrefix(lower, "codex"):
 		guesses = []string{"openai-codex", "openai", "openrouter"}
 	case strings.HasPrefix(lower, "gemini"):
-		guesses = []string{"gemini", "openrouter"}
+		guesses = []string{"gemini", "google-antigravity", "openrouter"}
 	case strings.HasPrefix(lower, "deepseek"):
 		guesses = []string{"deepseek", "openrouter"}
 	case strings.HasPrefix(lower, "grok"):

@@ -443,6 +443,17 @@ var taskReportRe = regexp.MustCompile(`(?m)^## (\S+) \((done|failed: .*|cancelle
 func (u *termUI) taskBox(input json.RawMessage, output string, isErr bool) string {
 	var in taskInput
 	_ = json.Unmarshal(input, &in)
+	if isErr && !taskReportRe.MatchString(output) {
+		// Refused before any subagent ran: the subagents the panel holds are
+		// the last call's, and the reason is the news.
+		red := u.dc.red
+		var b strings.Builder
+		b.WriteString(u.taskBoxTop(in, red))
+		fmt.Fprintf(&b, "%s├%s┤%s\n", red, strings.Repeat("─", max(u.width(), 14)-2), u.dc.reset)
+		u.plainRows(&b, strings.Split(strings.TrimRight(output, "\n"), "\n"), red, red, boxBodyMax)
+		b.WriteString(u.boxBottom("✗ failed", red))
+		return b.String()
+	}
 	var subs []agent.SubagentStatus
 	if u.subagents != nil {
 		subs = u.subagents()

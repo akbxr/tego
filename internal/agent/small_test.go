@@ -133,3 +133,56 @@ func TestTaskNamedModels(t *testing.T) {
 		t.Errorf("statuses %+v / %+v", subs[0], subs[2])
 	}
 }
+
+// With AnyModel, a task can name any model ResolveModel knows, with a
+// thinking level; one it can't resolve fails the call before anything runs.
+func TestTaskAnyModel(t *testing.T) {
+	mainP := &modelRecorder{name: "main"}
+	otherP := &thinkingRecorder{modelRecorder: modelRecorder{name: "other"}}
+	parent := &Agent{Provider: mainP, ProviderName: "anthropic", Model: "claude-opus-5-5", Thinking: "medium", Fast: true, ContextWindow: 1_000_000, UI: nopUI{}}
+	var asked []string
+	task := &TaskTool{Parent: parent, Env: &tools.Env{Cwd: t.TempDir()},
+		ResolveModel: func(spec string) (SmallModel, error) {
+			asked = append(asked, spec)
+			if spec == "nowhere/model-x" {
+				return SmallModel{}, errors.New("not logged in to nowhere")
+			}
+			return SmallModel{Provider: otherP, ProviderName: "x", Model: strings.TrimPrefix(spec, "google-antigravity/"), Window: 200_000}, nil
+		},
+		AnyModel: func() string { return "Any other model: provider/model." },
+	}
+	s := string(task.Def().Schema)
+	if !strings.Contains(s, `"model":{"type":"string","description":"main (default): the session's model, for anything that needs judgment, design or careful edits. Any other model: provider/model."}`) {
+		t.Fatalf("schema: %s", s)
+	}
+	in, _ := json.Marshal(map[string]any{"tasks": []map[string]string{
+		{"name": "Watch", "prompt": "watch it", "model": "google-antigravity/gemini-4-neon:high"},
+		{"name": "Plain", "prompt": "do it"},
+	}})
+	if _, err := task.Run(context.Background(), in); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(asked, []string{"google-antigravity/gemini-4-neon"}) || !slices.Equal(otherP.models, []string{"gemini-4-neon"}) ||
+		!slices.Equal(otherP.thinking, []string{"high"}) || len(mainP.models) != 1 {
+		t.Fatalf("resolved %v; other got %v at %v; main got %v", asked, otherP.models, otherP.thinking, mainP.models)
+	}
+
+	mainP.models, otherP.models = nil, nil
+	in, _ = json.Marshal(map[string]any{"tasks": []map[string]string{
+		{"name": "Fine", "prompt": "do it"},
+		{"name": "Lost", "prompt": "do it", "model": "nowhere/model-x"},
+	}})
+	_, err := task.Run(context.Background(), in)
+	if err == nil || !strings.Contains(err.Error(), "task Lost: model nowhere/model-x: not logged in to nowhere") {
+		t.Fatalf("err %v", err)
+	}
+	if len(mainP.models)+len(otherP.models) != 0 {
+		t.Fatalf("ran anyway: main %v, other %v", mainP.models, otherP.models)
+	}
+
+	// Without AnyModel the choices stay a list.
+	task.AnyModel = nil
+	if strings.Contains(string(task.Def().Schema), `"model"`) {
+		t.Fatal("a model property with nothing to choose")
+	}
+}

@@ -126,4 +126,20 @@ func TestTaskBoxReplay(t *testing.T) {
 	if strings.Contains(box, "Other") {
 		t.Fatalf("box used another call's subagents:\n%s", box)
 	}
+
+	// A call refused before it ran shows why, not the last call's
+	// subagents, even when they had the same prompt.
+	u.subagents = func() []agent.SubagentStatus {
+		return []agent.SubagentStatus{{Name: "Earlier", Prompt: "look at a", State: agent.SubDone}}
+	}
+	in = json.RawMessage(`{"tasks":[{"name":"A","prompt":"look at a"}]}`)
+	box = u.taskBox(in, "task A: model nowhere/x: not logged in to nowhere. Name another model, or omit model", true)
+	for _, want := range []string{"• A  look at a", "not logged in to nowhere", "✗ failed"} {
+		if !strings.Contains(box, want) {
+			t.Fatalf("box lacks %q:\n%s", want, box)
+		}
+	}
+	if strings.Contains(box, "Earlier") {
+		t.Fatalf("box used the last call's subagents:\n%s", box)
+	}
 }

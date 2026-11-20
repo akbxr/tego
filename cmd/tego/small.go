@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"sync"
 	"time"
 
@@ -74,6 +75,7 @@ type subModelCache struct {
 	key  string // the session's model it was made for
 	at   time.Time
 	list []agent.SubagentModel
+	any  string // anyModel's text
 }
 
 const subModelTTL = 30 * time.Second
@@ -82,17 +84,42 @@ const subModelTTL = 30 * time.Second
 // name: those whose provider is logged in (or needs no login), other than
 // the session's model. Their providers are built when a task asks.
 func (a *app) subagentModels() []agent.SubagentModel {
-	if a.ag.Provider == nil || len(a.cfg.SubModels) == 0 {
+	if a.ag.Provider == nil {
 		return nil
 	}
+	return a.subModelsNow().list
+}
+
+// anyModel tells the session's model that a task can name any model of a
+// provider the user is logged in to, as the user may ask for one.
+func (a *app) anyModel() string {
+	if a.ag.Provider == nil {
+		return ""
+	}
+	return a.subModelsNow().any
+}
+
+func (a *app) subModelsNow() *subModelCache {
 	c := &a.subModels
 	c.Lock()
 	defer c.Unlock()
 	key := a.ag.ProviderName + "/" + a.ag.Model
 	if c.key != key || time.Since(c.at) > subModelTTL {
-		c.key, c.at, c.list = key, time.Now(), a.listSubagentModels()
+		c.key, c.at, c.list, c.any = key, time.Now(), a.listSubagentModels(), a.listAnyModel()
 	}
-	return c.list
+	return c
+}
+
+func (a *app) listAnyModel() string {
+	var provs []string
+	for _, p := range a.cfg.ProviderNames() {
+		if p == a.ag.ProviderName || a.cfg.Available(p, a.store) {
+			provs = append(provs, p)
+		}
+	}
+	return "Any other model when the user asks for one or a task needs it: a Claude alias (opus, sonnet, haiku, fable) or provider/model, " +
+		"with :level for its thinking (low, medium, high, xhigh, max), e.g. anthropic/claude-opus-4-8:high. Logged-in providers: " +
+		strings.Join(provs, ", ") + "."
 }
 
 func (a *app) listSubagentModels() []agent.SubagentModel {
