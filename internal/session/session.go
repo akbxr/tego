@@ -18,6 +18,7 @@ package session
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -30,7 +31,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -117,6 +117,7 @@ type Session struct {
 	leaf  string // "" = before the first node
 
 	mu     sync.Mutex         // serialises writes
+	torn   bool               // the file may end in part of a line: mend it before writing (under mu)
 	blobs  map[string]blobLoc // sha -> blob entry in the file (under mu)
 	subs   []*subRecord       // subagent records, in file order (under mu)
 	Title  string             // generated title ("" = none yet)
@@ -212,7 +213,9 @@ func NewFrom(base, cwd string, history []llm.Message, forkOf string) (*Session, 
 }
 
 // Open loads an existing session, reopens it for appending and returns the
-// active path's history.
+// active path's history. A line left torn at the end of the file (tego
+// stopped in the middle of writing it) is cut off first: load skipped it,
+// and the next line appended would join it and be lost with it.
 func Open(path string) (*Session, []llm.Message, error) {
 	s, err := load(path)
 	if err != nil {
@@ -223,7 +226,61 @@ func Open(path string) (*Session, []llm.Message, error) {
 		return nil, nil, err
 	}
 	s.f = f
+	s.torn = mendTail(f) != nil // else the first write tries again
 	return s, s.History(s.leaf), nil
+}
+
+// mendTail makes f end with a whole line. A last line without its newline
+// is cut off when it is not JSON, a write torn in the middle; when it is
+// whole (a file written by hand, say), its newline is added. Either way
+// the file then holds what load read of it.
+func mendTail(f *os.File) error {
+	fi, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	size := fi.Size()
+	if size == 0 {
+		return nil
+	}
+	var last [1]byte
+	if _, err := f.ReadAt(last[:], size-1); err != nil {
+		return err
+	}
+	if last[0] == '\n' {
+		return nil
+	}
+	start, err := lastLineStart(f, size)
+	if err != nil {
+		return err
+	}
+	tail := make([]byte, size-start)
+	if _, err := f.ReadAt(tail, start); err != nil {
+		return err
+	}
+	if json.Valid(tail) {
+		_, err = f.Write([]byte{'\n'})
+		return err
+	}
+	return f.Truncate(start)
+}
+
+// lastLineStart is where the last line of f, size bytes long, starts: past
+// its last newline, else at 0.
+func lastLineStart(f *os.File, size int64) (int64, error) {
+	buf := make([]byte, 64*1024)
+	for end := size; end > 0; {
+		start := max(end-int64(len(buf)), 0)
+		chunk := buf[:end-start]
+		if _, err := f.ReadAt(chunk, start); err != nil {
+			return 0, err
+		}
+		if i := bytes.LastIndexByte(chunk, '\n'); i >= 0 {
+			return start + int64(i) + 1, nil
+		}
+		end = start
+	}
+	return 0, nil
 }
 
 // lightEntry is what load reads of an entry: no compaction history, and
@@ -307,6 +364,16 @@ func load(path string) (*Session, error) {
 		line := sc.Bytes()
 		off := pos
 		pos += int64(len(line)) + 1 // tego writes \n line ends
+		// A blob's data is read when a message needs it, not decoded now.
+		if sha, ok := blobLine(line); ok {
+			if _, ok := s.blobs[sha]; !ok {
+				if s.blobs == nil {
+					s.blobs = map[string]blobLoc{}
+				}
+				s.blobs[sha] = blobLoc{off, len(line)}
+			}
+			continue
+		}
 		var e lightEntry
 		if json.Unmarshal(line, &e) != nil {
 			continue // tolerate a torn line
@@ -395,9 +462,20 @@ func (s *Session) write(e entry) (off int64, size int, err error) {
 	return s.writeLine(data)
 }
 
-// writeLine appends data as a line; s.mu is held.
+// writeLine appends data as a line; s.mu is held. A line written only in
+// part (the disk is full, say) is cut off again, so that the next one
+// does not join it: a torn line is skipped when the file is read.
 func (s *Session) writeLine(data []byte) (off int64, size int, err error) {
-	if _, err := s.f.Write(append(data, '\n')); err != nil {
+	if s.torn {
+		if err := mendTail(s.f); err != nil {
+			return -1, 0, fmt.Errorf("the session file ends in a torn line: %w", err)
+		}
+		s.torn = false
+	}
+	if n, err := s.f.Write(append(data, '\n')); err != nil {
+		if n > 0 {
+			s.torn = cutWrite(s.f, n) != nil
+		}
 		return -1, 0, err
 	}
 	// The file is opened for appending: the offset is now the end of this
@@ -407,6 +485,23 @@ func (s *Session) writeLine(data []byte) (off int64, size int, err error) {
 		return -1, 0, nil
 	}
 	return end - int64(len(data)) - 1, len(data), nil
+}
+
+// cutWrite takes back the n bytes the last write to f appended, unless
+// another process wrote after them.
+func cutWrite(f *os.File, n int) error {
+	end, err := f.Seek(0, io.SeekCurrent) // appending: the end of what was written
+	if err != nil {
+		return err
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if fi.Size() != end {
+		return errors.New("the file was written since")
+	}
+	return f.Truncate(end - int64(n))
 }
 
 // refBlocks is blocks with their media replaced by references, the blobs
@@ -615,12 +710,12 @@ func (s *Session) Replacement(n *Node) []llm.Message {
 // SetTitle records a (generated) session title; the last one wins.
 // Rename sets the title of the session file at path without loading it.
 func Rename(path, title string) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_APPEND, 0o600)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	return (&Session{Path: path, f: f}).SetTitle(title)
+	return (&Session{Path: path, f: f, torn: true}).SetTitle(title) // torn: its end is checked first
 }
 
 func (s *Session) SetTitle(title string) error {
@@ -878,65 +973,6 @@ func (s *Session) Close() error {
 	return err
 }
 
-// List returns sessions for cwd, newest first.
-func List(base, cwd string) ([]Info, error) {
-	out, err := listDir(Dir(base, cwd))
-	sortNewest(out)
-	return out, err
-}
-
-// ListAll returns the sessions of every project, newest first.
-func ListAll(base string) ([]Info, error) {
-	root := filepath.Join(base, "sessions")
-	dirs, err := os.ReadDir(root)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	var out []Info
-	for _, d := range dirs {
-		if d.IsDir() {
-			list, _ := listDir(filepath.Join(root, d.Name())) // one unreadable project must not hide the rest
-			out = append(out, list...)
-		}
-	}
-	sortNewest(out)
-	return out, nil
-}
-
-func listDir(dir string) ([]Info, error) {
-	ents, err := os.ReadDir(dir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	var out []Info
-	for _, e := range ents {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
-			continue
-		}
-		fi, err := e.Info()
-		if err != nil {
-			continue
-		}
-		info := Info{ID: strings.TrimSuffix(e.Name(), ".jsonl"), Path: filepath.Join(dir, e.Name()), Modified: fi.ModTime(), Size: fi.Size()}
-		info.Preview, info.Count, info.Cwd, info.ForkOf = preview(info.Path)
-		if info.Count == 0 {
-			continue
-		}
-		out = append(out, info)
-	}
-	return out, nil
-}
-
-func sortNewest(list []Info) {
-	sort.SliceStable(list, func(i, j int) bool { return list[i].Modified.After(list[j].Modified) })
-}
-
 // Delete moves a session file to the Trash when it can (see CanTrash), else
 // removes it. Only files inside base's session store are deleted.
 func Delete(base, path string) error {
@@ -981,23 +1017,6 @@ func moveToTrash(path string) bool {
 	return exec.Command(bin, path).Run() == nil
 }
 
-// preview is what a session list shows of the file at path: its title (or
-// first prompt), message count, folder and the session it was forked from.
-func preview(path string) (label string, count int, cwd, forkOf string) {
-	s, err := load(path)
-	if err != nil {
-		return "", 0, "", ""
-	}
-	msgs := s.history(s.leaf, true) // a count and the first prompt: outlines do
-	label = s.Title
-	if label != "" {
-		label = Oneline(label, 70)
-	} else {
-		label = FirstPrompt(msgs, 70)
-	}
-	return label, len(msgs), s.Cwd, s.ForkOf
-}
-
 // FirstPrompt is the first user text in msgs, whitespace-collapsed and
 // truncated to max runes.
 func FirstPrompt(msgs []llm.Message, max int) string {
@@ -1021,41 +1040,4 @@ func Oneline(s string, max int) string {
 		t = string(r[:max-1]) + "…"
 	}
 	return t
-}
-
-func matchID(list []Info, ref string) []string {
-	var hits []string
-	for _, s := range list {
-		if strings.HasPrefix(s.ID, ref) {
-			hits = append(hits, s.Path)
-		}
-	}
-	return hits
-}
-
-// Find resolves an id prefix (or path) among cwd sessions, then among every
-// project's.
-func Find(base, cwd, ref string) (string, error) {
-	if strings.HasSuffix(ref, ".jsonl") {
-		return ref, nil
-	}
-	list, err := List(base, cwd)
-	if err != nil {
-		return "", err
-	}
-	hits := matchID(list, ref)
-	if len(hits) == 0 { // ids are timestamps: one from another project is just as unique
-		all, err := ListAll(base)
-		if err != nil {
-			return "", err
-		}
-		hits = matchID(all, ref)
-	}
-	switch len(hits) {
-	case 0:
-		return "", fmt.Errorf("no session matching %q", ref)
-	case 1:
-		return hits[0], nil
-	}
-	return "", fmt.Errorf("%q is ambiguous (%d sessions)", ref, len(hits))
 }

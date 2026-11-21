@@ -473,14 +473,14 @@ func run() error {
 			return err
 		}
 	case o.cont:
-		list, err := session.List(cfg.Dir, cwd)
+		path, err := session.Latest(cfg.Dir, cwd)
 		if err != nil {
 			return err
 		}
-		if len(list) == 0 {
+		if path == "" {
 			return errors.New("no previous session in this directory")
 		}
-		if err := resume(list[0].Path); err != nil {
+		if err := resume(path); err != nil {
 			return err
 		}
 	}

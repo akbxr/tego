@@ -1,10 +1,7 @@
 package session
 
 import (
-	"errors"
 	"os"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/akbxr/tego/internal/llm"
@@ -18,44 +15,29 @@ func Files(base, cwd string) ([]Info, error) {
 	if cwd != "" {
 		dirs = []string{Dir(base, cwd)}
 	} else {
-		root := filepath.Join(base, "sessions")
-		ents, err := os.ReadDir(root)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return nil, nil
-			}
+		var err error
+		if dirs, err = projectDirs(base); err != nil {
 			return nil, err
-		}
-		for _, e := range ents {
-			if e.IsDir() {
-				dirs = append(dirs, filepath.Join(root, e.Name()))
-			}
 		}
 	}
 	var out []Info
 	for _, dir := range dirs {
-		ents, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-		for _, e := range ents {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
-				continue
-			}
-			if fi, err := e.Info(); err == nil {
-				out = append(out, Info{ID: strings.TrimSuffix(e.Name(), ".jsonl"), Path: filepath.Join(dir, e.Name()),
-					Modified: fi.ModTime(), Size: fi.Size()})
-			}
-		}
+		list, _ := dirFiles(dir, "")
+		out = append(out, list...)
 	}
 	sortNewest(out)
 	return out, nil
 }
 
 // Describe fills in what a session list shows of info: its title or first
-// prompt, message count, folder and the session it was forked from.
+// prompt, message count, folder and the session it was forked from. The
+// file is read again only when it changed since it was last.
 func Describe(info *Info) {
-	info.Preview, info.Count, info.Cwd, info.ForkOf = preview(info.Path)
+	var s summary
+	if fi, err := os.Stat(info.Path); err == nil {
+		s = summarize([]Info{{Path: info.Path, Modified: fi.ModTime(), Size: fi.Size()}}, nil)[0]
+	}
+	info.Preview, info.Count, info.Cwd, info.ForkOf = s.label, s.count, s.cwd, s.forkOf
 }
 
 // Peek reads the session at path without opening it for writing: a view of
