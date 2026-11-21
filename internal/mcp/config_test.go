@@ -85,6 +85,40 @@ func TestLoadConfig(t *testing.T) {
 	}
 }
 
+// Servers from the project's two files are the project's; those from the
+// user's file are not, even when that is the project's .tego/mcp.json.
+func TestLoadConfigProject(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	writeFile(t, filepath.Join(home, "mcp.json"), `{"mcpServers": {"user": {"command": "u"}, "over": {"command": "u"}}}`)
+	writeFile(t, filepath.Join(cwd, ".mcp.json"), `{"mcpServers": {"dot": {"command": "d"}, "over": {"command": "p"}}}`)
+	writeFile(t, filepath.Join(cwd, ".tego", "mcp.json"), `{"mcpServers": {"tego": {"command": "t"}}}`)
+
+	check := func(home string, want map[string]bool) {
+		t.Helper()
+		cfgs, err := LoadConfig(home, cwd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(cfgs) != len(want) {
+			t.Fatalf("%d servers, want %d: %+v", len(cfgs), len(want), cfgs)
+		}
+		for _, c := range cfgs {
+			project, ok := want[c.Name]
+			if !ok || c.Project != project {
+				t.Fatalf("%s: Project %v, want %v (from %s)", c.Name, c.Project, project, c.Source)
+			}
+			if wantDigest := map[bool]string{true: fileDigest(c.Source)}[project]; c.digest != wantDigest {
+				t.Fatalf("%s: digest %q, want %q", c.Name, c.digest, wantDigest)
+			}
+		}
+	}
+	// "over" is the project's: its file replaced the user's entry.
+	check(home, map[string]bool{"user": false, "over": true, "dot": true, "tego": true})
+	// tego's home is the project's .tego: that file is the user's, read once.
+	check(filepath.Join(cwd, ".tego"), map[string]bool{"tego": false, "dot": true, "over": true})
+}
+
 func TestToolNames(t *testing.T) {
 	valid := regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 	long := strings.Repeat("very_long_tool_name_", 5)

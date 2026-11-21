@@ -25,6 +25,7 @@ const (
 	StateConnected  = "connected"
 	StateFailed     = "failed"
 	StateDisabled   = "disabled"
+	StateUntrusted  = "untrusted" // a project's, its config not trusted (yet, or since it changed)
 	StateClosed     = "closed"
 )
 
@@ -32,6 +33,8 @@ const (
 type Status struct {
 	Name, Transport, State, Err string
 	Tools                       int
+	Project                     bool   // from the project's config: runs once trusted
+	Source                      string // the config file it came from
 }
 
 // Manager owns the connections to all configured MCP servers.
@@ -41,12 +44,18 @@ type Manager struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
 	wg          sync.WaitGroup // connect goroutines
-	done        chan struct{}  // closed when every connect attempt finished
 	snap        atomic.Pointer[[]tools.Tool]
 	rebuildMu   sync.Mutex
 	closeOnce   sync.Once
 	idleAfter   time.Duration // Options.IdleAfter
 	cacheDir    string
+	home        string     // Options.Home: where the trust is kept
+	trustMu     sync.Mutex // one Trust at a time
+
+	launchMu   sync.Mutex
+	connecting int           // connect attempts not finished
+	done       chan struct{} // closed when connecting drops to 0, new when it rises again; nil: none launched
+	stopped    bool          // Close began: launch no more
 }
 
 type toolInfo struct {
@@ -83,24 +92,31 @@ func Start(cfgs []ServerConfig, cwd, logDir string) *Manager {
 }
 
 // StartWith is Start with options: with IdleAfter, local servers whose
-// tools are cached start at their first call and stop when left idle.
+// tools are cached start at their first call and stop when left idle. A
+// project's servers (ServerConfig.Project) neither start nor list cached
+// tools until their config file is trusted in Home (see Trust).
 func StartWith(cfgs []ServerConfig, cwd, logDir string, o Options) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
-	m := &Manager{cwd: cwd, logDir: logDir, ctx: ctx, cancel: cancel, done: make(chan struct{}), idleAfter: o.IdleAfter, cacheDir: o.CacheDir}
+	m := &Manager{cwd: cwd, logDir: logDir, ctx: ctx, cancel: cancel, idleAfter: o.IdleAfter, cacheDir: o.CacheDir, home: o.Home}
 	m.snap.Store(&[]tools.Tool{})
 	m.servers = make([]*server, len(cfgs))
 	now := time.Now()
 	anyIdle := false
+	trusted := loadTrust(o.Home)
 	for i, cfg := range cfgs {
-		s := &server{m: m, cfg: cfg, transport: cfg.Type, state: StateConnecting}
+		if cfg.Project && cfg.digest == "" { // not read by LoadConfig
+			cfg.digest = fileDigest(cfg.Source)
+		}
+		s := &server{m: m, cfg: cfg, transport: cfg.Type}
 		m.servers[i] = s
-		if cfg.Disabled {
+		switch {
+		case cfg.Disabled:
 			s.state = StateDisabled
-		} else if s.onDemand() {
-			if list, ok := s.loadCache(now); ok {
-				s.state, s.list = StateIdle, list
-				anyIdle = true
-			}
+		case cfg.Project && !trusted.has(cfg.Source, cfg.digest):
+			// Neither run nor its cached tools listed until trusted.
+			s.state, s.err = StateUntrusted, trusted.why(cfg.Source)
+		default:
+			anyIdle = s.ready(now) || anyIdle
 		}
 	}
 	if anyIdle {
@@ -110,20 +126,48 @@ func StartWith(cfgs []ServerConfig, cwd, logDir string, o Options) *Manager {
 		go m.reapIdle()
 	}
 	for _, s := range m.servers {
-		if s.state != StateConnecting {
-			continue
+		if s.state == StateConnecting {
+			m.launch(s)
 		}
-		m.wg.Add(1)
-		go func() {
-			defer m.wg.Done()
-			s.connect(ctx)
-		}()
 	}
-	go func() {
-		m.wg.Wait()
-		close(m.done)
-	}()
 	return m
+}
+
+// ready readies s to run: idle, its tools listed, when it starts on demand
+// and its tool list is cached (it says so); else connecting, for launch.
+// s.mu is held, or s not shared yet.
+func (s *server) ready(now time.Time) bool {
+	s.state, s.err = StateConnecting, ""
+	if s.onDemand() {
+		if list, ok := s.loadCache(now); ok {
+			s.state, s.list = StateIdle, list
+			return true
+		}
+	}
+	return false
+}
+
+// launch connects s in the background; Wait waits for it.
+func (m *Manager) launch(s *server) {
+	m.launchMu.Lock()
+	defer m.launchMu.Unlock()
+	if m.stopped {
+		return
+	}
+	if m.connecting == 0 {
+		m.done = make(chan struct{})
+	}
+	m.connecting++
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		s.connect(m.ctx)
+		m.launchMu.Lock()
+		if m.connecting--; m.connecting == 0 {
+			close(m.done)
+		}
+		m.launchMu.Unlock()
+	}()
 }
 
 // Tools returns a snapshot of the tools of all connected servers. The slice
@@ -136,16 +180,23 @@ func (m *Manager) Tools() []tools.Tool {
 	return p[:len(p):len(p)]
 }
 
-// Wait blocks until every server has finished connecting (or failed), or
-// until timeout elapses. A non-positive timeout does not wait.
+// Wait blocks until every server has finished connecting (or failed), those
+// Trust started too, or until timeout elapses. A non-positive timeout does
+// not wait.
 func (m *Manager) Wait(timeout time.Duration) {
 	if m == nil || timeout <= 0 {
+		return
+	}
+	m.launchMu.Lock()
+	done := m.done
+	m.launchMu.Unlock()
+	if done == nil {
 		return
 	}
 	t := time.NewTimer(timeout)
 	defer t.Stop()
 	select {
-	case <-m.done:
+	case <-done:
 	case <-t.C:
 	}
 }
@@ -158,7 +209,8 @@ func (m *Manager) Status() []Status {
 	out := make([]Status, len(m.servers))
 	for i, s := range m.servers {
 		s.mu.Lock()
-		out[i] = Status{Name: s.cfg.Name, Transport: s.transport, State: s.state, Err: s.err, Tools: len(s.list)}
+		out[i] = Status{Name: s.cfg.Name, Transport: s.transport, State: s.state, Err: s.err, Tools: len(s.list),
+			Project: s.cfg.Project, Source: s.cfg.Source}
 		s.mu.Unlock()
 	}
 	return out
@@ -171,6 +223,9 @@ func (m *Manager) Close() {
 	}
 	m.closeOnce.Do(func() {
 		m.cancel()
+		m.launchMu.Lock()
+		m.stopped = true // no wg.Add after the wg.Wait below
+		m.launchMu.Unlock()
 		var wg sync.WaitGroup
 		for _, s := range m.servers {
 			s.mu.Lock()

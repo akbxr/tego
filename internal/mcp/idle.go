@@ -29,6 +29,9 @@ type Options struct {
 	IdleAfter time.Duration
 	// CacheDir keeps the servers' tool lists ("": none kept).
 	CacheDir string
+	// Home is tego's home: its trusted-mcp.json says which project configs
+	// are trusted ("": none is, and Trust keeps no record).
+	Home string
 }
 
 // toolCacheMaxAge is how long a cached tool list lets a server start on

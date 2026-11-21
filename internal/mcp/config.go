@@ -28,6 +28,12 @@ type ServerConfig struct {
 	// as a logged-in browser).
 	KeepAlive bool
 	Source    string // config file it came from
+	// Project marks a server from the project's .mcp.json or .tego/mcp.json:
+	// it runs a command from whoever wrote the repository, so it starts only
+	// once its config file is trusted (see Manager.Trust).
+	Project bool
+
+	digest string // sha256 of Source as read: what trust is checked against
 }
 
 type rawServer struct {
@@ -47,16 +53,23 @@ type rawFile struct {
 	MCPServers map[string]json.RawMessage `json:"mcpServers"`
 }
 
+type configPath struct {
+	path    string
+	project bool // the project's: its servers need trust
+}
+
 // configPaths lists the files LoadConfig reads, lowest precedence first.
-func configPaths(home, cwd string) []string {
-	var paths []string
+// The user's own file comes first, so when a project file is the same file
+// (cwd/.tego is tego's home) it is read once, as the user's.
+func configPaths(home, cwd string) []configPath {
+	var paths []configPath
 	if home != "" {
-		paths = append(paths, filepath.Join(home, "mcp.json"))
+		paths = append(paths, configPath{filepath.Join(home, "mcp.json"), false})
 	}
 	if cwd != "" {
 		paths = append(paths,
-			filepath.Join(cwd, ".mcp.json"),
-			filepath.Join(cwd, ".tego", "mcp.json"))
+			configPath{filepath.Join(cwd, ".mcp.json"), true},
+			configPath{filepath.Join(cwd, ".tego", "mcp.json"), true})
 	}
 	return paths
 }
@@ -66,7 +79,8 @@ func configPaths(home, cwd string) []string {
 // name. ${VAR} and ${VAR:-default} are expanded from the environment in
 // command, args, env, url and headers. Missing files are skipped. Malformed
 // files produce an error naming the file; servers from the remaining files
-// are still returned alongside it.
+// are still returned alongside it. Servers from the two project files are
+// marked Project.
 func LoadConfig(home, cwd string) ([]ServerConfig, error) {
 	var (
 		out   []ServerConfig
@@ -74,13 +88,13 @@ func LoadConfig(home, cwd string) ([]ServerConfig, error) {
 		seen  = map[string]bool{}
 		errs  []error
 	)
-	for _, p := range configPaths(home, cwd) {
-		p = filepath.Clean(p)
+	for _, cp := range configPaths(home, cwd) {
+		p := filepath.Clean(cp.path)
 		if seen[p] {
 			continue
 		}
 		seen[p] = true
-		cfgs, err := loadFile(p)
+		cfgs, err := loadFile(p, cp.project)
 		if err != nil {
 			errs = append(errs, err)
 			continue
@@ -97,7 +111,7 @@ func LoadConfig(home, cwd string) ([]ServerConfig, error) {
 	return out, errors.Join(errs...)
 }
 
-func loadFile(path string) ([]ServerConfig, error) {
+func loadFile(path string, project bool) ([]ServerConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -116,6 +130,10 @@ func loadFile(path string) ([]ServerConfig, error) {
 	// Keep file order where possible: map iteration is random, so sort by
 	// position of the key in the source text.
 	sortByPosition(names, data)
+	var sum string
+	if project {
+		sum = hexSum(data)
+	}
 	out := make([]ServerConfig, 0, len(names))
 	for _, name := range names {
 		var r rawServer
@@ -130,6 +148,8 @@ func loadFile(path string) ([]ServerConfig, error) {
 			URL:       expandEnv(r.URL),
 			Source:    path,
 			KeepAlive: r.Keep,
+			Project:   project,
+			digest:    sum,
 		}
 		if r.Disabled != nil && *r.Disabled || r.Enabled != nil && !*r.Enabled {
 			c.Disabled = true

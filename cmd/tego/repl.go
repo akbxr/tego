@@ -43,7 +43,7 @@ var builtinCommands = []struct{ name, icon, help string }{
 	{"accounts", "◎", "Logged-in accounts, limits, and switching mode: /accounts [fallback|round-robin|expiring]"},
 	{"usage", "▤", "Subscription usage and resets for every logged-in account"},
 	{"stats", "▦", "Requests, tokens and estimated cost: /stats [cache] [24h|7d|30d|90d|all]"},
-	{"mcp", "⌁", "MCP server status and tool counts"},
+	{"mcp", "⌁", "MCP server status and tool counts; /mcp trust runs the project's"},
 	{"restart", "⟳", "Start tego again on this session: a new binary or config.json applies, the model and settings stay"},
 	{"goal", "◎", "Work toward a condition until a check after each turn finds it holds: /goal <condition>; /goal shows how it goes, /goal clear ends it"},
 	{"btw", "◆", "Ask a side question about the session, even while it works: /btw <question>; the answer stays out of the conversation"},
@@ -781,7 +781,7 @@ func (a *app) command(line string, done chan<- error) bool {
 	case "usage":
 		a.usageCommand()
 	case "mcp":
-		a.mcpCommand()
+		a.mcpCommand(strings.TrimSpace(args))
 	case "branch", "rewind":
 		a.rewindCommand()
 	case "extensions", "ext":

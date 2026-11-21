@@ -30,7 +30,7 @@ func (a *app) startExtensions() string {
 		return ""
 	}
 	if !a.interactive {
-		return fmt.Sprintf("this project has %s not trusted yet (%s), which don't run: trust them in an interactive tego with /extensions trust",
+		return fmt.Sprintf("this project has %s not trusted yet (%s), which don't run: tego trust here runs them",
 			plural(len(untrusted), "extension"), strings.Join(untrusted, ", "))
 	}
 	return fmt.Sprintf("this project has %s not trusted yet (%s): /extensions shows them, /extensions trust runs them",

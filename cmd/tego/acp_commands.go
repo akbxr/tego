@@ -13,6 +13,7 @@ import (
 	"github.com/akbxr/tego/internal/acp"
 	"github.com/akbxr/tego/internal/agent"
 	"github.com/akbxr/tego/internal/llm"
+	"github.com/akbxr/tego/internal/mcp"
 	"github.com/akbxr/tego/internal/stats"
 )
 
@@ -164,7 +165,16 @@ var acpCommands = []acpCommand{
 			stats.Summary(&b, rep, false)
 			return slashResult{reply: fence(b.String()) + "\n`tego stats serve` opens the dashboard."}
 		}},
-	{"mcp", "MCP server status and tool counts", "", func(sess *acpSession, _ context.Context, _ string) slashResult {
+	{"mcp", "MCP server status and tool counts; trust runs the project's untrusted ones", "trust", func(sess *acpSession, _ context.Context, args string) slashResult {
+		var prefix string
+		if args == "trust" {
+			if names := sess.mcp.Trust(); len(names) == 0 {
+				prefix = "No untrusted MCP servers.\n\n"
+			} else {
+				sess.mcp.Wait(5 * time.Second) // the list shows any still connecting
+				prefix = fmt.Sprintf("Trusted and started %s (until their config changes).\n\n", strings.Join(names, ", "))
+			}
+		}
 		st := sess.mcp.Status()
 		if len(st) == 0 {
 			return slashResult{reply: "No MCP servers: the editor sent none, and tego has none configured (~/.tego/mcp.json, ./.mcp.json)."}
@@ -172,15 +182,22 @@ var acpCommands = []acpCommand{
 		var b strings.Builder
 		for _, s := range st {
 			fmt.Fprintf(&b, "%-20s %-10s %-6s", s.Name, s.State, s.Transport)
-			if s.State == "connected" {
+			if s.State == mcp.StateConnected || s.State == mcp.StateIdle {
 				fmt.Fprintf(&b, " %d tools", s.Tools)
 			}
+			if s.State == mcp.StateIdle && s.Err == "" {
+				b.WriteString("  not running; starts at its next call")
+			}
 			if s.Err != "" {
-				b.WriteString("  " + strings.ReplaceAll(s.Err, "\n", " "))
+				msg := strings.ReplaceAll(s.Err, "\n", " ")
+				if s.State == mcp.StateUntrusted {
+					msg += "; /mcp trust to run"
+				}
+				b.WriteString("  " + msg)
 			}
 			b.WriteByte('\n')
 		}
-		return slashResult{reply: fence(b.String())}
+		return slashResult{reply: prefix + fence(b.String())}
 	}},
 	{"undo", "Put the files back as they were before the latest prompt; N: before the Nth latest", "N | list", acpUndo},
 	{"tasks", "Background tasks and shells; stop one by its id", "stop <id>", acpTasks},

@@ -89,6 +89,7 @@ Usage:
   tego stats cache [-r 7d] [-j]   prompt-cache writes that could have been reads
   tego update [--check]           install the latest release
   tego worktree [rm <name>|prune] the git worktrees tego made for this repository
+  tego trust                      run this project's MCP servers and extensions (also in tego -p, CI)
 
 Flags:
   -m, --model provider/model      e.g. anthropic/claude-sonnet-4-5, openai-codex/gpt-5, ollama/qwen3
@@ -236,6 +237,8 @@ func run() error {
 			return cmdUpdate(cfg.Dir, args[1:])
 		case "worktree", "worktrees":
 			return cmdWorktree(cfg.Dir, args[1:])
+		case "trust":
+			return cmdTrust(cfg.Dir, args[1:])
 		case "usage":
 			start := time.Now()
 			all := fetchUsage(context.Background(), cfg, store)
@@ -420,7 +423,9 @@ func run() error {
 	// terminal is still there to ask.
 	defer app.finishWorktree()
 	defer app.closeSession()
-	app.startMCP()
+	if n := app.startMCP(); n != "" {
+		notes = append(notes, n)
+	}
 	defer app.mcp.Close()
 	if n := app.startExtensions(); n != "" {
 		notes = append(notes, n)

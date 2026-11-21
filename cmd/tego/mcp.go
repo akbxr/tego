@@ -13,12 +13,13 @@ import (
 // mcpOptions are the MCP manager's options from the config: local servers
 // run only while used unless mcp_idle is "off".
 func mcpOptions(cfg *config.Config) mcp.Options {
-	return mcp.Options{IdleAfter: cfg.MCPIdleAfter(), CacheDir: filepath.Join(cfg.Dir, "mcp-cache")}
+	return mcp.Options{Home: cfg.Dir, IdleAfter: cfg.MCPIdleAfter(), CacheDir: filepath.Join(cfg.Dir, "mcp-cache")}
 }
 
 // startMCP connects configured MCP servers in the background; their tools
-// join the agent's tool list as they come up.
-func (a *app) startMCP() {
+// join the agent's tool list as they come up. It returns a note for the user
+// when some of the project's servers are not trusted yet.
+func (a *app) startMCP() string {
 	cfgs, err := mcp.LoadConfig(a.cfg.Dir, a.cwd)
 	if err != nil {
 		a.ui.Errorf("mcp config: %v", err)
@@ -26,6 +27,26 @@ func (a *app) startMCP() {
 	a.mcp = mcp.StartWith(cfgs, a.cwd, filepath.Join(a.cfg.Dir, "logs"), mcpOptions(a.cfg))
 	a.ag.Dynamic = a.mcp.Tools
 	a.ag.MCPTools = a.cfg.MCPTools
+	untrusted := untrustedMCP(a.mcp)
+	if len(untrusted) == 0 {
+		return ""
+	}
+	if !a.interactive {
+		return fmt.Sprintf("this project has %s not trusted yet (%s), which don't run: tego trust here runs them",
+			plural(len(untrusted), "MCP server"), strings.Join(untrusted, ", "))
+	}
+	return fmt.Sprintf("this project has %s not trusted yet (%s): /mcp shows them, /mcp trust runs them",
+		plural(len(untrusted), "MCP server"), strings.Join(untrusted, ", "))
+}
+
+func untrustedMCP(m *mcp.Manager) []string {
+	var out []string
+	for _, s := range m.Status() {
+		if s.State == mcp.StateUntrusted {
+			out = append(out, s.Name)
+		}
+	}
+	return out
 }
 
 // waitMCP gives servers still connecting a bounded head start before the
@@ -60,7 +81,16 @@ func (a *app) waitMCP() {
 	}
 }
 
-func (a *app) mcpCommand() {
+func (a *app) mcpCommand(args string) {
+	if args == "trust" {
+		names := a.mcp.Trust()
+		if len(names) == 0 {
+			a.ui.Dim("no untrusted MCP servers")
+			return
+		}
+		a.ui.Dim("trusted %s (until their config changes); starting…", strings.Join(names, ", "))
+		a.mcp.Wait(5 * time.Second) // the list below shows any still connecting
+	}
 	st := a.mcp.Status()
 	if len(st) == 0 {
 		fmt.Fprintln(a.out, "no MCP servers configured (mcpServers in ~/.tego/mcp.json, ./.mcp.json or ./.tego/mcp.json)")
@@ -70,11 +100,11 @@ func (a *app) mcpCommand() {
 	for _, s := range st {
 		color := c.dim
 		switch s.State {
-		case "connected":
+		case mcp.StateConnected:
 			color = c.green
-		case "failed":
+		case mcp.StateFailed:
 			color = c.red
-		case "connecting":
+		case mcp.StateConnecting, mcp.StateUntrusted:
 			color = c.yellow
 		}
 		line := fmt.Sprintf("  %s●%s %-20s %s%-10s%s %-6s", color, c.reset, s.Name, color, s.State, c.reset, s.Transport)
@@ -85,7 +115,11 @@ func (a *app) mcpCommand() {
 			line += c.dim + "  not running; starts at its next call" + c.reset
 		}
 		if s.Err != "" {
-			line += "  " + c.dim + strings.ReplaceAll(s.Err, "\n", " ") + c.reset
+			msg := strings.ReplaceAll(s.Err, "\n", " ")
+			if s.State == mcp.StateUntrusted {
+				msg += "; /mcp trust to run"
+			}
+			line += "  " + c.dim + msg + c.reset
 		}
 		fmt.Fprintln(a.out, line)
 	}

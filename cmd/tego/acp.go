@@ -405,6 +405,17 @@ func (s *acpServer) open(cwd string, servers []acp.MCPServer, id string) (*acpSe
 	}
 	sess.mcp = mcp.StartWith(mergeMCP(cfgs, servers), cwd, filepath.Join(cfg.Dir, "logs"), mcpOptions(cfg))
 	ag.Dynamic = sess.mcp.Tools
+	if untrusted := untrustedMCP(sess.mcp); len(untrusted) > 0 {
+		go func() {
+			select {
+			case <-sess.announced:
+			case <-sess.life.Done():
+				return
+			}
+			sess.OnInfo(fmt.Sprintf("this project has %s not trusted yet (%s): /mcp shows them, /mcp trust runs them",
+				plural(len(untrusted), "MCP server"), strings.Join(untrusted, ", ")))
+		}()
+	}
 	if untrusted := ap.loadExtensions(acpExtHost{sess}); ap.ext != nil {
 		go sess.watchExtensions(untrusted)
 	}
