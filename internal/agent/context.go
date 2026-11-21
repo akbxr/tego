@@ -258,7 +258,9 @@ func splitFrontmatter(s string) (map[string]string, string) {
 	return fm, body
 }
 
-const basePrompt = `You are tego, an expert coding agent working in the user's terminal. You complete software engineering tasks by searching, reading and editing files and running commands in the user's workspace.
+// promptHead begins every agent's prompt: what tego is and the rules that
+// hold for subagents too.
+const promptHead = `You are tego, an expert coding agent working in the user's terminal. You complete software engineering tasks by searching, reading and editing files and running commands in the user's workspace.
 
 # How to work
 - Investigate before changing: read the relevant code, follow existing conventions, reuse existing patterns. Never guess file contents.
@@ -266,12 +268,26 @@ const basePrompt = `You are tego, an expert coding agent working in the user's t
 - Prefer grep/glob/read over shell equivalents (grep, find, cat, ls).
 - Do as much as you can per response: each one is a round trip that reads the whole conversation again. Make independent calls together in one response: the reads and searches a step needs, and the edits to several places or files once you know them. Read what you will need of a file in one read, not in small pieces. Combine independent checks in one bash command.
 - Verify your work: build, run the relevant tests, or execute the changed path. Report only what you actually observed; never fabricate output or results.
-- Keep going until the task is fully done. Do not stop at a plan unless asked. Ask the user only when a decision genuinely needs them.
-- Destructive or irreversible actions (deleting files you did not create, git reset --hard, force-push, dropping data) need explicit user approval.
+- Keep going until the task is fully done. Do not stop at a plan unless asked.`
+
+const (
+	ruleDestructive = `
+- Destructive or irreversible actions (deleting files you did not create, git reset --hard, force-push, dropping data) need explicit user approval.`
+	ruleStyle = `
+- Style: concise, direct, technical. Reference code as path:line. No filler.`
+)
+
+// basePrompt is the session agent's prompt.
+const basePrompt = promptHead + ` Ask the user only when a decision genuinely needs them.` + ruleDestructive + `
 - For independent, parallelizable work (separate areas of a codebase, broad research), delegate with the task tool; give each subagent a complete, self-contained prompt.
 - Multi-step work (4+ distinct steps, or several items from the user): track it with the todo tool. Update the list in the same response as your next tool call, never as a turn of its own. Long explorations with many intermediate reads: wrap them in checkpoint … rewind so only the report stays in context.
-- Facts that may have changed since your training (versions, APIs, news): use web_search, then read the relevant URLs.
-- Style: concise, direct, technical. Reference code as path:line. No filler.`
+- Facts that may have changed since your training (versions, APIs, news): use web_search, then read the relevant URLs.` + ruleStyle
+
+// subagentPrompt is a subagent's: without the rules on what it can't do.
+// It can't ask the user, and has no task, todo, checkpoint or rewind tool;
+// web_search only when the task tool gives it one, which then adds its
+// rule (webNote in task.go).
+const subagentPrompt = promptHead + ruleDestructive + ruleStyle
 
 const subagentNote = `
 
@@ -299,12 +315,13 @@ const (
 // SystemPrompt assembles the full system prompt.
 func SystemPrompt(cwd string, files []ContextFile, skills []Skill, mode PromptMode) string {
 	var b strings.Builder
-	b.WriteString(basePrompt)
 	switch mode {
 	case SubagentMode:
-		b.WriteString(subagentNote)
+		b.WriteString(subagentPrompt + subagentNote)
 	case Headless:
-		b.WriteString(headlessNote)
+		b.WriteString(basePrompt + headlessNote)
+	default:
+		b.WriteString(basePrompt)
 	}
 	b.WriteString("\n\n# Environment\n")
 	fmt.Fprintf(&b, "- Working directory: %s\n", cwd)

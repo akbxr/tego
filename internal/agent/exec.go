@@ -88,6 +88,9 @@ func isInvalid(in json.RawMessage) bool {
 	return ok
 }
 
+// readOnly says whether call may run alongside other read-only ones. It
+// depends on the tool, which a BeforeTool hook can't change, so it holds
+// for the input the hook gives the call (input made invalid is refused).
 func (a *Agent) readOnly(call llm.Block) bool {
 	if isInvalid(call.Input) {
 		return false
@@ -104,6 +107,9 @@ func (a *Agent) execute(ctx context.Context, call llm.Block) llm.Block {
 		if call, res, ok = a.hookBefore(ctx, call); !ok {
 			a.UI.OnToolCall(call.Name, call.Input) // blocked: show what was
 		}
+	}
+	if ok {
+		res, ok = a.admit(ctx, t, call)
 	}
 	if ok {
 		a.UI.OnToolCall(call.Name, call.Input)
@@ -162,6 +168,9 @@ func (a *Agent) runOne(ctx context.Context, call llm.Block) llm.Block {
 		call, res, ok = a.hookBefore(ctx, call)
 	}
 	if ok {
+		res, ok = a.admit(ctx, t, call)
+	}
+	if ok {
 		res = a.hookAfter(ctx, call, a.run(ctx, t, call))
 	}
 	return res
@@ -172,7 +181,9 @@ func (a *Agent) runOne(ctx context.Context, call llm.Block) llm.Block {
 // subagent's name.
 type ToolHooks interface {
 	// BeforeTool may block the call (a reason) or change its input (nil:
-	// unchanged).
+	// unchanged). It sees calls that could run (not ones aborted, cut off,
+	// malformed or for an unknown tool); plan mode and the permission mode
+	// then judge the call with the input it returns, which may refuse it.
 	BeforeTool(ctx context.Context, agent, tool string, input json.RawMessage) (json.RawMessage, string)
 	// AfterTool may change its output (changed true).
 	AfterTool(ctx context.Context, agent, tool string, input json.RawMessage, output string, isErr bool) (string, bool)
@@ -188,6 +199,10 @@ func (a *Agent) hookBefore(ctx context.Context, call llm.Block) (llm.Block, llm.
 			Content: fmt.Sprintf("This %s call was blocked by an extension (%s); it did not run.", call.Name, why)}, false
 	}
 	if in != nil {
+		if !json.Valid(in) || isInvalid(in) {
+			return call, llm.Block{Type: llm.BlockToolResult, ToolUseID: call.ID, IsError: true,
+				Content: fmt.Sprintf("This %s call did not run: an extension changed its arguments into invalid JSON.", call.Name)}, false
+		}
 		call.Input = in
 	}
 	return call, llm.Block{}, true
@@ -203,8 +218,11 @@ func (a *Agent) hookAfter(ctx context.Context, call, res llm.Block) llm.Block {
 	return res
 }
 
-// prepare resolves the tool; when the call cannot run it returns the
-// error result and false.
+// prepare resolves the tool; when the call cannot run whatever its input
+// (or its input is malformed) it returns the error result and false. Then
+// come hookBefore and admit, in that order: what plan mode and the
+// permission mode judge (and the user is asked about) is the input the
+// call runs with, not one a BeforeTool hook replaces after approval.
 func (a *Agent) prepare(ctx context.Context, call llm.Block) (tools.Tool, llm.Block, bool) {
 	res := llm.Block{Type: llm.BlockToolResult, ToolUseID: call.ID, IsError: true}
 	if ctx.Err() != nil {
@@ -231,15 +249,23 @@ func (a *Agent) prepare(ctx context.Context, call llm.Block) (tools.Tool, llm.Bl
 		res.Content = fmt.Sprintf("unknown tool %q", call.Name)
 		return nil, res, false
 	}
+	return t, llm.Block{}, true
+}
+
+// admit runs plan mode's and the permission mode's checks (which may ask
+// the user) on call as it will run; when it may not it returns the error
+// result and false.
+func (a *Agent) admit(ctx context.Context, t tools.Tool, call llm.Block) (llm.Block, bool) {
+	res := llm.Block{Type: llm.BlockToolResult, ToolUseID: call.ID, IsError: true}
 	if why := a.planRefusal(t, call); why != "" {
 		res.Content = why
-		return nil, res, false
+		return res, false
 	}
 	if why := a.permissionRefusal(ctx, t, call); why != "" {
 		res.Content = why
-		return nil, res, false
+		return res, false
 	}
-	return t, llm.Block{}, true
+	return llm.Block{}, true
 }
 
 func (a *Agent) run(ctx context.Context, t tools.Tool, call llm.Block) (res llm.Block) {

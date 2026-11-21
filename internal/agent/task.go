@@ -22,9 +22,14 @@ const DefaultSubagentConcurrency = 8
 // TaskTool runs independent subagents in parallel, each with a fresh
 // context and the builtin tools (no nested task).
 type TaskTool struct {
-	Parent      *Agent
-	System      string // subagent system prompt
-	Env         *tools.Env
+	Parent *Agent
+	System string // subagent system prompt
+	// Env is the session's; each subagent works on a fork of it
+	// (tools.Env.Fork), or on its worktree (tools.Env.At).
+	Env *tools.Env
+	// WebSearch is the web_search tool subagents get besides the builtins;
+	// nil: they have none. It is shared: it must be safe for concurrent use.
+	WebSearch   tools.Tool
 	Concurrency int // max subagents running at once; <= 0 means DefaultSubagentConcurrency
 	// MaxTurns is the requests a subagent may make (an agent definition's
 	// maxTurns overrides it); 0: no limit. The last one writes its report.
@@ -100,13 +105,35 @@ func (t *TaskTool) Def() llm.Tool {
 	return llm.Tool{
 		Name: "task",
 		Description: fmt.Sprintf("Run subagents for independent subtasks (broad research, changes in separate areas). Any number of tasks; up to %d run at once, the rest queue. ", t.concurrency()) +
-			"Each starts with an empty context and the read/write/edit/bash/grep/glob (and MCP) tools, and returns its final report. " +
+			"Each starts with an empty context and the " + t.toolsDesc() + " (and MCP) tools, and returns its final report. " +
 			"Prompts must be complete and self-contained: goal, relevant files, constraints, expected output. Never give two subagents overlapping files to edit. " +
 			"A subagent that ended (stopped at a limit, interrupted, or done) can be resumed with its context: resume it rather than start over.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"tasks":{"type":"array","minItems":1,"items":{"type":"object","properties":{"name":{"type":"string","description":"short CamelCase label"},"prompt":{"type":"string"}` + resumeProperty +
 			t.agentProperty() + t.modelProperty() + t.isolationProperty() + `},"required":["name","prompt"]}}` + t.backgroundProperty() + `},"required":["tasks"]}`),
 	}
 }
+
+// toolsDesc names a subagent's builtin tools, for the task tool's description.
+func (t *TaskTool) toolsDesc() string {
+	if t.WebSearch != nil {
+		return "read/write/edit/bash/grep/glob/" + t.WebSearch.Def().Name
+	}
+	return "read/write/edit/bash/grep/glob"
+}
+
+// subTools is a new subagent's tools on env: the builtins, and web search
+// when the session has it.
+func (t *TaskTool) subTools(env *tools.Env) []tools.Tool {
+	list := tools.Builtins(env)
+	if t.WebSearch != nil {
+		list = append(list, t.WebSearch)
+	}
+	return list
+}
+
+// webNote tells a subagent with web search when to use it (the session's
+// prompt says so in its rules, which a subagent's leaves out).
+const webNote = "\n\n# Web search\nFacts that may have changed since your training (versions, APIs, news): use web_search, then read the relevant URLs."
 
 // backgroundProperty is the call's "background" property, when tasks can
 // run in the background.
@@ -325,6 +352,10 @@ type taskSpec struct {
 	resumed *endedSub        // the one Resume names, taken out of the kept ones
 	spec    string           // the model it was asked to run on ("" = the session's)
 	sess    *session.Session // the session's file when the task was called, to record it in
+	// declined is the flag of the parent's turn that called the task (taken
+	// then: the parent's next turn has another): a call the user declines
+	// stops the subagent and that turn.
+	declined *atomic.Bool
 }
 
 func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, error) {
@@ -430,7 +461,7 @@ func (t *TaskTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 		if task.resumed == nil {
 			in.Tasks[i].spec = asked[i]
 		}
-		in.Tasks[i].sess = p.Session
+		in.Tasks[i].sess, in.Tasks[i].declined = p.Session, p.declined
 		name := task.Name
 		if name == "" {
 			name = fmt.Sprintf("task%d", i+1)
@@ -490,6 +521,9 @@ func (t *TaskTool) runOne(ctx context.Context, task taskSpec, def *AgentDef, mod
 		sub, asked = e.sub, e.task+"\n\nThen: "+task.Prompt
 		// Its history may end with "your last response, no tools".
 		prompt = resumedNote + task.Prompt
+		// It answers to this turn: a call the user declined in the one it
+		// last ran in stopped that turn, not this one.
+		sub.declined = task.declined
 	} else {
 		sub, finish, status = t.newSub(task, def, model, failed)
 		if sub == nil {
@@ -601,12 +635,19 @@ func (t *TaskTool) runOne(ctx context.Context, task taskSpec, def *AgentDef, mod
 func (t *TaskTool) newSub(task taskSpec, def *AgentDef, model taskModel,
 	failed func(why, status string) (string, string)) (sub *Agent, finish func(ok bool) string, status string) {
 	p, name := t.Parent, task.Name
+	// The session's Env with its own record of what it read: a file the
+	// parent or another subagent read doesn't count as read by it, and their
+	// changes to one it read show as changes.
+	env := t.Env.Fork()
 	sub = &Agent{
 		Provider: p.Provider, ProviderName: p.ProviderName, Model: p.Model, Thinking: p.Thinking, Fast: p.Fast,
-		System: t.System, Tools: tools.Builtins(t.Env), Dynamic: p.Dynamic, MCPTools: p.MCPTools, SessionID: p.SessionID + "-" + name,
+		System: t.System, Tools: t.subTools(env), Dynamic: p.Dynamic, MCPTools: p.MCPTools, SessionID: p.SessionID + "-" + name,
 		ContextWindow: p.ContextWindow, AutoCompact: true, MaxTurns: t.MaxTurns, Subagent: true, ToolStat: p.ToolStat,
 		CacheWritePremium: p.CacheWritePremium, Env: p.Env, Plan: p.Plan, MaxOutputTokens: p.MaxOutputTokens,
-		Perms: p.Perms, Approve: p.Approve, Name: name, declined: p.declined, Hooks: p.Hooks,
+		Perms: p.Perms, Approve: p.Approve, Name: name, declined: task.declined, Hooks: p.Hooks,
+	}
+	if w := t.WebSearch; w != nil && (def == nil || def.allowsTool(w.Def().Name)) {
+		sub.System += webNote
 	}
 	// On the session's model by choice, not as the one a default or a name
 	// gave (or that was unavailable): resumed after a /model, it follows.
@@ -630,7 +671,7 @@ func (t *TaskTool) newSub(task taskSpec, def *AgentDef, model taskModel,
 			return nil, nil, status
 		}
 		// Its own tools, on the worktree on disk (not an editor's buffers).
-		sub.Tools = tools.Builtins(t.Env.At(dir)) // its background shells are the session's to see and clean up
+		sub.Tools = t.subTools(t.Env.At(dir)) // its background shells are the session's to see and clean up
 		sub.dir = dir
 		sub.System += "\n\n# Worktree\n" + note
 		finish = fin

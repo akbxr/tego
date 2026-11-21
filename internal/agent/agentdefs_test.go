@@ -83,7 +83,7 @@ Check the conventions in CONTRIBUTING.md.
 func TestAgentToolFilter(t *testing.T) {
 	names := func(d AgentDef) []string {
 		var out []string
-		for _, n := range []string{"read", "write", "edit", "bash", "bash_output", "grep", "glob", "mcp__github__search", "mcp__github__create_pr", "mcp__db__query"} {
+		for _, n := range []string{"read", "write", "edit", "bash", "bash_output", "grep", "glob", "web_search", "mcp__github__search", "mcp__github__create_pr", "mcp__db__query"} {
 			if d.allowsTool(n) {
 				out = append(out, n)
 			}
@@ -94,13 +94,18 @@ func TestAgentToolFilter(t *testing.T) {
 		def  AgentDef
 		want string
 	}{
-		{AgentDef{}, "read write edit bash bash_output grep glob mcp__github__search mcp__github__create_pr mcp__db__query"},
+		{AgentDef{}, "read write edit bash bash_output grep glob web_search mcp__github__search mcp__github__create_pr mcp__db__query"},
 		{AgentDef{Tools: []string{}}, ""},
 		{AgentDef{Tools: []string{"Read", "Grep", "Glob", "Bash(go test:*)"}}, "read bash bash_output grep glob"},
 		{AgentDef{Tools: []string{"read", "MultiEdit", "mcp__github"}}, "read edit mcp__github__search mcp__github__create_pr"},
-		{AgentDef{Disallowed: []string{"Write", "Edit", "mcp__*"}}, "read bash bash_output grep glob"},
+		{AgentDef{Disallowed: []string{"Write", "Edit", "mcp__*"}}, "read bash bash_output grep glob web_search"},
 		{AgentDef{Tools: []string{"mcp__github__*", "Read"}, Disallowed: []string{"mcp__github__create_pr"}}, "read mcp__github__search"},
-		{AgentDef{Tools: []string{"WebFetch", "TodoWrite"}}, ""}, // tools tego's subagents don't have
+		{AgentDef{Tools: []string{"TodoWrite", "Task"}}, ""}, // tools tego's subagents don't have
+		// read fetches URLs: WebFetch gives it.
+		{AgentDef{Tools: []string{"Grep", "WebSearch", "WebFetch"}}, "read grep web_search"},
+		{AgentDef{Tools: []string{"web_search"}}, "web_search"},
+		// read does more than WebFetch: denying WebFetch leaves it.
+		{AgentDef{Disallowed: []string{"WebSearch", "WebFetch", "mcp__*"}}, "read write edit bash bash_output grep glob"},
 	} {
 		if got := strings.Join(names(c.def), " "); got != c.want {
 			t.Errorf("tools %v disallowed %v: got %q, want %q", c.def.Tools, c.def.Disallowed, got, c.want)

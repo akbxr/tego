@@ -213,7 +213,9 @@ func (e *Env) reg() *shells {
 }
 
 // At is an Env for dir (a subagent's worktree) that shares e's background
-// shells, so they show, stop and get cleaned up with the session's.
+// shells, so they show, stop and get cleaned up with the session's, and
+// its language server. Its files are on disk (not an editor's buffers) and
+// what was read is its own, as with Fork.
 func (e *Env) At(dir string) *Env {
 	if e == nil {
 		return &Env{Cwd: dir}

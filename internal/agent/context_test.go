@@ -3,8 +3,37 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+// A subagent's prompt doesn't tell it to use tools it doesn't have (task,
+// todo, checkpoint/rewind; web_search is the task tool's to tell, when it
+// gives it), or to ask the user it can't talk to. The others' keep them.
+func TestSubagentPromptOnlyNamesItsTools(t *testing.T) {
+	sub := SystemPrompt(t.TempDir(), nil, nil, SubagentMode)
+	for _, s := range []string{"task tool", "todo tool", "checkpoint", "rewind", "web_search", "Ask the user"} {
+		if strings.Contains(sub, s) {
+			t.Errorf("subagent prompt names %q", s)
+		}
+	}
+	for _, s := range []string{"# Subagent", "Verify your work", "Destructive or irreversible", "Style:"} {
+		if !strings.Contains(sub, s) {
+			t.Errorf("subagent prompt lacks %q", s)
+		}
+	}
+	for _, mode := range []PromptMode{Interactive, Headless} {
+		p := SystemPrompt(t.TempDir(), nil, nil, mode)
+		for _, s := range []string{"task tool", "todo tool", "checkpoint", "web_search", "Ask the user only when", "Destructive or irreversible"} {
+			if !strings.Contains(p, s) {
+				t.Errorf("mode %d: prompt lacks %q", mode, s)
+			}
+		}
+		if strings.Contains(p, "# Subagent") {
+			t.Errorf("mode %d: subagent note", mode)
+		}
+	}
+}
 
 func writeSkill(t *testing.T, dir, name, desc string) {
 	t.Helper()

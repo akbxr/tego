@@ -118,18 +118,25 @@ func oneLine(s string) string {
 }
 
 // claudeToolNames maps Claude Code's tool names to tego's. Tools tego's
-// subagents don't have (WebFetch, TodoWrite, Task, ...) map to nothing.
+// subagents don't have (TodoWrite, Task, ...) map to nothing.
 var claudeToolNames = map[string][]string{
 	"read": {"read"}, "write": {"write"}, "edit": {"edit"}, "multiedit": {"edit"},
 	"bash": {"bash", "bash_output"}, "grep": {"grep"}, "glob": {"glob"}, "ls": {"glob"},
-	"bash_output": {"bash_output"},
+	"websearch": {"web_search"}, "webfetch": {"read"}, // read fetches http(s) URLs
+	"bash_output": {"bash_output"}, "web_search": {"web_search"},
 }
+
+// allowOnly are the Claude Code tools whose tego tool does more than they
+// do: listed in tools they give it, but disallowed they don't take it away
+// (disallowing WebFetch leaves read for local files).
+var allowOnly = map[string]bool{"webfetch": true}
 
 // toolMatches says whether a tool named name is one of patterns: a tool name
 // in Claude Code's or tego's spelling, "mcp__server" or "mcp__server__*"
 // for a server's tools, "mcp__*" for all of MCP, or "Bash(...)" (its
-// arguments are not checked: the tool as a whole).
-func toolMatches(name string, patterns []string) bool {
+// arguments are not checked: the tool as a whole). deny: patterns that
+// take tools away, where allowOnly names match nothing.
+func toolMatches(name string, patterns []string, deny bool) bool {
 	for _, p := range patterns {
 		if i := strings.IndexByte(p, '('); i > 0 {
 			p = p[:i]
@@ -142,7 +149,11 @@ func toolMatches(name string, patterns []string) bool {
 				return true
 			}
 		default:
-			for _, n := range claudeToolNames[strings.ToLower(p)] {
+			p = strings.ToLower(p)
+			if deny && allowOnly[p] {
+				continue
+			}
+			for _, n := range claudeToolNames[p] {
 				if n == name {
 					return true
 				}
@@ -154,10 +165,10 @@ func toolMatches(name string, patterns []string) bool {
 
 // allowsTool says whether d lets its agent use the tool named name.
 func (d *AgentDef) allowsTool(name string) bool {
-	if d.Tools != nil && !toolMatches(name, d.Tools) {
+	if d.Tools != nil && !toolMatches(name, d.Tools, false) {
 		return false
 	}
-	return !toolMatches(name, d.Disallowed)
+	return !toolMatches(name, d.Disallowed, true)
 }
 
 func (d *AgentDef) filterTools(ts []tools.Tool) []tools.Tool {

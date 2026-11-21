@@ -41,8 +41,9 @@ type ReadOnly interface {
 	ReadOnly() bool
 }
 
-// Env is the shared execution environment. Relative paths resolve against
-// Cwd. It is shared by the main agent and its subagents.
+// Env is the execution environment of an agent. Relative paths resolve
+// against Cwd. Subagents get one of their own (Fork, At) that shares the
+// session's files, editor, terminal, language server and background shells.
 type Env struct {
 	Cwd string
 	// Files, when set, reads and writes text files for read, edit and write
@@ -59,6 +60,19 @@ type Env struct {
 	shellWrites int                          // notes given about edits made from the shell
 
 	bg *shells // background shells, shared with At's Envs; made at first use (reg)
+}
+
+// Fork is an Env for another agent in the same folder (a subagent): the
+// same Cwd, Files, Terminal, LSP and background shells, but a record of
+// what was read of its own. Read-before-write holds per agent: with a
+// shared record, a file agent A read and agent B then changed would count
+// as read by A at B's version, and A's write from its stale copy would
+// silently undo B's change.
+func (e *Env) Fork() *Env {
+	if e == nil {
+		return nil
+	}
+	return &Env{Cwd: e.Cwd, Files: e.Files, Terminal: e.Terminal, LSP: e.LSP, bg: e.reg()}
 }
 
 // MarkRead records p as read by the model, e.g. a file attached to the

@@ -138,6 +138,51 @@ func TestSubagentNoTurnLimit(t *testing.T) {
 	}
 }
 
+// Subagents get the session's web search, and the rule on when to use it,
+// unless their agent definition leaves it out; without one they're told
+// of neither.
+func TestSubagentWebSearch(t *testing.T) {
+	done := &llm.Message{Role: llm.RoleAssistant, StopReason: "end_turn", Blocks: []llm.Block{text("found it")}}
+	prov := &scripted{}
+	parent := &Agent{Provider: prov, Model: "m", ContextWindow: 100_000, UI: nopUI{}}
+	base := SystemPrompt(t.TempDir(), nil, nil, SubagentMode)
+	tool := &TaskTool{Parent: parent, Env: &tools.Env{Cwd: t.TempDir()}, System: base, WebSearch: inputTool{"web_search"},
+		Agents: func() []AgentDef { return []AgentDef{{Name: "local", Tools: []string{"Read", "Grep"}}} }}
+	sub := func(task map[string]string) *llm.Request {
+		t.Helper()
+		prov.replies = []*llm.Message{done}
+		in, _ := json.Marshal(map[string]any{"tasks": []map[string]string{task}})
+		if out, err := tool.Run(context.Background(), in); err != nil || !strings.Contains(out, "found it") {
+			t.Fatalf("%v: %s", err, out)
+		}
+		return prov.reqs[len(prov.reqs)-1]
+	}
+	names := func(req *llm.Request) string {
+		var s []string
+		for _, d := range req.Tools {
+			s = append(s, d.Name)
+		}
+		return strings.Join(s, " ")
+	}
+	req := sub(map[string]string{"name": "Web", "prompt": "look it up"})
+	if !strings.Contains(names(req), "web_search") || !strings.Contains(req.System, "use web_search") {
+		t.Fatalf("tools %s; system:\n%s", names(req), req.System)
+	}
+	if !strings.Contains(tool.Def().Description, "/glob/web_search (and MCP) tools") {
+		t.Fatalf("description: %s", tool.Def().Description)
+	}
+	req = sub(map[string]string{"name": "Local", "prompt": "look here", "agent": "local"})
+	if names(req) != "read grep" || strings.Contains(req.System, "web_search") {
+		t.Fatalf("agent without it: tools %s; system:\n%s", names(req), req.System)
+	}
+	tool.WebSearch, tool.Agents = nil, nil
+	req = sub(map[string]string{"name": "Plain", "prompt": "p"})
+	if strings.Contains(names(req), "web_search") || strings.Contains(req.System, "web_search") ||
+		strings.Contains(tool.Def().Description, "web_search") {
+		t.Fatalf("without web search: tools %s; system:\n%s", names(req), req.System)
+	}
+}
+
 // An agent definition's maxTurns overrides subagent_max_turns, up or down.
 func TestAgentDefMaxTurns(t *testing.T) {
 	for _, c := range []struct{ base, def, want int }{{150, 400, 400}, {150, 20, 20}, {0, 20, 20}, {0, 0, 0}, {150, 0, 150}} {
