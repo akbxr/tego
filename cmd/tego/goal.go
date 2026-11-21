@@ -62,15 +62,19 @@ func (a *app) goalFailed(err error) {
 	if err == nil || errors.Is(err, context.Canceled) {
 		return
 	}
+	why := "the turn failed"
+	if errors.Is(err, agent.ErrRefused) {
+		why = "the model refused to go on"
+	}
 	a.goalMu.Lock()
 	g := a.goalSyncLocked()
 	held := g.cond != "" && g.held == ""
 	if held {
-		g.held = "the turn failed"
+		g.held = why
 	}
 	a.goalMu.Unlock()
 	if held {
-		a.dim("◎ goal paused: the turn failed. It goes on after your next prompt; /goal clear ends it.")
+		a.dim("◎ goal paused: " + why + ". It goes on after your next prompt; /goal clear ends it.")
 	}
 }
 

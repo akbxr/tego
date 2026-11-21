@@ -211,6 +211,7 @@ func run() error {
 		return err
 	}
 	llm.SetGzipRequests(cfg.GzipEnabled())
+	llm.SetStreamIdleTimeout(cfg.StreamIdleTimeout())
 	audio.Enabled = cfg.Transcribe
 	store, err := auth.Open(filepath.Join(cfg.Dir, "auth.json"))
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -67,10 +68,37 @@ func gzipFor(endpoint string, body []byte) []byte {
 	return b.Bytes()
 }
 
-// gzipRefused reports whether a status may mean the server did not take the
-// compressed body: then the request is sent again plain.
-func gzipRefused(status int) bool {
-	return status == http.StatusBadRequest || status == http.StatusUnsupportedMediaType
+// gzipRefused reports whether an answer to a compressed body may mean the
+// server could not read it: then the request is sent again plain. A 415
+// may; a 400 only when it is about the encoding, or about a body it could
+// not parse (what is sent is valid JSON, so one it can't parse is one it
+// did not decompress). An ordinary bad request ("prompt is too long") is
+// the request's own fault and is not sent twice.
+func gzipRefused(ae *APIError) bool {
+	switch ae.Status {
+	case http.StatusUnsupportedMediaType:
+		return true
+	case http.StatusBadRequest:
+		b := strings.ToLower(ae.Body)
+		for _, k := range gzipRefusalHints {
+			if strings.Contains(b, k) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// gzipRefusalHints are what 400s about an unreadable body say: the encoding
+// itself, or the JSON parser's failure on compressed bytes (OpenAI: "could
+// not parse the JSON body", Google: "Invalid JSON payload received", Go:
+// "invalid character '\x1f' looking for beginning of value"). Not a bare
+// "encoding": an image's "invalid base64 encoding" is the request's fault.
+var gzipRefusalHints = []string{
+	"gzip", "compress", "content-encoding", "content encoding",
+	"invalid json", "not valid json", "malformed json", "json body", "json payload", "json decode", "decode json",
+	"could not parse", "could not be parsed", "unable to parse", "failed to parse", "error parsing", "parse error",
+	"unexpected token", "invalid character", "unexpected end of json",
 }
 
 // noGzip stops compressing for endpoint's host.

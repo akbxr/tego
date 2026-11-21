@@ -8,6 +8,7 @@ import (
 )
 
 func TestStreamWithRetryTimesGeneration(t *testing.T) {
+	noRetryWait(t)
 	var got RequestStat
 	SetRequestHook(func(st RequestStat) { got = st })
 	defer SetRequestHook(nil)

@@ -429,6 +429,34 @@ func TestACPCommands(t *testing.T) {
 	}
 }
 
+// A response the model refused ends the prompt with the stop reason
+// refusal, not an error, and says why in the thread.
+func TestACPRefusal(t *testing.T) {
+	home, project := t.TempDir(), t.TempDir()
+	ed := startACP(t, home, &scripted{replies: []func(context.Context) *llm.Message{func(context.Context) *llm.Message {
+		m := say("I can't help with th")
+		m.StopReason = llm.StopRefusal
+		return m
+	}}})
+	var setup acp.SessionSetup
+	if err := ed.call("session/new", acp.NewSessionRequest{Cwd: project, MCPServers: []acp.MCPServer{}}, &setup); err != nil {
+		t.Fatal(err)
+	}
+	var resp acp.PromptResponse
+	if err := ed.call("session/prompt", acp.PromptRequest{SessionID: setup.SessionID, Prompt: []acp.ContentBlock{acp.Text("go")}}, &resp); err != nil || resp.StopReason != "refusal" {
+		t.Fatalf("stop reason %q, err %v", resp.StopReason, err)
+	}
+	said := false
+	for _, u := range ed.seen("agent_thought_chunk") {
+		if c, _ := u["content"].(map[string]any); c != nil && strings.Contains(c["text"].(string), "refused") {
+			said = true
+		}
+	}
+	if !said {
+		t.Fatal("the thread doesn't say the model refused")
+	}
+}
+
 // A thread opened and closed without a prompt leaves no session behind.
 func TestACPEmptySessionIsRemoved(t *testing.T) {
 	home, project := t.TempDir(), t.TempDir()

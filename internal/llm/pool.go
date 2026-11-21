@@ -44,6 +44,7 @@ type Pool struct {
 	current  int                  // fallback: account in use; also the last account used
 	rr       int                  // round-robin cursor
 	sessions map[string]int       // session -> account for the turn in progress
+	cut      map[string]int       // session -> account whose response was cut off mid-stream: its retry goes there
 	lastUse  map[string]time.Time // session -> its last answered request
 	told     string               // expiring: the account last picked or said, so concurrent requests say it once
 	fetching chan struct{}        // closed when the usage refresh in flight ends
@@ -52,17 +53,20 @@ type Pool struct {
 
 type poolMember struct {
 	PoolMember
-	coolUntil time.Time
+	coolUntil time.Time // on the wall clock (Pool.now)
 	reason    string
-	usage     *UsageReport // last read (expiring strategy)
-	usageAt   time.Time    // when it was read, or last failed to be
+	// rateLimited: the rest is for a rate limit (a 429 that is not a used
+	// up quota), which passes within its Retry-After.
+	rateLimited bool
+	usage       *UsageReport // last read (expiring strategy)
+	usageAt     time.Time    // when it was read, or last failed to be
 }
 
 func NewPool(name, strategy string, members []PoolMember) *Pool {
 	if strategy != StrategyRoundRobin && strategy != StrategyExpiring {
 		strategy = StrategyFallback
 	}
-	p := &Pool{name: name, strategy: strategy, sessions: map[string]int{}, lastUse: map[string]time.Time{}, now: wallNow}
+	p := &Pool{name: name, strategy: strategy, sessions: map[string]int{}, cut: map[string]int{}, lastUse: map[string]time.Time{}, now: wallNow}
 	for _, m := range members {
 		p.members = append(p.members, &poolMember{PoolMember: m})
 	}
@@ -129,6 +133,16 @@ func IsAccountLimit(err error) bool {
 	return false
 }
 
+// poolMaxWait: when every account rests from a rate limit and one is back
+// within this, a request waits for it instead of failing.
+const poolMaxWait = time.Minute
+
+// isRateLimit reports a 429 that passes with time, not a used up quota.
+func isRateLimit(err error) bool {
+	var ae *APIError
+	return errors.As(err, &ae) && ae.Status == http.StatusTooManyRequests && ae.retryable()
+}
+
 // cooldown is how long an account sits out after err.
 func cooldown(err error) time.Duration {
 	var ae *APIError
@@ -150,6 +164,12 @@ func cooldown(err error) time.Duration {
 func (p *Pool) pick(req *Request) (i int, note string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if i, ok := p.cut[req.SessionID]; ok {
+		// Asked again after a response was cut off: the same account, whose
+		// cache holds the prompt, even when it is a turn's first request.
+		delete(p.cut, req.SessionID)
+		return i, ""
+	}
 	newTurn := isNewTurn(req)
 	if p.strategy == StrategyExpiring {
 		return p.expiringPick(req, newTurn)
@@ -208,26 +228,25 @@ func (p *Pool) Stream(ctx context.Context, req *Request, onEvent func(Event)) (*
 	if note != "" && p.OnSwitch != nil {
 		p.OnSwitch(note)
 	}
-	ctx = context.WithValue(ctx, failFastKey{}, true)
 	n := len(p.members)
+	if n > 1 {
+		// Limits switch accounts; a single account waits them out itself.
+		ctx = context.WithValue(ctx, failFastKey{}, true)
+	}
 	var lastErr error
 	var lastMsg *Message
 	tried := 0
-	for k := range n {
-		i := (start + k) % n
-		m := p.members[i]
-		p.mu.Lock()
-		cooling := time.Now().Before(m.coolUntil)
-		p.mu.Unlock()
-		if cooling && k < n-1 {
-			continue // try a healthy account first; the last one is attempted anyway
-		}
+	announce := true // say when another account than start takes over
+	// attempt streams req on account i; done is false when it hit a limit
+	// before streaming anything and now rests, so another may take over.
+	attempt := func(i int) (msg *Message, err error, done bool) {
 		tried++
-		if i != start && p.OnSwitch != nil {
+		m := p.members[i]
+		if i != start && announce && p.OnSwitch != nil {
 			p.OnSwitch(fmt.Sprintf("%s: switching to %s", p.name, m.Label))
 		}
 		emitted := false
-		msg, err := m.Provider.Stream(ctx, req, func(e Event) {
+		msg, err = m.Provider.Stream(ctx, req, func(e Event) {
 			emitted = true
 			if onEvent != nil {
 				onEvent(e)
@@ -237,28 +256,112 @@ func (p *Pool) Stream(ctx context.Context, req *Request, onEvent func(Event)) (*
 			p.mu.Lock()
 			p.current, p.sessions[req.SessionID] = i, i
 			p.lastUse[req.SessionID] = p.now()
+			m.coolUntil, m.reason, m.rateLimited = time.Time{}, "", false
 			if p.strategy == StrategyRoundRobin && i != start {
 				p.rr = i + 1 // continue the rotation after the account that answered
 			}
 			p.mu.Unlock()
-			return msg, nil
+			return msg, nil, true
+		}
+		if emitted && ctx.Err() == nil {
+			p.mu.Lock()
+			p.cut[req.SessionID] = i
+			p.mu.Unlock()
 		}
 		if ctx.Err() != nil || emitted || !IsAccountLimit(err) || n == 1 {
-			return msg, err
+			return msg, err, true
 		}
 		d, reason := cooldown(err), truncate(firstLine(err.Error()), 100)
 		p.mu.Lock()
-		m.coolUntil, m.reason = time.Now().Add(d), reason
+		m.coolUntil, m.reason, m.rateLimited = p.now().Add(d), reason, isRateLimit(err)
 		p.mu.Unlock()
 		if p.OnSwitch != nil {
 			p.OnSwitch(fmt.Sprintf("%s: %s hit a limit (%s); resting it for %s", p.name, m.Label, reason, d.Round(time.Second)))
 		}
 		lastErr, lastMsg = err, msg
+		return msg, err, false
+	}
+	// Accounts not resting first, in rotation order.
+	for k := range n {
+		i := (start + k) % n
+		if p.resting(i) {
+			continue
+		}
+		if msg, err, done := attempt(i); done {
+			return msg, err
+		}
+	}
+	if tried == 0 {
+		// All rest: a rest is a guess, so the account back soonest is
+		// tried anyway.
+		if msg, err, done := attempt(p.soonest(start)); done {
+			return msg, err
+		}
+	}
+	// Every account rests now. When all of them hit a rate limit and one is
+	// back within poolMaxWait, wait for it and try it once more.
+	if i, wait, ok := p.shortWait(start); ok {
+		if p.OnSwitch != nil {
+			p.OnSwitch(fmt.Sprintf("%s: every account is rate limited; waiting %s for %s", p.name,
+				max(wait, time.Second).Round(time.Second), p.members[i].Label))
+		}
+		if err := sleepCtx(ctx, wait); err != nil {
+			msg := &Message{Role: RoleAssistant}
+			if lastMsg != nil {
+				c := *lastMsg
+				msg = &c
+			}
+			msg.StopReason = "aborted"
+			return msg, err
+		}
+		announce = false // the wait named it
+		if msg, err, done := attempt(i); done {
+			return msg, err
+		}
 	}
 	if lastErr == nil {
 		lastErr = errors.New("no usable account")
 	}
 	return lastMsg, fmt.Errorf("%s: all %d accounts are limited (tried %d): %w", p.name, n, tried, lastErr)
+}
+
+// resting reports whether account i is on cooldown. Rests run on the wall
+// clock (p.now), as the limits they wait out reset by it: a laptop's sleep
+// must not stretch them.
+func (p *Pool) resting(i int) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.now().Before(p.members[i].coolUntil)
+}
+
+// soonest is the account whose rest ends first; ties go to the one first
+// in rotation order from start.
+func (p *Pool) soonest(start int) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := len(p.members)
+	best := start % n
+	for k := 1; k < n; k++ {
+		if i := (start + k) % n; p.members[i].coolUntil.Before(p.members[best].coolUntil) {
+			best = i
+		}
+	}
+	return best
+}
+
+// shortWait reports, when every account rests from a rate limit, the one
+// back soonest and how long until then, if that is within poolMaxWait.
+func (p *Pool) shortWait(start int) (i int, wait time.Duration, ok bool) {
+	i = p.soonest(start)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, m := range p.members {
+		if !m.rateLimited {
+			return 0, 0, false // a used up quota or a login: waiting does not help
+		}
+	}
+	wait = max(p.members[i].coolUntil.Sub(p.now()), 0)
+	return i, wait, wait <= poolMaxWait
 }
 
 func firstLine(s string) string {

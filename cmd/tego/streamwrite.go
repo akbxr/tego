@@ -58,6 +58,14 @@ func (u *termUI) OnToolDelta(id, name, chunk string) {
 	u.writing.args.add(chunk)
 }
 
+// OnStreamRestart: a response was cut off mid-stream and is asked for
+// again. The box of a file it was writing goes (the new response writes it
+// anew), and the notice ends the cut-off text, which stays on screen.
+func (u *termUI) OnStreamRestart(note string) {
+	u.endWrite()
+	u.OnInfo(note)
+}
+
 // endWrite drops the live box: the call is complete (its own box follows)
 // or the turn ended.
 func (u *termUI) endWrite() {

@@ -12,6 +12,7 @@ import (
 	_ "image/gif" // image.DecodeConfig in imageChars
 	_ "image/jpeg"
 	_ "image/png"
+	"io"
 	"slices"
 	"strings"
 	"sync"
@@ -306,6 +307,14 @@ type ToolDeltaUI interface {
 	OnToolDelta(id, name, chunk string)
 }
 
+// StreamRestartUI is implemented by UIs that mark where a response was cut
+// off mid-stream and asked for again (Agent.stream): what they showed of it
+// stays, but the history never holds it, and the new one starts from the
+// beginning. note says so. Other UIs get note as an OnInfo.
+type StreamRestartUI interface {
+	OnStreamRestart(note string)
+}
+
 // Run sends a user prompt (plus optional image blocks) and loops until the
 // model stops calling tools.
 func (a *Agent) Run(ctx context.Context, prompt string, images ...llm.Block) error {
@@ -437,7 +446,7 @@ func (a *Agent) loop(ctx context.Context) error {
 		sent, prev, idle := a.noteSent(req), a.sent, a.now().Sub(a.lastReply)
 		req.Messages = a.mediaBudget(a.audioAsText(ctx, a.videoAsFrames(ctx, req.Messages)), true)
 		a.noteAside(req)
-		msg, err := a.Provider.Stream(ctx, req, a.onEvent)
+		msg, err := a.stream(ctx, req)
 		if err == nil && req.ClearToolResults != nil {
 			msg.ClearTrigger = req.ClearToolResults.TriggerToolUses
 		}
@@ -477,6 +486,9 @@ func (a *Agent) loop(ctx context.Context) error {
 			a.UI.OnInfo(note)
 		}
 		calls := sanitizeCalls(msg)
+		if msg.StopReason == llm.StopRefusal {
+			return a.refused(msg, final)
+		}
 		if final != nil {
 			// Calls it made anyway don't run: the report is all that is left.
 			msg.Blocks = slices.DeleteFunc(msg.Blocks, func(b llm.Block) bool { return b.Type == llm.BlockToolUse })
@@ -551,6 +563,77 @@ func (a *Agent) loop(ctx context.Context) error {
 		}
 		a.takeSteering()
 	}
+}
+
+// streamRetryWait is how long a response cut off mid-stream waits before it
+// is asked for again (a var for tests).
+var streamRetryWait = 2 * time.Second
+
+// stream sends req, the response streaming to the UI. The provider retries
+// a failed request only until part of the response has come (the UI shows
+// it as it comes); one the connection cuts off after that is asked for
+// again here, once per request, after a short wait. The history takes a
+// response only once it is whole, so nothing of the cut-off one is in it;
+// the notice ends the UI's partial text, and the retry streams anew.
+func (a *Agent) stream(ctx context.Context, req *llm.Request) (*llm.Message, error) {
+	ctx = llm.WithRetryNotice(ctx, a.UI.OnInfo) // a long wait for a retry is told
+	for retried := false; ; retried = true {
+		streamed := false
+		msg, err := a.Provider.Stream(ctx, req, func(ev llm.Event) {
+			streamed = true
+			a.onEvent(ev)
+		})
+		if err == nil || retried || !streamed || ctx.Err() != nil || !droppedMidStream(err) {
+			return msg, err
+		}
+		const note = "connection dropped mid-response; asking again, the answer starts over…"
+		if u, ok := a.UI.(StreamRestartUI); ok {
+			u.OnStreamRestart(note)
+		} else {
+			a.UI.OnInfo(note)
+		}
+		wait := time.NewTimer(streamRetryWait)
+		select {
+		case <-ctx.Done():
+			wait.Stop()
+			return msg, ctx.Err()
+		case <-wait.C:
+		}
+	}
+}
+
+// droppedMidStream says whether err cut a response off in transit: the
+// connection broke or went silent, or the server failed mid-response (an
+// overloaded error event), rather than the request being refused.
+func droppedMidStream(err error) bool {
+	var ae *llm.APIError
+	switch {
+	case errors.Is(err, llm.ErrStreamIdle), errors.Is(err, io.ErrUnexpectedEOF):
+		return true
+	case errors.As(err, &ae):
+		return ae.Status >= 500
+	}
+	// llm's streamError (unexported): reading the stream failed.
+	return strings.Contains(err.Error(), "stream interrupted: ")
+}
+
+// ErrRefused ends a run whose model refused to go on (llm.StopRefusal).
+// The turn did not end well: no /goal check or extension asks for another.
+var ErrRefused = errors.New("the model refused to go on (stop reason: refusal); what it wrote of that response is left out of the conversation")
+
+// refused ends the turn on a response the model refused to go on with
+// (llm.StopRefusal): nothing asks it to go on (no stop nudge, no
+// continuation of a cut response), and its calls, cut off where it
+// stopped, don't run. As Anthropic asks, what it wrote is taken as
+// incomplete and left out of the history (the UI showed it). The run fails
+// with ErrRefused, so a parent doesn't take it for a report and the
+// terminal and editors say so.
+func (a *Agent) refused(msg *llm.Message, final error) error {
+	a.UI.OnTurnEnd(msg)
+	if final != nil {
+		return final
+	}
+	return ErrRefused
 }
 
 // takeSteering adds the messages the user sent while the agent worked, as

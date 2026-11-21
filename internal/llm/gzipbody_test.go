@@ -132,25 +132,58 @@ func TestRefusedCompressionFallsBackToPlain(t *testing.T) {
 	}
 }
 
-// A 400 that plain gets too is the request's own fault: the caller gets it,
-// and compression stays on.
+// A 400 that is not about the body's encoding is the request's own fault:
+// the caller gets it at once, the body is not sent again plain, and
+// compression stays on.
 func TestRealBadRequestKeepsCompression(t *testing.T) {
 	trustTestHosts(t)
-	n := 0
+	var mu sync.Mutex
+	var encodings []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		n++
+		mu.Lock()
+		encodings = append(encodings, r.Header.Get("Content-Encoding"))
+		mu.Unlock()
 		io.Copy(io.Discard, r.Body)
-		http.Error(w, `{"error":{"message":"prompt is too long"}}`, http.StatusBadRequest)
+		http.Error(w, `{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 210000 tokens > 200000 maximum"}}`, http.StatusBadRequest)
 	}))
 	defer srv.Close()
 	err := send(t, srv.URL, strings.Repeat("z", 64<<10))
 	if ae, ok := err.(*APIError); !ok || ae.Status != 400 || !strings.Contains(ae.Body, "too long") {
 		t.Fatalf("err = %v", err)
 	}
-	if n != 2 {
-		t.Fatalf("%d requests, want the compressed one and one plain", n)
+	mu.Lock()
+	defer mu.Unlock()
+	if strings.Join(encodings, ",") != "gzip" {
+		t.Fatalf("encodings %q, want only the compressed request", encodings)
 	}
 	if gzipFor(srv.URL, []byte(strings.Repeat("z", 64<<10))) == nil {
 		t.Fatal("compression turned off after an error that was not its fault")
+	}
+}
+
+// What a refusal of the compressed body looks like, and what does not.
+func TestGzipRefused(t *testing.T) {
+	for _, c := range []struct {
+		status int
+		body   string
+		want   bool
+	}{
+		{415, "", true},
+		{415, `{"error":"unsupported media type"}`, true},
+		{400, `{"error":{"message":"Unsupported Content-Encoding: gzip"}}`, true},
+		{400, `{"error":{"message":"We could not parse the JSON body of your request."}}`, true},
+		{400, `{"error":{"code":400,"message":"Invalid JSON payload received. Unexpected token.","status":"INVALID_ARGUMENT"}}`, true},
+		{400, `invalid character '\x1f' looking for beginning of value`, true},
+		{400, `{"type":"error","error":{"type":"invalid_request_error","message":"There was an error parsing the body: JSON decode error"}}`, true},
+		{400, `{"error":{"message":"messages.0.content.1.image.source.base64: invalid base64 encoding"}}`, false},
+		{400, `{"error":{"message":"prompt is too long: 210000 tokens > 200000 maximum"}}`, false},
+		{400, `{"error":{"message":"messages.1.content.0: tool_use ids were found without tool_result blocks"}}`, false},
+		{400, `{"error":{"message":"max_tokens: 200000 > 128000, which is the maximum allowed"}}`, false},
+		{413, `gzip`, false},
+		{500, `decompress`, false},
+	} {
+		if got := gzipRefused(&APIError{Status: c.status, Body: c.body}); got != c.want {
+			t.Errorf("%d %s: refused = %v, want %v", c.status, c.body, got, c.want)
+		}
 	}
 }

@@ -982,6 +982,8 @@ func anthropicStopReason(s string) string {
 		return "max_tokens"
 	case "model_context_window_exceeded":
 		return StopContextFull
+	case "refusal":
+		return StopRefusal
 	}
 	return "end_turn"
 }

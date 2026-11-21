@@ -3,6 +3,7 @@ package llm
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -68,8 +70,9 @@ func keyHint(cfg ProviderConfig) string {
 }
 
 // httpClient is shared by all providers. There is no overall timeout because
-// streams can legitimately run for many minutes; connection setup and the
-// wait for response headers are bounded instead.
+// streams can legitimately run for many minutes; connection setup, the wait
+// for response headers and (in post) silences within a response body are
+// bounded instead.
 var httpClient = &http.Client{
 	Transport: &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
@@ -152,10 +155,195 @@ type streamError struct{ err error }
 func (e *streamError) Error() string { return "stream interrupted: " + e.err.Error() }
 func (e *streamError) Unwrap() error { return e.err }
 
+// ErrStreamIdle is in the error of a response that went silent: no byte
+// arrived for the idle timeout (SetStreamIdleTimeout) while it was read, so
+// the attempt was abandoned. The stream parsers wrap it in a streamError,
+// which is retried when nothing had reached the caller yet.
+var ErrStreamIdle = errors.New("idle stream timeout")
+
+// DefaultStreamIdle is how long a response body may go silent unless the
+// config (stream_idle_timeout) says otherwise. Silences are legitimate:
+// some backends send their headers at once and then think in silence,
+// reasoning summaries come a block at a time, and Claude holds back the
+// input of a tool other than write and edit until each parameter is
+// complete (a long bash heredoc). Five minutes, as Codex CLI waits, covers
+// those, and still ends a connection that will never send another byte.
+const DefaultStreamIdle = 5 * time.Minute
+
+const defaultStreamIdle = DefaultStreamIdle
+
+var streamIdle atomic.Int64 // a time.Duration
+
+func init() { streamIdle.Store(int64(defaultStreamIdle)) }
+
+// SetStreamIdleTimeout sets how long a response body may stay silent while
+// it is read before the request is abandoned; d <= 0 turns the watch off.
+// The wait for the headers is not counted: ResponseHeaderTimeout bounds it.
+func SetStreamIdleTimeout(d time.Duration) { streamIdle.Store(int64(d)) }
+
+func streamIdleTimeout() time.Duration { return time.Duration(streamIdle.Load()) }
+
+// idleBody watches a response body: when a Read has waited idle for data,
+// it cancels the request (which ends the blocked Read on HTTP/1 and HTTP/2)
+// and reports ErrStreamIdle. Only time inside Read counts, so a caller busy
+// with what it read is never cut off. Close also releases the request's
+// context.
+type idleBody struct {
+	rc     io.ReadCloser
+	cancel context.CancelFunc
+	idle   time.Duration
+	timer  *time.Timer // nil: not watched
+	once   sync.Once
+
+	mu      sync.Mutex
+	reading bool
+	since   time.Time // when the Read in progress began
+	expired bool
+	closed  bool
+}
+
+func watchIdle(rc io.ReadCloser, cancel context.CancelFunc, idle time.Duration) *idleBody {
+	b := &idleBody{rc: rc, cancel: cancel, idle: idle}
+	if idle > 0 {
+		b.timer = time.AfterFunc(idle, b.check)
+	}
+	return b
+}
+
+// check runs on the timer: it expires the body when the Read in progress
+// has waited idle, else sets the timer for when it would have.
+func (b *idleBody) check() {
+	b.mu.Lock()
+	if b.expired || b.closed {
+		b.mu.Unlock()
+		return
+	}
+	next := b.idle
+	if b.reading {
+		waited := time.Since(b.since)
+		b.expired = waited >= b.idle
+		next = b.idle - waited
+	}
+	if !b.expired {
+		b.timer.Reset(next)
+	}
+	expired := b.expired
+	b.mu.Unlock()
+	if expired {
+		b.cancel()
+	}
+}
+
+func (b *idleBody) idleErr() error {
+	return fmt.Errorf("%w: no data from the server for %s", ErrStreamIdle, b.idle)
+}
+
+func (b *idleBody) Read(p []byte) (int, error) {
+	if b.timer == nil {
+		return b.rc.Read(p)
+	}
+	b.mu.Lock()
+	if b.expired {
+		b.mu.Unlock()
+		return 0, b.idleErr()
+	}
+	b.reading, b.since = true, time.Now()
+	b.mu.Unlock()
+	n, err := b.rc.Read(p)
+	b.mu.Lock()
+	b.reading = false
+	expired := b.expired
+	b.mu.Unlock()
+	if expired && err != nil {
+		err = b.idleErr() // not the cancellation it caused
+	}
+	return n, err
+}
+
+func (b *idleBody) Close() error {
+	var err error
+	b.once.Do(func() {
+		if b.timer != nil {
+			b.mu.Lock()
+			b.closed = true
+			b.timer.Stop()
+			b.mu.Unlock()
+		}
+		err = b.rc.Close()
+		b.cancel()
+	})
+	return err
+}
+
 const (
-	maxRetries    = 3
-	maxRetryAfter = 60 * time.Second
+	// maxRetries bounds the retries of 429s, 408/409 and transport errors.
+	maxRetries = 3
+	// maxOverloadRetries bounds the retries of 5xx and 529 (overloaded): a
+	// spike of those can outlast a few seconds. With backoff's waits that
+	// is about 25 seconds in all.
+	maxOverloadRetries = 5
+	// maxIdleRetries: a server that went silent gets one more try, as each
+	// such try can take minutes.
+	maxIdleRetries = 1
+	maxBackoff     = 10 * time.Second
+	maxRetryAfter  = 60 * time.Second
+	// maxRetryWait bounds the waits of one request's retries together: a
+	// server asking for a minute each time would otherwise hold the turn for
+	// five.
+	maxRetryWait = 90 * time.Second
+	// retryNoticeFrom: a wait this long or longer is told (WithRetryNotice).
+	retryNoticeFrom = 2 * time.Second
 )
+
+type retryNoticeKey struct{}
+
+// WithRetryNotice makes the requests made with ctx tell fn before each
+// wait of retryNoticeFrom or longer for a retry: what failed, and when the
+// request is tried again. The wait is otherwise silent.
+func WithRetryNotice(ctx context.Context, fn func(msg string)) context.Context {
+	return context.WithValue(ctx, retryNoticeKey{}, fn)
+}
+
+func retryNotice(ctx context.Context, provider string, err error, delay time.Duration, try int) {
+	fn, _ := ctx.Value(retryNoticeKey{}).(func(string))
+	if fn == nil || delay < retryNoticeFrom {
+		return
+	}
+	fn(fmt.Sprintf("%s: %s; trying again in %s (retry %d)", provider, retryReason(err, provider), delay.Round(time.Second), try+1))
+}
+
+// retryReason says briefly what failed: the status and the message of an
+// API error's JSON body ({"error": {"message": …}} on every provider), else
+// the error's first line.
+func retryReason(err error, provider string) string {
+	var ae *APIError
+	if errors.As(err, &ae) {
+		s := fmt.Sprintf("HTTP %d", ae.Status)
+		var body struct {
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if json.Unmarshal([]byte(ae.Body), &body) == nil && body.Error.Message != "" {
+			s += " " + truncate(firstLine(body.Error.Message), 80)
+		}
+		return s
+	}
+	return truncate(firstLine(strings.TrimPrefix(err.Error(), provider+": ")), 100)
+}
+
+// sleepCtx waits d, or until ctx ends (returning its error). Tests replace
+// it to skip the waits.
+var sleepCtx = func(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
 
 // attemptFunc performs one request+stream. emit must be used for all events
 // so the retry loop knows whether anything reached the caller.
@@ -274,6 +462,7 @@ func streamWithRetry(ctx context.Context, provider string, req *Request, onEvent
 		}
 	}
 	defer func() { reportRequest(provider, req, start, first, started, msg, err) }()
+	var waited time.Duration
 	for try := 0; ; try++ {
 		start, started = time.Now(), time.Time{}
 		msg, err = attempt(ctx, emit)
@@ -292,44 +481,54 @@ func streamWithRetry(ctx context.Context, provider string, req *Request, onEvent
 		if ok && failFastLimits(ctx) && IsAccountLimit(err) {
 			ok = false // an account pool switches accounts instead of waiting
 		}
-		if delivered || !ok {
+		if delivered || !ok || waited+delay > maxRetryWait {
 			msg.StopReason = "error"
 			return msg, err
 		}
-		t := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			t.Stop()
+		waited += delay
+		retryNotice(ctx, provider, err, delay, try)
+		if sleepCtx(ctx, delay) != nil {
 			msg.StopReason = "aborted"
 			return msg, ctx.Err()
-		case <-t.C:
 		}
 	}
 }
 
-func retryDelay(err error, try int) (time.Duration, bool) {
-	if try >= maxRetries {
-		return 0, false
+// backoff is the wait before retry try+1 when the server named none: 1, 2,
+// 4, 8, then 10 seconds, plus up to half a second of jitter.
+func backoff(try int) time.Duration {
+	d := maxBackoff
+	if try < 4 {
+		d = min(time.Duration(1<<try)*time.Second, maxBackoff)
 	}
-	backoff := time.Duration(1<<try)*time.Second + time.Duration(rand.Int64N(int64(500*time.Millisecond)))
+	return d + time.Duration(rand.Int64N(int64(500*time.Millisecond)))
+}
+
+// retryDelay reports whether a request that failed with err after try
+// retries is tried again, and after how long.
+func retryDelay(err error, try int) (time.Duration, bool) {
 	var ae *APIError
 	if errors.As(err, &ae) {
-		if !ae.retryable() {
-			return 0, false
+		limit := maxRetries
+		if ae.Status >= 500 {
+			limit = maxOverloadRetries
 		}
-		if ae.RetryAfter > maxRetryAfter {
+		if try >= limit || !ae.retryable() || ae.RetryAfter > maxRetryAfter {
 			return 0, false
 		}
 		if ae.RetryAfter > 0 {
 			return ae.RetryAfter, true
 		}
-		return backoff, true
+		return backoff(try), true
+	}
+	if try >= maxRetries || errors.Is(err, ErrStreamIdle) && try >= maxIdleRetries {
+		return 0, false
 	}
 	var se *streamError
 	var ue *url.Error
 	var ne net.Error
 	if errors.As(err, &se) || errors.As(err, &ue) || errors.As(err, &ne) || errors.Is(err, io.ErrUnexpectedEOF) {
-		return backoff, true
+		return backoff(try), true
 	}
 	return 0, false
 }
@@ -346,7 +545,7 @@ func postJSON(ctx context.Context, provider, endpoint string, body []byte, heade
 		h.Set("Content-Encoding", "gzip")
 		resp, err := post(ctx, provider, endpoint, gz, h)
 		var ae *APIError
-		if !errors.As(err, &ae) || !gzipRefused(ae.Status) {
+		if !errors.As(err, &ae) || !gzipRefused(ae) {
 			return resp, err
 		}
 		// Perhaps the compression it refused: try once plain, and if that
@@ -360,16 +559,23 @@ func postJSON(ctx context.Context, provider, endpoint string, body []byte, heade
 	return post(ctx, provider, endpoint, body, header)
 }
 
+// post sends one request. The body of the response is watched for silence
+// (idleBody) once it is read; the wait for the headers before that is
+// ResponseHeaderTimeout's.
 func post(ctx context.Context, provider, endpoint string, body []byte, header http.Header) (*http.Response, error) {
+	ctx, cancel := context.WithCancel(ctx)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	req.Header = header
 	resp, err := httpClient.Do(req)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
+	resp.Body = watchIdle(resp.Body, cancel, streamIdleTimeout())
 	if resp.StatusCode/100 != 2 {
 		return nil, newAPIError(provider, resp)
 	}

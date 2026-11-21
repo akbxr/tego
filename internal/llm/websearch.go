@@ -74,12 +74,8 @@ func withRetry(ctx context.Context, fn func() error) error {
 		if !ok {
 			return err
 		}
-		t := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			t.Stop()
+		if sleepCtx(ctx, delay) != nil {
 			return ctx.Err()
-		case <-t.C:
 		}
 	}
 }

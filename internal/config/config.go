@@ -25,28 +25,29 @@ import (
 )
 
 type Config struct {
-	Model           string                         `json:"model,omitempty"`              // provider/model-id
-	Thinking        string                         `json:"thinking,omitempty"`           // off|low|medium|high|xhigh|max
-	Fast            bool                           `json:"fast,omitempty"`               // fast mode on models that have it (/fast)
-	Permissions     string                         `json:"permissions,omitempty"`        // yolo (default) | edits | ask: which tool calls wait for approval
-	WebModel        string                         `json:"web_model,omitempty"`          // model for native web_search (default: provider-specific)
-	SmallModel      string                         `json:"small_model,omitempty"`        // cheaper model for side work: titles, web search, subagents given "small" (provider/model, a model of the session's provider, or "off"; default per provider)
-	Subagents       int                            `json:"subagents,omitempty"`          // subagents running at once (default 8); more tasks queue
-	SubagentTurns   *int                           `json:"subagent_max_turns,omitempty"` // requests a subagent may make (default 150; 0: no limit); on the last it writes its report
-	SubagentCheck   *int                           `json:"subagent_watchdog,omitempty"`  // requests between checks that a subagent is getting somewhere (default 40; 0: none)
-	SubagentMerge   bool                           `json:"subagent_merge,omitempty"`     // merge the commits of a worktree subagent that succeeded into the session's branch
-	SubagentModel   string                         `json:"subagent_model,omitempty"`     // the model of a task that names none: an alias (opus), provider/model or a subagent_models name ("": the session's)
-	SessionMessages bool                           `json:"session_messages,omitempty"`   // open sessions take messages from other sessions (session_send), and an idle terminal session starts a turn to answer
-	MCPTools        string                         `json:"mcp_tools,omitempty"`          // "auto" (default: deferred behind tool_search on Claude, elsewhere above ~2k tokens), "lazy", "eager"
-	MCPIdle         string                         `json:"mcp_idle,omitempty"`           // local MCP servers stop after this long unused and start at their next call (default "10m"; "off": run all session)
-	Accounts        string                         `json:"accounts,omitempty"`           // with several logins per provider: "fallback" (default: switch on limits), "round-robin" or "expiring" (the account whose weekly quota runs out unused soonest)
-	Icons           string                         `json:"icons,omitempty"`              // status-line icons: "nerd" (Nerd Font glyphs) or "unicode" (default)
-	Notify          string                         `json:"notify,omitempty"`             // "off" disables the notification (sound) when a turn finishes
-	UpdateCheck     string                         `json:"update_check,omitempty"`       // "off" stops the daily check for a newer release
-	Gzip            *bool                          `json:"gzip_requests,omitempty"`      // compress large request bodies to the hosts known to take that (default on)
-	LSP             *bool                          `json:"lsp,omitempty"`                // check edits with the installed language servers (default on)
-	Transcribe      bool                           `json:"transcribe,omitempty"`         // transcribe audio with a local whisper for models that can't hear (default off: a whisper loads a model of a GB or more)
-	LSPServers      map[string]json.RawMessage     `json:"lsp_servers,omitempty"`        // add or change servers by name; false turns a built-in one off (lsp.Specs)
+	Model           string                         `json:"model,omitempty"`               // provider/model-id
+	Thinking        string                         `json:"thinking,omitempty"`            // off|low|medium|high|xhigh|max
+	Fast            bool                           `json:"fast,omitempty"`                // fast mode on models that have it (/fast)
+	Permissions     string                         `json:"permissions,omitempty"`         // yolo (default) | edits | ask: which tool calls wait for approval
+	WebModel        string                         `json:"web_model,omitempty"`           // model for native web_search (default: provider-specific)
+	SmallModel      string                         `json:"small_model,omitempty"`         // cheaper model for side work: titles, web search, subagents given "small" (provider/model, a model of the session's provider, or "off"; default per provider)
+	Subagents       int                            `json:"subagents,omitempty"`           // subagents running at once (default 8); more tasks queue
+	SubagentTurns   *int                           `json:"subagent_max_turns,omitempty"`  // requests a subagent may make (default 150; 0: no limit); on the last it writes its report
+	SubagentCheck   *int                           `json:"subagent_watchdog,omitempty"`   // requests between checks that a subagent is getting somewhere (default 40; 0: none)
+	SubagentMerge   bool                           `json:"subagent_merge,omitempty"`      // merge the commits of a worktree subagent that succeeded into the session's branch
+	SubagentModel   string                         `json:"subagent_model,omitempty"`      // the model of a task that names none: an alias (opus), provider/model or a subagent_models name ("": the session's)
+	SessionMessages bool                           `json:"session_messages,omitempty"`    // open sessions take messages from other sessions (session_send), and an idle terminal session starts a turn to answer
+	MCPTools        string                         `json:"mcp_tools,omitempty"`           // "auto" (default: deferred behind tool_search on Claude, elsewhere above ~2k tokens), "lazy", "eager"
+	MCPIdle         string                         `json:"mcp_idle,omitempty"`            // local MCP servers stop after this long unused and start at their next call (default "10m"; "off": run all session)
+	StreamIdle      string                         `json:"stream_idle_timeout,omitempty"` // a response silent this long is given up and asked again (default "5m"; "off": wait for it however long)
+	Accounts        string                         `json:"accounts,omitempty"`            // with several logins per provider: "fallback" (default: switch on limits), "round-robin" or "expiring" (the account whose weekly quota runs out unused soonest)
+	Icons           string                         `json:"icons,omitempty"`               // status-line icons: "nerd" (Nerd Font glyphs) or "unicode" (default)
+	Notify          string                         `json:"notify,omitempty"`              // "off" disables the notification (sound) when a turn finishes
+	UpdateCheck     string                         `json:"update_check,omitempty"`        // "off" stops the daily check for a newer release
+	Gzip            *bool                          `json:"gzip_requests,omitempty"`       // compress large request bodies to the hosts known to take that (default on)
+	LSP             *bool                          `json:"lsp,omitempty"`                 // check edits with the installed language servers (default on)
+	Transcribe      bool                           `json:"transcribe,omitempty"`          // transcribe audio with a local whisper for models that can't hear (default off: a whisper loads a model of a GB or more)
+	LSPServers      map[string]json.RawMessage     `json:"lsp_servers,omitempty"`         // add or change servers by name; false turns a built-in one off (lsp.Specs)
 	ContextWindow   int                            `json:"context_window,omitempty"`
 	MaxOutput       int                            `json:"max_output_tokens,omitempty"` // a response's limit, thinking included (default by model; at most the model's)
 	AutoCompact     *bool                          `json:"auto_compact,omitempty"`
@@ -357,6 +358,19 @@ func (c *Config) MCPIdleAfter() time.Duration {
 		return d
 	}
 	return DefaultMCPIdle
+}
+
+// StreamIdleTimeout is stream_idle_timeout: 0 when off, llm.DefaultStreamIdle
+// when unset or not a duration.
+func (c *Config) StreamIdleTimeout() time.Duration {
+	switch c.StreamIdle {
+	case "off", "never", "0":
+		return 0
+	}
+	if d, err := time.ParseDuration(c.StreamIdle); err == nil && d > 0 {
+		return d
+	}
+	return llm.DefaultStreamIdle
 }
 
 // IdleCompactAt is the context size above which a return from a break the

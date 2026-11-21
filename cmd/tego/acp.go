@@ -781,6 +781,9 @@ func (sess *acpSession) turn(ctx context.Context, text string, images []llm.Bloc
 	err := sess.app.extTurn(ctx, text, func(ctx context.Context, prompt string) error {
 		return sess.ag.Run(ctx, prompt, images...)
 	})
+	if errors.Is(err, agent.ErrRefused) { // the stop reason says refusal; this says what follows
+		sess.OnInfo(err.Error() + ". Going on from here may be refused again: rephrase the request in a new session or after rewinding.")
+	}
 	return result(ctx, err)
 }
 
@@ -846,7 +849,7 @@ func (sess *acpSession) followUps(ctx context.Context, run *acpRun, resp acp.Pro
 // result is the response to a prompt that ended with err; an error that is
 // not the prompt's end (cancelled, out of turns) fails the request.
 func result(ctx context.Context, err error) (acp.PromptResponse, error) {
-	if ctx.Err() == nil && err != nil && !strings.HasPrefix(err.Error(), "stopped after") {
+	if ctx.Err() == nil && err != nil && !strings.HasPrefix(err.Error(), "stopped after") && !errors.Is(err, agent.ErrRefused) {
 		return acp.PromptResponse{}, err
 	}
 	return acp.PromptResponse{StopReason: stopReason(ctx, err)}, nil
@@ -914,6 +917,8 @@ func stopReason(ctx context.Context, err error) string {
 	switch {
 	case ctx.Err() != nil:
 		return "cancelled"
+	case errors.Is(err, agent.ErrRefused):
+		return "refusal"
 	case err != nil:
 		return "max_turn_requests"
 	}
@@ -1013,6 +1018,12 @@ func (sess *acpSession) OnThinking(delta string) {
 
 func (sess *acpSession) OnInfo(msg string) {
 	sess.notify(acp.Chunk{SessionUpdate: "agent_thought_chunk", Content: acp.Text("\n\n_" + msg + "_\n\n")})
+}
+
+// OnStreamRestart: the editor joins the message's chunks into one text, so
+// the notice goes in it, between the cut-off part and the new answer.
+func (sess *acpSession) OnStreamRestart(note string) {
+	sess.notify(acp.Chunk{SessionUpdate: "agent_message_chunk", Content: acp.Text("\n\n_(" + note + ")_\n\n")})
 }
 
 func (sess *acpSession) OnToolStart(string)                                 {}

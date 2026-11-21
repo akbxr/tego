@@ -3,6 +3,8 @@ package llm
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -376,6 +378,15 @@ type oaPartialCall struct {
 	notified bool
 }
 
+// openaiCallID is the id of a tool call the server sent without one. It
+// is random: an index would repeat in every turn, and a later tool result
+// could be matched to an earlier call.
+func openaiCallID() string {
+	var b [12]byte
+	_, _ = rand.Read(b[:])
+	return "call_" + hex.EncodeToString(b[:])
+}
+
 func parseOpenAIStream(ctx context.Context, provider string, body io.Reader, emit func(Event)) (msg *Message, err error) {
 	msg = &Message{Role: RoleAssistant, Usage: &Usage{}}
 	var thinking, text strings.Builder
@@ -398,13 +409,12 @@ func parseOpenAIStream(ctx context.Context, provider string, body io.Reader, emi
 			idx = append(idx, i)
 		}
 		sort.Ints(idx)
-		for n, i := range idx {
+		for _, i := range idx {
 			c := calls[i]
-			id := c.id
-			if id == "" {
-				id = fmt.Sprintf("call_%d", n)
+			if c.id == "" {
+				c.id = openaiCallID()
 			}
-			msg.Blocks = append(msg.Blocks, Block{Type: BlockToolUse, ID: id, Name: c.name, Input: ToolInput(c.args)})
+			msg.Blocks = append(msg.Blocks, Block{Type: BlockToolUse, ID: c.id, Name: c.name, Input: ToolInput(c.args)})
 		}
 		if len(idx) > 0 && (finish == "" || finish == "tool_calls" || finish == "stop") {
 			msg.StopReason = "tool_use"
@@ -473,7 +483,7 @@ func parseOpenAIStream(ctx context.Context, provider string, body io.Reader, emi
 					pc = &oaPartialCall{}
 					calls[tc.Index] = pc
 				}
-				if tc.ID != "" {
+				if tc.ID != "" && !pc.notified {
 					pc.id = tc.ID
 				}
 				if pc.name == "" {
@@ -482,6 +492,10 @@ func parseOpenAIStream(ctx context.Context, provider string, body io.Reader, emi
 				pc.args = append(pc.args, tc.Function.Arguments...)
 				if !pc.notified && pc.name != "" {
 					pc.notified = true
+					if pc.id == "" {
+						// None yet: the events and the call must carry the same one.
+						pc.id = openaiCallID()
+					}
 					emit(Event{Type: EvToolCall, ToolName: pc.name, ToolID: pc.id})
 					if len(pc.args) > 0 { // what arrived before the name
 						emit(Event{Type: EvToolDelta, ToolName: pc.name, ToolID: pc.id, Text: string(pc.args)})

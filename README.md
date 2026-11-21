@@ -161,6 +161,8 @@ A server also takes `env`, `settings` (its `workspace/configuration`) and `init_
 
 `/model` saves the model and thinking level here. Thinking goes from `off` to `max`, and on a model without the level you picked, tego uses the highest it has. `/fast` or `--fast` turns on Claude's fast mode for Opus 4.8 and newer. It gives up to 2.5 times the output speed at twice the price, and a subscription pays for it from usage credits only. If fast mode is rate limited, tego carries on at standard speed.
 
+A failed request is tried again: a rate limit or a network error 3 times, an overloaded server 5 times, waiting 1 to 10 seconds or the time the server names. All the waits of one request stay under 90 seconds, and one of 2 seconds or more is shown. A response that goes silent for 5 minutes is given up and asked for once more (`"stream_idle_timeout"`, such as `"10m"`, or `"off"`). A response cut off after it began streaming is asked for again once, on the same account, and the screen marks where the new one starts. If Claude stops with a refusal, what it wrote is left out of the conversation, as Anthropic asks, and the turn ends with that error.
+
 A response's output limit covers its thinking and its answer. On Claude it is 64k tokens, and the whole 128k at `xhigh` and `max` on models that can write that much. `max_output_tokens` sets your own. A response is billed for what it writes, not for its limit. When a response hits the limit without a tool call, tego goes on by itself up to twice a prompt. One that spent it all thinking is told to start acting. API keys can also come from the environment, such as `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY`. Logins are stored in `~/.tego/auth.json` with mode 0600.
 
 ## Commands

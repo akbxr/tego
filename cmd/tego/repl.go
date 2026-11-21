@@ -13,6 +13,7 @@ import (
 
 	"github.com/mattn/go-runewidth"
 
+	"github.com/akbxr/tego/internal/agent"
 	"github.com/akbxr/tego/internal/lineedit"
 	"github.com/akbxr/tego/internal/llm"
 )
@@ -391,6 +392,10 @@ func (a *app) finishJob(err error) (checked bool) {
 	switch {
 	case errors.Is(err, context.Canceled):
 		a.ui.OnInfo("interrupted")
+	case errors.Is(err, agent.ErrRefused):
+		a.ui.Errorf("%v", err)
+		// Anthropic: going on in the same context tends to be refused again.
+		a.ui.Dim("(going on from here may be refused again: Esc Esc rewinds to before your prompt to rephrase it)")
 	case err != nil:
 		a.ui.Errorf("%v", err)
 		a.ui.Dim("(/retry to try again)")

@@ -400,11 +400,16 @@ type Event struct {
 // up, not at its own output limit.
 const StopContextFull = "context_full"
 
+// StopRefusal: the model declined to go on (Anthropic's stop_reason
+// "refusal", from its safety classifiers); the message holds what it wrote
+// before that.
+const StopRefusal = "refusal"
+
 // Provider streams one assistant turn. onEvent is called synchronously for
 // deltas; the returned Message is the complete assistant message (Role
 // assistant, Provider/Model/Usage/StopReason populated). StopReason is
 // normalised to one of: "end_turn", "tool_use", "max_tokens", "error", "aborted",
-// or StopContextFull.
+// StopContextFull or StopRefusal.
 type Provider interface {
 	Name() string
 	Stream(ctx context.Context, req *Request, onEvent func(Event)) (*Message, error)
