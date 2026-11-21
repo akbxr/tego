@@ -143,3 +143,25 @@ func TestToolResultsAreLiveUntilTheNextResponse(t *testing.T) {
 		t.Fatalf("results kept for the next response: %+v", got)
 	}
 }
+
+func TestRecordLiveManyDeltas(t *testing.T) {
+	u := &termUI{}
+	const n = 5000
+	const chunk = "abcdefg"
+	for range n {
+		u.recordLive(liveThinking, chunk)
+	}
+	segs := u.takeLive(false)
+	if len(segs) != 1 || segs[0].kind != liveThinking {
+		t.Fatalf("got %+v", segs)
+	}
+	want := strings.Repeat(chunk, n)
+	if segs[0].text != want {
+		t.Fatalf("len=%d, want %d", len(segs[0].text), len(want))
+	}
+	// Later deltas must not mutate a snapshot already returned by takeLive.
+	u.recordLive(liveThinking, "more")
+	if segs[0].text != want {
+		t.Fatalf("snapshot mutated after later recordLive")
+	}
+}

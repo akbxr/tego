@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -109,6 +108,7 @@ type termUI struct {
 type liveSeg struct {
 	kind  liveKind
 	text  string // the text, thinking or notice; a result's output
+	buf   []byte // streamed text/thinking accumulated without quadratic concat
 	name  string // a result's tool, input and error flag
 	input json.RawMessage
 	isErr bool
@@ -281,10 +281,10 @@ func (s styled) Write(p []byte) (int, error) {
 
 func (u *termUI) recordLive(kind liveKind, d string) {
 	if n := len(u.live); n > 0 && u.live[n-1].kind == kind {
-		u.live[n-1].text += d
+		u.live[n-1].buf = append(u.live[n-1].buf, d...)
 		return
 	}
-	u.live = append(u.live, liveSeg{kind: kind, text: d})
+	u.live = append(u.live, liveSeg{kind: kind, buf: append([]byte(nil), d...)})
 }
 
 // takeLive is what the turn has shown that the history does not hold.
@@ -293,10 +293,21 @@ func (u *termUI) recordLive(kind liveKind, d string) {
 func (u *termUI) takeLive(streaming bool) []liveSeg {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	if streaming {
-		return slices.DeleteFunc(slices.Clone(u.live), func(s liveSeg) bool { return s.kind > liveThinking })
+	if len(u.live) == 0 {
+		return nil
 	}
-	return slices.Clone(u.live)
+	out := make([]liveSeg, 0, len(u.live))
+	for _, s := range u.live {
+		if streaming && s.kind > liveThinking {
+			continue
+		}
+		if len(s.buf) > 0 {
+			s.text = string(s.buf)
+			s.buf = nil
+		}
+		out = append(out, s)
+	}
+	return out
 }
 
 // resetLive starts a response: nothing streamed yet.
