@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,6 +30,9 @@ const (
 	grepMaxColumns = 200
 	grepMaxFile    = 32 << 20
 	grepTopFiles   = 15 // files listed when a result is cut
+	// From this offset on rg sorts by path (one thread): out of order, every
+	// line before the page has to be kept, and memory grows with offset.
+	grepSortFrom = 10_000
 )
 
 type grepTool struct{ env *Env }
@@ -63,58 +67,189 @@ type grepInput struct {
 	Offset     int    `json:"offset"`
 }
 
-// lineCap keeps one page of output lines (offset, limit), counts the rest,
-// and counts matching lines per file for the summary of a cut result.
-type lineCap struct {
+// grepPage keeps one page (offset, limit) of grep output in path order and
+// counts the rest. Output comes one file at a time, each file's lines
+// together and in order, but the files come in any order: rg searches them
+// in parallel. Files that sort before a line can only push it further down,
+// so once a line's place is at or past the end of the page it is dropped and
+// only counted. That bounds memory to a few pages of lines, however large
+// the result. When the output comes in path order (sorted), each line's place
+// is known as it comes, and only the page's lines are kept.
+type grepPage struct {
 	offset, limit int
-	lines         []string
-	total         int
-	perFile       map[string]int
-	fileOrder     []string
+	fileSep       bool // a "--" line goes between files (output with context)
+	files         map[string]*grepFile
+	kept          []*grepFile // files whose lines may still reach the page
+	keptLines     int
+	bound         string // once bounded, files sorting from bound on are past the page
+	bounded       bool
+	sorted        bool // files come in path order
+	placed        int  // lines so far, separators between files too (sorted)
 }
 
-func newLineCap(in *grepInput) *lineCap {
+// grepFile is the output of one file.
+type grepFile struct {
+	path    string
+	n       int      // output lines
+	matches int      // matching lines (in count output, the count)
+	skip    int      // first lines placed before the page and not kept (sorted)
+	lines   []string // the next output lines, as many as may reach the page
+	room    int      // how many of those lines may reach the page
+}
+
+func newGrepPage(in *grepInput) *grepPage {
 	limit := in.Limit
 	if limit <= 0 {
 		limit = grepMaxLines
 	}
-	return &lineCap{offset: max(in.Offset, 0), limit: min(limit, grepMaxLimit), perFile: map[string]int{}}
+	return &grepPage{
+		offset:  min(max(in.Offset, 0), math.MaxInt32),
+		limit:   min(limit, grepMaxLimit),
+		fileSep: in.Context > 0 && (in.Output == "" || in.Output == "content"),
+		files:   map[string]*grepFile{},
+	}
 }
 
-// add records an output line; match is true for a matching line of file
-// (not a context line or separator).
-func (c *lineCap) add(s, file string, match bool) {
-	c.total++
-	if match && file != "" {
-		if c.perFile[file] == 0 {
-			c.fileOrder = append(c.fileOrder, file)
+// file returns the output of path, starting it on first use.
+func (p *grepPage) file(path string) *grepFile {
+	if f := p.files[path]; f != nil {
+		return f
+	}
+	f := &grepFile{path: path, room: math.MaxInt}
+	if p.sorted && p.fileSep && len(p.files) > 0 {
+		p.placed++ // the "--" before it
+	}
+	if p.bounded && !pathLess(path, p.bound) {
+		f.room = 0
+	} else {
+		p.kept = append(p.kept, f)
+	}
+	p.files[path] = f
+	return f
+}
+
+// keeps reports whether the next line of f may reach the page; when it
+// does not, the caller need not build the line.
+func (p *grepPage) keeps(f *grepFile) bool {
+	if p.sorted {
+		return p.placed >= p.offset && p.placed < p.offset+p.limit
+	}
+	return len(f.lines) < f.room
+}
+
+// add records the next output line of f, which stands for matches matching
+// lines: 1 for a match, 0 for a context line or a separator. s is not used
+// when p.keeps(f) is false.
+func (p *grepPage) add(f *grepFile, s string, matches int) {
+	keep := p.keeps(f)
+	f.n++
+	f.matches += matches
+	if p.sorted {
+		if p.placed < p.offset {
+			f.skip++
 		}
-		c.perFile[file]++
+		p.placed++
 	}
-	if c.total > c.offset && len(c.lines) < c.limit {
-		c.lines = append(c.lines, strings.ToValidUTF8(s, "\uFFFD"))
+	if !keep {
+		return
+	}
+	f.lines = append(f.lines, strings.ToValidUTF8(s, "\uFFFD"))
+	p.keptLines++
+	if p.keptLines > 2*(p.offset+p.limit)+4096 {
+		p.compact()
 	}
 }
 
-func (c *lineCap) String() string {
-	if c.total == 0 {
+// compact sorts the kept files by path and drops the lines placed at or past
+// the end of the page, and the files placed wholly past it.
+func (p *grepPage) compact() {
+	sort.Slice(p.kept, func(i, j int) bool { return pathLess(p.kept[i].path, p.kept[j].path) })
+	end := p.offset + p.limit
+	at, kept := 0, 0 // place of the next line, lines kept
+	for i, f := range p.kept {
+		if p.fileSep && i > 0 {
+			at++
+		}
+		if at >= end {
+			p.bound, p.bounded = f.path, true
+			for _, g := range p.kept[i:] {
+				g.lines, g.room = nil, 0
+			}
+			clear(p.kept[i:])
+			p.kept = p.kept[:i]
+			break
+		}
+		f.room = min(f.room, max(end-at-f.skip, 0))
+		if len(f.lines) > f.room {
+			clear(f.lines[f.room:])
+			f.lines = f.lines[:f.room]
+		}
+		kept += len(f.lines)
+		at += f.n
+	}
+	p.keptLines = kept
+}
+
+func (p *grepPage) empty() bool { return len(p.files) == 0 }
+
+func (p *grepPage) String() string {
+	if p.empty() {
 		return "No matches found"
 	}
-	if len(c.lines) == 0 {
-		return fmt.Sprintf("No lines after offset %d (the result has %d lines)", c.offset, c.total)
+	p.compact()
+	total := 0
+	for _, f := range p.files {
+		total += f.n
 	}
-	s := strings.Join(c.lines, "\n")
-	shown := c.offset + len(c.lines)
-	if shown >= c.total {
+	if p.fileSep {
+		total += len(p.files) - 1
+	}
+	var lines []string
+	at := 0
+	put := func(s string) {
+		if at >= p.offset && len(lines) < p.limit {
+			lines = append(lines, s)
+		}
+		at++
+	}
+	for i, f := range p.kept {
+		if p.fileSep && i > 0 {
+			put("--")
+		}
+		at += f.skip
+		for _, s := range f.lines {
+			put(s)
+		}
+		at += f.n - f.skip - len(f.lines)
+	}
+	if p.fileSep && len(p.kept) < len(p.files) {
+		put("--") // before the first file past the page, which may end on it
+	}
+	if len(lines) == 0 {
+		return fmt.Sprintf("No lines after offset %d (the result has %d lines)", p.offset, total)
+	}
+	s := strings.Join(lines, "\n")
+	shown := p.offset + len(lines)
+	if shown >= total {
 		return s
 	}
-	s += fmt.Sprintf("\n... showing lines %d-%d of %d.", c.offset+1, shown, c.total)
-	if n := len(c.fileOrder); n > 1 {
-		files := append([]string(nil), c.fileOrder...)
-		sort.SliceStable(files, func(i, j int) bool { return c.perFile[files[i]] > c.perFile[files[j]] })
+	s += fmt.Sprintf("\n... showing lines %d-%d of %d.", p.offset+1, shown, total)
+	var files []*grepFile
+	for _, f := range p.files {
+		if f.matches > 0 {
+			files = append(files, f)
+		}
+	}
+	if n := len(files); n > 1 {
+		sort.Slice(files, func(i, j int) bool {
+			if files[i].matches != files[j].matches {
+				return files[i].matches > files[j].matches
+			}
+			return pathLess(files[i].path, files[j].path)
+		})
 		s += fmt.Sprintf(" Matches per file (%d files, most first):", n)
 		for _, f := range files[:min(n, grepTopFiles)] {
-			s += fmt.Sprintf("\n  %s: %d", f, c.perFile[f])
+			s += fmt.Sprintf("\n  %s: %d", f.path, f.matches)
 		}
 		if n > grepTopFiles {
 			s += fmt.Sprintf("\n  ... %d more files", n-grepTopFiles)
@@ -123,6 +258,24 @@ func (c *lineCap) String() string {
 	}
 	s += fmt.Sprintf(" Narrow it with path, glob or a more specific pattern, use output \"files\" or \"count\", or get the next lines with offset %d.", shown)
 	return s
+}
+
+// pathLess orders paths the way a sorted directory walk visits them
+// (filepath.WalkDir, rg --sort path): name by name, so a/b comes before a.txt.
+func pathLess(a, b string) bool {
+	for i := 0; i < len(a) && i < len(b); i++ {
+		x, y := a[i], b[i]
+		if x == '/' || x == filepath.Separator {
+			x = 0
+		}
+		if y == '/' || y == filepath.Separator {
+			y = 0
+		}
+		if x != y {
+			return x < y
+		}
+	}
+	return len(a) < len(b)
 }
 
 func (t *grepTool) Run(ctx context.Context, input json.RawMessage) (string, error) {
@@ -153,8 +306,15 @@ func (t *grepTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 }
 
 func (t *grepTool) runRg(ctx context.Context, rg string, in *grepInput, root string, isDir bool) (string, error) {
-	args := []string{"--no-heading", "--color", "never", "--with-filename", "--sort", "path",
+	// No --sort path: it makes rg search on one thread, 4-8x slower on a
+	// large tree with 8 cores. grepPage puts the files in path order instead,
+	// but from a far offset on it would keep too many lines for that.
+	args := []string{"--no-heading", "--color", "never", "--with-filename",
 		"--max-columns", strconv.Itoa(grepMaxColumns), "--max-columns-preview"}
+	sorted := in.Offset >= grepSortFrom
+	if sorted {
+		args = append(args, "--sort", "path")
+	}
 	switch in.Output {
 	case "files":
 		args = append(args, "--files-with-matches")
@@ -178,7 +338,7 @@ func (t *grepTool) runRg(ctx context.Context, rg string, in *grepInput, root str
 		if in.Glob != "" {
 			args = append(args, "--glob", in.Glob)
 		}
-		args = append(args, "--regexp", in.Pattern)
+		args = append(append(args, hiddenArgs(root)...), "--regexp", in.Pattern)
 		cmd.Dir = root
 		if target != "." {
 			prefix = target + string(filepath.Separator)
@@ -197,38 +357,71 @@ func (t *grepTool) runRg(ctx context.Context, rg string, in *grepInput, root str
 	if err := cmd.Start(); err != nil {
 		return "", err
 	}
-	c := newLineCap(in)
+	c := newGrepPage(in)
+	c.sorted = sorted
 	sc := bufio.NewScanner(out)
 	sc.Buffer(make([]byte, 64<<10), 4<<20)
-	for sc.Scan() {
-		line := sc.Text()
-		path, rest, ok := strings.Cut(line, "\x00")
-		switch {
-		case line == "--":
-			c.add(line, "", false)
-		case !ok: // files mode: one path per line
-			c.add(prefix+line, prefix+line, true)
-		case in.Output == "count":
-			c.add(prefix+path+":"+rest, prefix+path, true)
-		default:
-			// "12:text" for a match, "12-text" for a context line.
-			digits := strings.IndexFunc(rest, func(r rune) bool { return r < '0' || r > '9' })
-			sep := ":"
-			if digits >= 0 && rest[digits] == '-' {
-				sep = "-"
-			}
-			if digits >= 0 {
-				rest = rest[:digits] + sep + rest[digits+1:]
-			}
-			c.add(prefix+path+sep+rest, prefix+path, sep == ":")
+	// Each file's lines come together, so the file of the previous line
+	// saves a lookup. A "--" between two lines of one file parts two context
+	// hunks; one before a file's first line parts files, and grepPage puts
+	// those back once the files are in order.
+	var last *grepFile
+	sep := false
+	fileOf := func(path []byte) *grepFile {
+		if last != nil && len(last.path) == len(prefix)+len(path) && last.path[len(prefix):] == string(path) {
+			return last
 		}
+		return c.file(prefix + string(path))
+	}
+	for sc.Scan() {
+		line := sc.Bytes()
+		if in.Output == "files" { // one path per line
+			last = fileOf(line)
+			c.add(last, last.path, 1)
+			continue
+		}
+		if string(line) == "--" {
+			sep = true
+			continue
+		}
+		path, rest, ok := bytes.Cut(line, []byte{0})
+		if !ok { // "path: binary file matches (...)"
+			last, sep = c.file(prefix+string(line)), false
+			c.add(last, last.path, 1)
+			continue
+		}
+		f := fileOf(path)
+		if in.Output == "count" { // "path\x00count"
+			n, _ := strconv.Atoi(string(rest))
+			c.add(f, f.path+":"+string(rest), n)
+			last = f
+			continue
+		}
+		if sep && f == last {
+			c.add(f, "--", 0)
+		}
+		last, sep = f, false
+		// "12:text" for a match, "12-text" for a context line.
+		d := 0
+		for d < len(rest) && rest[d] >= '0' && rest[d] <= '9' {
+			d++
+		}
+		mark, match := ":", 1
+		if d < len(rest) && rest[d] == '-' {
+			mark, match = "-", 0
+		}
+		s := ""
+		if c.keeps(f) {
+			s = f.path + mark + string(rest)
+		}
+		c.add(f, s, match)
 	}
 	werr := cmd.Wait()
 	if ctx.Err() != nil {
 		return "", ctx.Err()
 	}
 	var ee *exec.ExitError
-	if werr != nil && c.total == 0 && !(errors.As(werr, &ee) && ee.ExitCode() == 1) {
+	if werr != nil && c.empty() && !(errors.As(werr, &ee) && ee.ExitCode() == 1) {
 		msg := strings.TrimSpace(stderr.String())
 		if strings.Contains(msg, "No files were searched") {
 			return c.String(), nil
@@ -256,8 +449,9 @@ func (t *grepTool) runGo(ctx context.Context, in *grepInput, root string, isDir 
 			return "", err
 		}
 	}
-	c := newLineCap(in)
-	emitted := false
+	c := newGrepPage(in)
+	c.sorted = true // the walk goes in path order
+	hidden := isDir && searchHidden(root)
 	search := func(abs string) {
 		data, err := os.ReadFile(abs)
 		if err != nil || isBinary(data) {
@@ -277,29 +471,33 @@ func (t *grepTool) runGo(ctx context.Context, in *grepInput, root string, isDir 
 		if len(hits) == 0 {
 			return
 		}
+		f := c.file(name)
 		switch in.Output {
 		case "files":
-			c.add(name, name, true)
+			c.add(f, name, 1)
 			return
 		case "count":
-			c.add(name+":"+strconv.Itoa(len(hits)), name, true)
+			c.add(f, name+":"+strconv.Itoa(len(hits)), len(hits))
 			return
 		}
 		next := 0 // first line not yet printed in this file
 		for k, h := range hits {
 			from := max(h-in.Context, next)
-			if in.Context > 0 && emitted && (k == 0 || from > next) {
-				c.add("--", "", false)
+			if in.Context > 0 && k > 0 && from > next { // grepPage parts files
+				c.add(f, "--", 0)
 			}
 			for i := from; i <= h+in.Context && i < len(lines); i++ {
-				sep := "-"
+				sep, match := "-", 0
 				if i == h || (i > h && re.MatchString(strings.TrimSuffix(lines[i], "\r"))) {
-					sep = ":"
+					sep, match = ":", 1
 				}
-				c.add(name+sep+strconv.Itoa(i+1)+sep+clipColumns(strings.TrimSuffix(lines[i], "\r")), name, sep == ":")
+				s := ""
+				if c.keeps(f) {
+					s = name + sep + strconv.Itoa(i+1) + sep + clipColumns(strings.TrimSuffix(lines[i], "\r"))
+				}
+				c.add(f, s, match)
 				next = i + 1
 			}
-			emitted = true
 		}
 	}
 	if !isDir {
@@ -313,13 +511,13 @@ func (t *grepTool) runGo(ctx context.Context, in *grepInput, root string, isDir 
 		if err != nil {
 			return nil
 		}
-		if d.IsDir() {
-			if p != root && skipDirs[d.Name()] {
+		if p != root && skipEntry(d, hidden) {
+			if d.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if !d.Type().IsRegular() {
+		if d.IsDir() || !d.Type().IsRegular() {
 			return nil
 		}
 		if m != nil {

@@ -98,11 +98,56 @@ func (t *globTool) Run(ctx context.Context, input json.RawMessage) (string, erro
 	return strings.TrimSuffix(b.String(), "\n"), nil
 }
 
+// searchHidden reports whether a search under root takes in hidden files
+// and folders (.github, .env.example). It does in a git repository, whose
+// .gitignore keeps out the hidden folders that are not the project's (.venv,
+// .next). It doesn't outside one, or in a repository at the home folder: there
+// hidden folders hold caches and tools' data (.cache, .npm, .rustup, ~/.tego)
+// by the hundred thousand files, which nothing ignores.
+func searchHidden(root string) bool {
+	home, _ := os.UserHomeDir()
+	homeInfo, _ := os.Stat(home)
+	for dir := filepath.Clean(root); ; {
+		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+			info, err := os.Stat(dir)
+			return err == nil && (homeInfo == nil || !os.SameFile(info, homeInfo))
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
+}
+
+// hiddenArgs are rg's flags for hidden files under root: hidden files but
+// not .git (a later --glob wins over these), or none.
+func hiddenArgs(root string) []string {
+	if searchHidden(root) {
+		return []string{"--hidden", "--glob", "!.git"}
+	}
+	return nil
+}
+
+// skipEntry reports whether the Go walker leaves out d, below the root:
+// .git (a folder, or a worktree's or submodule's link file), the folders
+// of skipDirs and, unless hidden, every hidden file and folder.
+func skipEntry(d fs.DirEntry, hidden bool) bool {
+	name := d.Name()
+	return name == ".git" || (d.IsDir() && skipDirs[name]) || (!hidden && strings.HasPrefix(name, "."))
+}
+
 // listFiles calls fn with every file under root as a slash-separated path
-// relative to root. Uses `rg --files` (gitignore-aware) when available.
+// relative to root, hidden files too in a project's repository (but not
+// .git). Uses `rg --files` (gitignore-aware) when available.
 func listFiles(ctx context.Context, root string, fn func(rel string)) error {
+	hidden := searchHidden(root)
 	if rg := rgPath(); rg != "" {
-		cmd := exec.CommandContext(ctx, rg, "--files", "--color", "never")
+		args := []string{"--files", "--color", "never"}
+		if hidden {
+			args = append(args, "--hidden", "--glob", "!.git")
+		}
+		cmd := exec.CommandContext(ctx, rg, args...)
 		cmd.Dir = root
 		var stderr strings.Builder
 		cmd.Stderr = &stderr
@@ -141,10 +186,13 @@ func listFiles(ctx context.Context, root string, fn func(rel string)) error {
 			}
 			return nil
 		}
-		if d.IsDir() {
-			if p != root && skipDirs[d.Name()] {
+		if p != root && skipEntry(d, hidden) {
+			if d.IsDir() {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		if d.IsDir() {
 			return nil
 		}
 		rel, _ := filepath.Rel(root, p)
