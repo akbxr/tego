@@ -7,7 +7,9 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/akbxr/tego/internal/agent"
 	"github.com/akbxr/tego/internal/llm"
 )
 
@@ -163,5 +165,24 @@ func TestRecordLiveManyDeltas(t *testing.T) {
 	u.recordLive(liveThinking, "more")
 	if segs[0].text != want {
 		t.Fatalf("snapshot mutated after later recordLive")
+	}
+}
+
+func TestUsageLineShowsFinishTime(t *testing.T) {
+	var out bytes.Buffer
+	a := &app{
+		ui: newTUIUI(&out, func() int { return 120 }, nil),
+		ag: &agent.Agent{
+			Total:         llm.Usage{Input: 1200, Output: 300, CacheRead: 5000},
+			LastCtx:       250_000,
+			ContextWindow: 1_000_000,
+		},
+	}
+	a.usageLine(llm.Usage{}, 12500*time.Millisecond, time.Date(2026, 11, 21, 19, 42, 7, 0, time.Local))
+	got := out.String()
+	for _, want := range []string{"12.5s", "1.2k in", "5.0k cached", "300 out", "ctx 25% of 1.0M", "· 19:42:07"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("usageLine %q lacks %q", got, want)
+		}
 	}
 }

@@ -401,7 +401,8 @@ func (a *app) finishJob(err error) (checked bool) {
 		a.ui.Dim("(/retry to try again)")
 	}
 	if !checked || err != nil {
-		a.usageLine(a.jobBefore, time.Since(a.jobStart))
+		now := time.Now()
+		a.usageLine(a.jobBefore, now.Sub(a.jobStart), now)
 	}
 	a.status.update(func(s *statusInfo) { s.busy = false })
 	a.tui.SetBusy(false)
@@ -530,7 +531,7 @@ func (a *app) updateBanner(latest string) {
 		c.bold+c.yellow, c.reset, c.dim, version, c.reset+c.green, latest, c.reset+c.dim, c.reset+c.cyan, c.reset)
 }
 
-func (a *app) usageLine(before llm.Usage, d time.Duration) {
+func (a *app) usageLine(before llm.Usage, d time.Duration, finished time.Time) {
 	t := a.ag.Usage()
 	in, out, cache := t.Input-before.Input, t.Output-before.Output, t.CacheRead-before.CacheRead
 	if in == 0 && out == 0 && cache == 0 {
@@ -544,8 +545,8 @@ func (a *app) usageLine(before llm.Usage, d time.Duration) {
 	if r := a.ui.rate(); r > 0 {
 		rate = fmt.Sprintf("%s%.0f tok/s%s%s · ", a.ui.c.green, r, a.ui.c.reset, a.ui.c.dim)
 	}
-	a.ui.Dim("%s%.1fs · %s in · %s cached · %s out · ctx %d%% of %s",
-		rate, d.Seconds(), fmtTokens(in+t.CacheWrite-before.CacheWrite), fmtTokens(cache), fmtTokens(out), pct, fmtTokens(a.ag.ContextWindow))
+	a.ui.Dim("%s%.1fs · %s in · %s cached · %s out · ctx %d%% of %s · %s",
+		rate, d.Seconds(), fmtTokens(in+t.CacheWrite-before.CacheWrite), fmtTokens(cache), fmtTokens(out), pct, fmtTokens(a.ag.ContextWindow), finished.Format("15:04:05"))
 }
 
 // shell runs !cmd on the real terminal with the TUI suspended.
