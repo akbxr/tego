@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -26,9 +27,18 @@ type mcpTool struct {
 	remote   string
 	def      llm.Tool
 	readOnly bool
+	headers  []paramHeader
 }
 
 func (t *mcpTool) Def() llm.Tool { return t.def }
+
+// ServerInstructions is the server's name and its instructions to the
+// model ("" without).
+func (t *mcpTool) ServerInstructions() (string, string) {
+	t.s.mu.Lock()
+	defer t.s.mu.Unlock()
+	return t.s.cfg.Name, t.s.instructions
+}
 
 // ReadOnlyHint is the server's claim that the tool changes nothing, which
 // lets it run in plan mode. (Not tools.ReadOnly: that would also run it in
@@ -52,17 +62,84 @@ func (t *mcpTool) RunImages(ctx context.Context, input json.RawMessage) (string,
 	if len(input) == 0 || string(input) == "null" {
 		input = json.RawMessage("{}")
 	}
-	ctx, cancel := context.WithTimeout(ctx, callTimeout)
-	defer cancel()
-	var r callResult
-	err = c.call(ctx, "tools/call", map[string]any{"name": t.remote, "arguments": input}, &r)
+	r, err := t.call(ctx, c, input)
 	if err != nil {
-		var re *rpcError
-		if errors.As(err, &re) {
-			return "", nil, fmt.Errorf("mcp %s: %s", t.s.cfg.Name, re.Message)
-		}
-		return "", nil, err
+		return "", nil, t.callErr(ctx, err)
 	}
+	if r.ResultType == "task" {
+		return t.awaitTask(ctx, c, r, input)
+	}
+	return r.output()
+}
+
+// maxInputRounds caps the times one call may ask the user (input_required).
+const maxInputRounds = 8
+
+// call makes the tools/call: when the server asks the user something
+// first (input_required, MCP 2026-07-28), it is asked and the call made
+// again with the answers; when the server's headers changed, once more
+// with the new ones.
+func (t *mcpTool) call(ctx context.Context, c *conn, input json.RawMessage) (*callResult, error) {
+	params := map[string]any{"name": t.remote, "arguments": input}
+	headers := t.headers
+	retried := false
+	for round := 0; ; round++ {
+		cctx, cancel := context.WithTimeout(withParamHeaders(ctx, headerValues(headers, input)), callTimeout)
+		var r callResult
+		err := c.call(cctx, "tools/call", params, &r)
+		cancel()
+		if rpcCode(err) == codeHeaderMismatch && !retried {
+			retried = true
+			t.s.refetch()
+			headers = t.s.toolHeaders(t.remote)
+			continue
+		}
+		if err != nil || r.ResultType != "input_required" {
+			return &r, err
+		}
+		if round >= maxInputRounds {
+			return nil, fmt.Errorf("mcp %s: the server asked for input %d times in one call; gave up", t.s.cfg.Name, round+1)
+		}
+		answers, err := t.s.answer(ctx, r.InputRequests, nil)
+		if err != nil {
+			return nil, err
+		}
+		params = map[string]any{"name": t.remote, "arguments": input, "inputResponses": answers}
+		if r.RequestState != "" {
+			params["requestState"] = r.RequestState
+		}
+	}
+}
+
+// callErr is how a failed call reads to the model. A server that needs the
+// user to finish a step in the browser first (2025-11-25's -32042) gets it
+// shown to them.
+func (t *mcpTool) callErr(ctx context.Context, err error) error {
+	var re *rpcError
+	if !errors.As(err, &re) {
+		return err
+	}
+	if re.Code == codeURLRequired {
+		var data struct {
+			Elicitations []json.RawMessage `json:"elicitations"`
+		}
+		_ = json.Unmarshal(re.Data, &data)
+		opened := 0
+		for _, e := range data.Elicitations {
+			if r, err := t.s.elicit(ctx, e); err == nil && r.Action == ElicitAccept {
+				opened++
+			}
+		}
+		if opened > 0 && opened == len(data.Elicitations) {
+			return fmt.Errorf("mcp %s: the server needs the user to finish a step in their browser first; it was opened for them. Call the tool again once they say they finished", t.s.cfg.Name)
+		}
+		return fmt.Errorf("mcp %s: %s (it needs the user to finish a step in their browser, which they did not open)", t.s.cfg.Name, re.Message)
+	}
+	return fmt.Errorf("mcp %s: %s", t.s.cfg.Name, re.Message)
+}
+
+// output is a finished call's result for the model.
+func (r *callResult) output() (string, []llm.Block, error) {
 	text, images := r.render()
 	if r.IsError {
 		if text == "" {
@@ -76,10 +153,79 @@ func (t *mcpTool) RunImages(ctx context.Context, input json.RawMessage) (string,
 	return text, images, nil
 }
 
+// inputRequest is one thing a modern server asks of the client before it
+// goes on: elicitation/create, roots/list.
+type inputRequest struct {
+	Method string          `json:"method"`
+	Params json.RawMessage `json:"params"`
+}
+
+// maxInputRequests caps the requests one answer takes.
+const maxInputRequests = 16
+
+// answer fulfils a server's input requests, one at a time, and returns
+// the answers by key. Keys in done were answered before (a task asks again
+// until it sees the answer) and are skipped, and the answered keys added.
+func (s *server) answer(ctx context.Context, reqs map[string]inputRequest, done map[string]bool) (map[string]any, error) {
+	keys := make([]string, 0, len(reqs))
+	for k := range reqs {
+		if !done[k] {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	if len(keys) > maxInputRequests {
+		keys = keys[:maxInputRequests]
+	}
+	out := make(map[string]any, len(keys))
+	for _, k := range keys {
+		req := reqs[k]
+		switch req.Method {
+		case "elicitation/create":
+			if s.m.elicit == nil {
+				return nil, fmt.Errorf("mcp %s: the server asks the user something, which this session can't ask", s.cfg.Name)
+			}
+			r, err := s.elicit(ctx, req.Params)
+			if err != nil {
+				return nil, fmt.Errorf("mcp %s: %w", s.cfg.Name, err)
+			}
+			out[k] = r
+		case "roots/list":
+			out[k] = s.roots()
+		default:
+			return nil, fmt.Errorf("mcp %s: the server asks for %s, which tego doesn't do", s.cfg.Name, req.Method)
+		}
+		if done != nil {
+			done[k] = true
+		}
+	}
+	return out, nil
+}
+
+// toolHeaders is the header mirroring of s's tool remote now.
+func (s *server) toolHeaders(remote string) []paramHeader {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, ti := range s.list {
+		if ti.remote == remote {
+			return ti.headers
+		}
+	}
+	return nil
+}
+
 type callResult struct {
+	ResultType        string          `json:"resultType"`
 	Content           []content       `json:"content"`
 	StructuredContent json.RawMessage `json:"structuredContent"`
 	IsError           bool            `json:"isError"`
+
+	// input_required
+	InputRequests map[string]inputRequest `json:"inputRequests"`
+	RequestState  string                  `json:"requestState"`
+
+	// task
+	taskState
 }
 
 type content struct {

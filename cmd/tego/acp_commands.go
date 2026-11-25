@@ -184,6 +184,9 @@ var acpCommands = []acpCommand{
 			fmt.Fprintf(&b, "%-20s %-10s %-6s", s.Name, s.State, s.Transport)
 			if s.State == mcp.StateConnected || s.State == mcp.StateIdle {
 				fmt.Fprintf(&b, " %d tools", s.Tools)
+				if d := mcpDetail(s); d != "" {
+					b.WriteString(" · " + d)
+				}
 			}
 			if s.State == mcp.StateIdle && s.Err == "" {
 				b.WriteString("  not running; starts at its next call")

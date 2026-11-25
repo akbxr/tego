@@ -45,6 +45,7 @@ func init() {
 	if version == "" {
 		version = buildVersion()
 	}
+	mcp.ClientVersion = version
 }
 
 func buildVersion() string {

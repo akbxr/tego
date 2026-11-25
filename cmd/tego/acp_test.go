@@ -93,6 +93,7 @@ type editor struct {
 	asked    []acp.PermissionRequest
 	answer   string // permission option to pick
 	wire     wireLog
+	elicits  []acp.ElicitationRequest // elicitation/create asked, each accepted with {"ok":true}
 }
 
 // wireLog keeps what tego wrote to the editor, in order.
@@ -136,6 +137,11 @@ func (e *editor) handle(_ context.Context, method string, params json.RawMessage
 		var resp acp.PermissionResponse
 		resp.Outcome.Outcome, resp.Outcome.OptionID = "selected", e.answer
 		return resp, nil
+	case "elicitation/create":
+		var req acp.ElicitationRequest
+		_ = json.Unmarshal(params, &req)
+		e.elicits = append(e.elicits, req)
+		return acp.ElicitationResponse{Action: "accept", Content: map[string]any{"ok": true}}, nil
 	case "fs/read_text_file":
 		var req acp.ReadTextFileRequest
 		_ = json.Unmarshal(params, &req)

@@ -34,6 +34,15 @@ func TestMain(m *testing.M) {
 	case "exit":
 		fmt.Fprintln(os.Stderr, "fatal: bad config")
 		os.Exit(3)
+	case "modern", "legacy-elicit", "silent", "strict":
+		if p := os.Getenv("TEGO_MCP_STARTS"); p != "" {
+			if f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+				fmt.Fprintln(f, os.Getpid())
+				f.Close()
+			}
+		}
+		scriptedServer(os.Getenv("TEGO_MCP_FAKE"))
+		os.Exit(0)
 	}
 	os.Exit(m.Run())
 }
@@ -99,7 +108,7 @@ func fakeServer() {
 			mu.Unlock()
 		case "initialize":
 			respond(m.ID, map[string]any{
-				"protocolVersion": protocolVersion,
+				"protocolVersion": legacyVersion,
 				"capabilities":    map[string]any{"tools": map[string]any{"listChanged": true}},
 				"serverInfo":      map[string]any{"name": "fake", "version": "1"},
 			})
@@ -172,6 +181,10 @@ func fakeServer() {
 				mu.Unlock()
 				respond(m.ID, textResult("added"))
 				write(map[string]any{"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
+			}
+		default: // server/discover among them: a server of MCP 2025
+			if len(m.ID) > 0 {
+				write(map[string]any{"jsonrpc": "2.0", "id": m.ID, "error": map[string]any{"code": -32601, "message": "method not found"}})
 			}
 		}
 	}
@@ -339,7 +352,7 @@ func TestStreamableHTTP(t *testing.T) {
 		}
 		var m fakeMsg
 		json.NewDecoder(r.Body).Decode(&m)
-		if m.Method != "initialize" && (r.Header.Get("Mcp-Session-Id") != "sess-1" || r.Header.Get("MCP-Protocol-Version") != protocolVersion) {
+		if m.Method != "initialize" && (r.Header.Get("Mcp-Session-Id") != "sess-1" || r.Header.Get("MCP-Protocol-Version") != legacyVersion) {
 			http.Error(w, "missing session headers", http.StatusBadRequest)
 			return
 		}
@@ -355,7 +368,7 @@ func TestStreamableHTTP(t *testing.T) {
 			w.Header().Set("Mcp-Session-Id", "sess-1")
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": m.ID, "result": map[string]any{
-				"protocolVersion": protocolVersion, "capabilities": map[string]any{"tools": map[string]any{}},
+				"protocolVersion": legacyVersion, "capabilities": map[string]any{"tools": map[string]any{}},
 			}})
 		case m.Method == "tools/list":
 			w.Header().Set("Content-Type", "text/event-stream")

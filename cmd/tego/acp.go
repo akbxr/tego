@@ -403,7 +403,9 @@ func (s *acpServer) open(cwd string, servers []acp.MCPServer, id string) (*acpSe
 	if err != nil {
 		cfgs = nil
 	}
-	sess.mcp = mcp.StartWith(mergeMCP(cfgs, servers), cwd, filepath.Join(cfg.Dir, "logs"), mcpOptions(cfg))
+	opts := mcpOptions(cfg)
+	opts.Elicit = sess.elicit
+	sess.mcp = mcp.StartWith(mergeMCP(cfgs, servers), cwd, filepath.Join(cfg.Dir, "logs"), opts)
 	ag.Dynamic = sess.mcp.Tools
 	if untrusted := untrustedMCP(sess.mcp); len(untrusted) > 0 {
 		go func() {

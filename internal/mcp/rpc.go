@@ -12,8 +12,6 @@ import (
 	"time"
 )
 
-const protocolVersion = "2025-06-18"
-
 var errClosed = errors.New("connection closed")
 
 // transport carries JSON-RPC messages. Incoming messages are fed to
@@ -88,16 +86,32 @@ type conn struct {
 	serve  func(method string, params json.RawMessage) (any, *rpcError)
 	notify func(method string, params json.RawMessage)
 	onFail func(err error)
+
+	// elicit: tego tells the server it can ask the user (set before the
+	// handshake). modern: the 2026-07-28 protocol (modern.go); tasks: the
+	// server runs calls as tasks, and is told tego takes them.
+	elicit bool
+	modern atomic.Bool
+	tasks  atomic.Bool
+
+	life context.Context // ends when the connection closes or fails
+	stop context.CancelFunc
 }
 
 func newConn() *conn {
-	return &conn{pending: map[int64]chan reply{}}
+	c := &conn{pending: map[int64]chan reply{}}
+	c.life, c.stop = context.WithCancel(context.Background())
+	return c
 }
 
 // call sends a request and decodes the result into result (if non-nil).
 // On context cancellation it sends notifications/cancelled and returns.
 func (c *conn) call(ctx context.Context, method string, params, result any) error {
 	id := c.nextID.Add(1)
+	if c.modern.Load() {
+		params = c.withMeta(params)
+	}
+	ctx = withRequest(ctx, method, params)
 	b, err := json.Marshal(outRequest{"2.0", id, method, params})
 	if err != nil {
 		return err
@@ -141,8 +155,8 @@ func (c *conn) call(ctx context.Context, method string, params, result any) erro
 // cancelled tells the server, best-effort and asynchronously, that request
 // id is no longer wanted.
 func (c *conn) cancelled(id int64, method string, cause error) {
-	if method == "initialize" || c.dead() {
-		return
+	if method == "initialize" || c.dead() || (c.modern.Load() && c.t.kind() == "http") {
+		return // a modern HTTP request is cancelled by closing its stream
 	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -159,7 +173,7 @@ func (c *conn) notifyServer(ctx context.Context, method string, params any) erro
 	if err != nil {
 		return err
 	}
-	return c.t.send(ctx, b, 0)
+	return c.t.send(withRequest(ctx, method, nil), b, 0)
 }
 
 func (c *conn) drop(id int64) {
@@ -195,6 +209,7 @@ func (c *conn) fail(err error) {
 		delete(c.pending, id)
 	}
 	c.mu.Unlock()
+	c.stop()
 	if c.onFail != nil {
 		c.onFail(err)
 	}
@@ -211,6 +226,7 @@ func (c *conn) close() {
 		}
 	}
 	c.mu.Unlock()
+	c.stop()
 	if c.t != nil {
 		c.t.close()
 	}
@@ -313,19 +329,19 @@ type initResult struct {
 	Instructions string `json:"instructions"`
 }
 
-// initialize performs the MCP handshake.
+// initialize performs the handshake of MCP up to 2025-11-25.
 func (c *conn) initialize(ctx context.Context) (*initResult, error) {
 	var r initResult
 	err := c.call(ctx, "initialize", map[string]any{
-		"protocolVersion": protocolVersion,
-		"capabilities":    map[string]any{"roots": map[string]any{"listChanged": false}},
-		"clientInfo":      map[string]any{"name": "tego", "version": "0.1.0"},
+		"protocolVersion": legacyVersion,
+		"capabilities":    c.capabilities(),
+		"clientInfo":      map[string]any{"name": "tego", "version": ClientVersion},
 	}, &r)
 	if err != nil {
 		return nil, err
 	}
 	if r.ProtocolVersion == "" {
-		r.ProtocolVersion = protocolVersion
+		r.ProtocolVersion = legacyVersion
 	}
 	if h, ok := c.t.(initHook); ok {
 		h.initialized(r.ProtocolVersion)

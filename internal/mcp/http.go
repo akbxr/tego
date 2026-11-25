@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -78,6 +79,7 @@ type httpTransport struct {
 	mu      sync.Mutex
 	session string
 	version string
+	modern  bool // 2026-07-28: no session, each request says what it is in headers
 }
 
 func newHTTPTransport(c *conn, cfg ServerConfig) *httpTransport {
@@ -89,9 +91,26 @@ func newHTTPTransport(c *conn, cfg ServerConfig) *httpTransport {
 
 func (t *httpTransport) kind() string { return "http" }
 
+func (t *httpTransport) setModern(on bool) {
+	t.mu.Lock()
+	t.modern = on
+	t.mu.Unlock()
+}
+
+func (t *httpTransport) isModern() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.modern
+}
+
 func (t *httpTransport) sessionHeaders(req *http.Request) {
 	setHeaders(req, t.headers)
 	t.mu.Lock()
+	if t.modern {
+		req.Header.Set("MCP-Protocol-Version", modernVersion)
+		t.mu.Unlock()
+		return
+	}
 	if t.session != "" {
 		req.Header.Set("Mcp-Session-Id", t.session)
 	}
@@ -107,6 +126,16 @@ func (t *httpTransport) send(ctx context.Context, msg []byte, id int64) error {
 		return err
 	}
 	t.sessionHeaders(req)
+	modern := t.isModern()
+	if ri := requestInfo(ctx); modern && ri != nil {
+		req.Header.Set("Mcp-Method", ri.method)
+		if ri.name != "" {
+			req.Header.Set("Mcp-Name", headerValue(ri.name))
+		}
+		for k, v := range ri.params {
+			req.Header.Set(k, v)
+		}
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	resp, err := httpClient.Do(req)
@@ -114,6 +143,19 @@ func (t *httpTransport) send(ctx context.Context, msg []byte, id int64) error {
 		return err
 	}
 	defer resp.Body.Close()
+	if modern && resp.StatusCode >= 400 && id != 0 {
+		// A modern server answers a refused request with a JSON-RPC error
+		// in the body (400 -32022, 404 -32601): the caller gets that.
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		var m message
+		if json.Unmarshal(body, &m) == nil && m.Error != nil && len(m.ID) > 0 {
+			t.c.handle(body)
+			if !t.c.hasPending(id) {
+				return nil
+			}
+		}
+		return &statusError{code: resp.StatusCode, body: string(body)}
+	}
 	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
 		t.mu.Lock()
 		t.session = sid

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,6 +36,9 @@ type Status struct {
 	Tools                       int
 	Project                     bool   // from the project's config: runs once trusted
 	Source                      string // the config file it came from
+	Protocol                    string // the MCP version it speaks ("" before it ran)
+	Tasks                       bool   // it may run calls as tasks
+	Instructions                int    // the length of its instructions to the model
 }
 
 // Manager owns the connections to all configured MCP servers.
@@ -51,6 +55,7 @@ type Manager struct {
 	cacheDir    string
 	home        string     // Options.Home: where the trust is kept
 	trustMu     sync.Mutex // one Trust at a time
+	elicit      Elicitor   // Options.Elicit
 
 	launchMu   sync.Mutex
 	connecting int           // connect attempts not finished
@@ -62,7 +67,8 @@ type toolInfo struct {
 	remote   string
 	desc     string
 	schema   json.RawMessage
-	readOnly bool // the server's readOnlyHint annotation
+	readOnly bool          // the server's readOnlyHint annotation
+	headers  []paramHeader // arguments its HTTP requests mirror in headers (modern)
 }
 
 type server struct {
@@ -82,6 +88,26 @@ type server struct {
 	list      []toolInfo
 	inflight  int       // calls running
 	lastUsed  time.Time // when the latest call ended, or it started
+
+	// What its handshake said, kept (and cached) while it doesn't run.
+	version      string
+	instructions string
+	tasks        bool
+	// noProbe: it ignored server/discover or died at it; initialize it
+	// right away.
+	noProbe bool
+}
+
+// maxInstructions caps a server's instructions to the model.
+const maxInstructions = 4096
+
+// learned keeps what h said of s; s.mu is held.
+func (s *server) learned(h *handshake) {
+	if h == nil {
+		return
+	}
+	s.version, s.tasks = h.version, h.tasks
+	s.instructions = truncate(strings.TrimSpace(h.instructions), maxInstructions)
 }
 
 // Start connects to all enabled servers concurrently in the background and
@@ -97,7 +123,7 @@ func Start(cfgs []ServerConfig, cwd, logDir string) *Manager {
 // tools until their config file is trusted in Home (see Trust).
 func StartWith(cfgs []ServerConfig, cwd, logDir string, o Options) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
-	m := &Manager{cwd: cwd, logDir: logDir, ctx: ctx, cancel: cancel, idleAfter: o.IdleAfter, cacheDir: o.CacheDir, home: o.Home}
+	m := &Manager{cwd: cwd, logDir: logDir, ctx: ctx, cancel: cancel, idleAfter: o.IdleAfter, cacheDir: o.CacheDir, home: o.Home, elicit: o.Elicit}
 	m.snap.Store(&[]tools.Tool{})
 	m.servers = make([]*server, len(cfgs))
 	now := time.Now()
@@ -210,7 +236,7 @@ func (m *Manager) Status() []Status {
 	for i, s := range m.servers {
 		s.mu.Lock()
 		out[i] = Status{Name: s.cfg.Name, Transport: s.transport, State: s.state, Err: s.err, Tools: len(s.list),
-			Project: s.cfg.Project, Source: s.cfg.Source}
+			Project: s.cfg.Project, Source: s.cfg.Source, Protocol: s.version, Tasks: s.tasks, Instructions: len(s.instructions)}
 		s.mu.Unlock()
 	}
 	return out
@@ -270,14 +296,14 @@ func (m *Manager) rebuild() {
 	names := uniqueNames(keys)
 	out := make([]tools.Tool, len(keys))
 	for i, ti := range infos {
-		out[i] = &mcpTool{s: owner[i], remote: ti.remote, readOnly: ti.readOnly,
+		out[i] = &mcpTool{s: owner[i], remote: ti.remote, readOnly: ti.readOnly, headers: ti.headers,
 			def: llm.Tool{Name: names[i], Description: ti.desc, Schema: ti.schema}}
 	}
 	m.snap.Store(&out)
 }
 
 func (s *server) connect(ctx context.Context) {
-	c, kind, err := s.open(ctx)
+	c, h, kind, err := s.open(ctx)
 	var list []toolInfo
 	if err == nil {
 		list, err = s.fetch(ctx, c)
@@ -286,6 +312,7 @@ func (s *server) connect(ctx context.Context) {
 	if kind != "" {
 		s.transport = kind
 	}
+	s.learned(h)
 	if s.closed {
 		s.mu.Unlock()
 		if c != nil {
@@ -312,26 +339,71 @@ func (s *server) connect(ctx context.Context) {
 
 // open establishes the transport and performs the handshake, falling back
 // from streamable HTTP to legacy SSE when the server rejects the POST.
-func (s *server) open(ctx context.Context) (*conn, string, error) {
+func (s *server) open(ctx context.Context) (*conn, *handshake, string, error) {
 	switch s.cfg.Type {
 	case "stdio", "sse":
-		c, err := s.dial(ctx, s.cfg.Type)
-		return c, s.cfg.Type, err
+		c, h, err := s.dial(ctx, s.cfg.Type)
+		return c, h, s.cfg.Type, err
 	case "http":
-		c, err := s.dial(ctx, "http")
+		c, h, err := s.dial(ctx, "http")
 		if err != nil && fallbackToSSE(err) {
-			c2, err2 := s.dial(ctx, "sse")
+			c2, h2, err2 := s.dial(ctx, "sse")
 			if err2 == nil {
-				return c2, "sse", nil
+				return c2, h2, "sse", nil
 			}
-			return nil, "http", fmt.Errorf("%w (legacy SSE fallback: %v)", err, err2)
+			return nil, nil, "http", fmt.Errorf("%w (legacy SSE fallback: %v)", err, err2)
 		}
-		return c, "http", err
+		return c, h, "http", err
 	}
-	return nil, "", fmt.Errorf("unknown transport type %q", s.cfg.Type)
+	return nil, nil, "", fmt.Errorf("unknown transport type %q", s.cfg.Type)
 }
 
-func (s *server) dial(ctx context.Context, kind string) (*conn, error) {
+// dial connects and performs the handshake: server/discover first (MCP
+// 2026-07-28), initialize for a server that doesn't take it. A local server
+// that died at discover is started again and initialized.
+func (s *server) dial(ctx context.Context, kind string) (*conn, *handshake, error) {
+	ictx, cancel := context.WithTimeout(ctx, initTimeout)
+	defer cancel()
+	s.mu.Lock()
+	probe := kind != "sse" && !s.noProbe
+	s.mu.Unlock()
+	for {
+		c, err := s.start(ictx, kind)
+		if err != nil {
+			return nil, nil, timeoutErr(ctx, err)
+		}
+		s.dirty.Store(false)
+		began := time.Now()
+		h, ignored, err := c.handshake(ictx, probe)
+		if errors.Is(err, errNoProbe) && kind == "stdio" {
+			c.close()
+			s.mu.Lock()
+			s.noProbe = true
+			s.mu.Unlock()
+			probe = false
+			continue
+		}
+		if err != nil {
+			c.close()
+			return nil, nil, timeoutErr(ctx, err)
+		}
+		if ignored && time.Since(began) < discoverWait+2*time.Second {
+			// It answered initialize at once: it was up, and let discover
+			// go unanswered. Not asked again.
+			s.mu.Lock()
+			s.noProbe = true
+			s.mu.Unlock()
+		}
+		c.tasks.Store(h.tasks)
+		if c.modern.Load() && h.listChanged {
+			go c.listen()
+		}
+		return c, h, nil
+	}
+}
+
+// start opens a connection of kind to s, without a handshake.
+func (s *server) start(ctx context.Context, kind string) (*conn, error) {
 	c := newConn()
 	c.serve = s.serve
 	c.notify = func(method string, _ json.RawMessage) {
@@ -340,9 +412,7 @@ func (s *server) dial(ctx context.Context, kind string) (*conn, error) {
 		}
 	}
 	c.onFail = func(err error) { s.lost(c, err) }
-
-	ictx, cancel := context.WithTimeout(ctx, initTimeout)
-	defer cancel()
+	c.elicit = s.m.elicit != nil
 	switch kind {
 	case "stdio":
 		if _, err := startStdio(c, s.cfg, s.m.cwd, s.m.logDir); err != nil {
@@ -354,14 +424,11 @@ func (s *server) dial(ctx context.Context, kind string) (*conn, error) {
 		}
 		if kind == "http" {
 			newHTTPTransport(c, s.cfg)
-		} else if _, err := dialSSE(ictx, c, s.cfg); err != nil {
-			return nil, timeoutErr(ctx, err)
+		} else if _, err := dialSSE(ctx, c, s.cfg); err != nil {
+			return nil, err
 		}
-	}
-	s.dirty.Store(false)
-	if _, err := c.initialize(ictx); err != nil {
-		c.close()
-		return nil, timeoutErr(ctx, err)
+	default:
+		return nil, fmt.Errorf("unknown transport type %q", kind)
 	}
 	return c, nil
 }
@@ -384,13 +451,22 @@ func (s *server) fetch(ctx context.Context, c *conn) ([]toolInfo, error) {
 		}
 		return nil, fmt.Errorf("tools/list: %w", err)
 	}
+	mirror := c.modern.Load() && c.t.kind() == "http"
 	out := make([]toolInfo, 0, len(rts))
 	for i := range rts {
 		if rts[i].Name == "" {
 			continue
 		}
-		out = append(out, toolInfo{remote: rts[i].Name, desc: description(&rts[i]), schema: normalizeSchema(rts[i].InputSchema),
-			readOnly: rts[i].Annotations.ReadOnlyHint})
+		ti := toolInfo{remote: rts[i].Name, desc: description(&rts[i]), schema: normalizeSchema(rts[i].InputSchema),
+			readOnly: rts[i].Annotations.ReadOnlyHint}
+		if mirror {
+			hs, ok := paramHeaders(ti.schema)
+			if !ok {
+				continue // a header it asks for can't be sent: the spec leaves the tool out
+			}
+			ti.headers = hs
+		}
+		out = append(out, ti)
 	}
 	return out, nil
 }
@@ -465,14 +541,29 @@ func (s *server) currentConn() (*conn, error) {
 	return nil, s.stateErr()
 }
 
-// serve answers server->client requests.
-func (s *server) serve(method string, _ json.RawMessage) (any, *rpcError) {
+// serve answers server->client requests (up to MCP 2025-11-25; a modern
+// server asks through input_required instead).
+func (s *server) serve(method string, params json.RawMessage) (any, *rpcError) {
 	switch method {
 	case "ping":
 		return struct{}{}, nil
 	case "roots/list":
-		u := url.URL{Scheme: "file", Path: s.m.cwd}
-		return map[string]any{"roots": []map[string]string{{"uri": u.String(), "name": filepath.Base(s.m.cwd)}}}, nil
+		return s.roots(), nil
+	case "elicitation/create":
+		if s.m.elicit == nil {
+			break
+		}
+		r, err := s.elicit(s.m.ctx, params)
+		if err != nil {
+			return nil, &rpcError{Code: -32602, Message: err.Error()}
+		}
+		return r, nil
 	}
 	return nil, &rpcError{Code: -32601, Message: "method not found: " + method}
+}
+
+// roots is roots/list's answer: the session's folder.
+func (s *server) roots() map[string]any {
+	u := url.URL{Scheme: "file", Path: s.m.cwd}
+	return map[string]any{"roots": []map[string]string{{"uri": u.String(), "name": filepath.Base(s.m.cwd)}}}
 }

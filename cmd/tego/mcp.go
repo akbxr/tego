@@ -24,7 +24,11 @@ func (a *app) startMCP() string {
 	if err != nil {
 		a.ui.Errorf("mcp config: %v", err)
 	}
-	a.mcp = mcp.StartWith(cfgs, a.cwd, filepath.Join(a.cfg.Dir, "logs"), mcpOptions(a.cfg))
+	opts := mcpOptions(a.cfg)
+	if a.interactive {
+		opts.Elicit = a.elicit // tego -p has nobody to ask: servers aren't told it can
+	}
+	a.mcp = mcp.StartWith(cfgs, a.cwd, filepath.Join(a.cfg.Dir, "logs"), opts)
 	a.ag.Dynamic = a.mcp.Tools
 	a.ag.MCPTools = a.cfg.MCPTools
 	untrusted := untrustedMCP(a.mcp)
@@ -37,6 +41,22 @@ func (a *app) startMCP() string {
 	}
 	return fmt.Sprintf("this project has %s not trusted yet (%s): /mcp shows them, /mcp trust runs them",
 		plural(len(untrusted), "MCP server"), strings.Join(untrusted, ", "))
+}
+
+// mcpDetail says what a server's handshake did: the protocol, tasks, and
+// instructions for the model.
+func mcpDetail(s mcp.Status) string {
+	var parts []string
+	if s.Protocol != "" {
+		parts = append(parts, "MCP "+s.Protocol)
+	}
+	if s.Tasks {
+		parts = append(parts, "tasks")
+	}
+	if s.Instructions > 0 {
+		parts = append(parts, "instructions")
+	}
+	return strings.Join(parts, " · ")
 }
 
 func untrustedMCP(m *mcp.Manager) []string {
@@ -110,6 +130,9 @@ func (a *app) mcpCommand(args string) {
 		line := fmt.Sprintf("  %s●%s %-20s %s%-10s%s %-6s", color, c.reset, s.Name, color, s.State, c.reset, s.Transport)
 		if s.State == mcp.StateConnected || s.State == mcp.StateIdle {
 			line += fmt.Sprintf(" %d tools", s.Tools)
+			if d := mcpDetail(s); d != "" {
+				line += c.dim + " · " + d + c.reset
+			}
 		}
 		if s.State == mcp.StateIdle && s.Err == "" {
 			line += c.dim + "  not running; starts at its next call" + c.reset

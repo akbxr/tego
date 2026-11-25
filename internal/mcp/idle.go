@@ -32,6 +32,9 @@ type Options struct {
 	// Home is tego's home: its trusted-mcp.json says which project configs
 	// are trusted ("": none is, and Trust keeps no record).
 	Home string
+	// Elicit asks the user what a server asks in the middle of a call; nil
+	// (tego -p): servers are not told tego can, and don't ask.
+	Elicit Elicitor
 }
 
 // toolCacheMaxAge is how long a cached tool list lets a server start on
@@ -53,6 +56,12 @@ type cachedTool struct {
 type toolCache struct {
 	Saved int64        `json:"saved"` // unix seconds
 	Tools []cachedTool `json:"tools"`
+	// What the server's handshake said: its instructions are the model's
+	// before it runs again; NoProbe skips server/discover for it.
+	Version      string `json:"version,omitempty"`
+	Instructions string `json:"instructions,omitempty"`
+	Tasks        bool   `json:"tasks,omitempty"`
+	NoProbe      bool   `json:"no_probe,omitempty"`
 }
 
 var unsafeFile = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
@@ -80,6 +89,8 @@ func (s *server) cachePath() string {
 	return filepath.Join(s.m.cacheDir, unsafeFile.ReplaceAllString(s.cfg.Name, "_")+"-"+hex.EncodeToString(h.Sum(nil)[:8])+".json")
 }
 
+// loadCache reads s's cached tool list, and what its handshake said into
+// s; s.mu is held, or s not shared yet.
 func (s *server) loadCache(now time.Time) ([]toolInfo, bool) {
 	path := s.cachePath()
 	if path == "" {
@@ -97,6 +108,7 @@ func (s *server) loadCache(now time.Time) ([]toolInfo, bool) {
 	for i, t := range c.Tools {
 		list[i] = toolInfo{remote: t.Name, desc: t.Description, schema: t.Schema, readOnly: t.ReadOnly}
 	}
+	s.version, s.instructions, s.tasks, s.noProbe = c.Version, c.Instructions, c.Tasks, c.NoProbe
 	return list, true
 }
 
@@ -106,6 +118,9 @@ func (s *server) saveCache(list []toolInfo) {
 		return
 	}
 	c := toolCache{Saved: time.Now().Unix(), Tools: make([]cachedTool, len(list))}
+	s.mu.Lock()
+	c.Version, c.Instructions, c.Tasks, c.NoProbe = s.version, s.instructions, s.tasks, s.noProbe
+	s.mu.Unlock()
 	for i, t := range list {
 		c.Tools[i] = cachedTool{Name: t.remote, Description: t.desc, Schema: t.schema, ReadOnly: t.readOnly}
 	}
@@ -165,9 +180,10 @@ func (s *server) wake() error {
 		return nil // started by another call meanwhile, or closed
 	}
 	s.mu.Unlock()
-	c, err := s.dial(s.m.ctx, "stdio") // the session's context: the server outlives this call
+	c, h, err := s.dial(s.m.ctx, "stdio") // the session's context: the server outlives this call
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.learned(h)
 	if err != nil {
 		s.err = "starting it: " + err.Error() // still idle: the next call tries again
 		return fmt.Errorf("mcp server %q: starting it: %w", s.cfg.Name, err)

@@ -24,6 +24,34 @@ type ClientCapabilities struct {
 	// Subagents, when present, says the client shows subagents as sessions
 	// of their own (the subagent sessions RFD).
 	Subagents *struct{} `json:"subagents,omitempty"`
+	// Elicitation says which kinds of elicitation/create the client shows.
+	Elicitation *ElicitationCapabilities `json:"elicitation,omitempty"`
+}
+
+// ElicitationCapabilities: a mode is supported when present.
+type ElicitationCapabilities struct {
+	Form *struct{} `json:"form,omitempty"`
+	URL  *struct{} `json:"url,omitempty"`
+}
+
+// ElicitationRequest is elicitation/create's params: a form (Mode "form",
+// RequestedSchema) or a page to open (Mode "url", URL), scoped to a session
+// and maybe one of its tool calls.
+type ElicitationRequest struct {
+	SessionID       string          `json:"sessionId,omitempty"`
+	ToolCallID      string          `json:"toolCallId,omitempty"`
+	Mode            string          `json:"mode"`
+	Message         string          `json:"message"`
+	RequestedSchema json.RawMessage `json:"requestedSchema,omitempty"`
+	ElicitationID   string          `json:"elicitationId,omitempty"`
+	URL             string          `json:"url,omitempty"`
+}
+
+// ElicitationResponse is the user's answer: accept (Content for a form),
+// decline or cancel.
+type ElicitationResponse struct {
+	Action  string         `json:"action"`
+	Content map[string]any `json:"content,omitempty"`
 }
 
 type FileSystemCapabilities struct {
