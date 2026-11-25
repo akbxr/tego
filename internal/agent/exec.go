@@ -272,6 +272,7 @@ func (a *Agent) run(ctx context.Context, t tools.Tool, call llm.Block) (res llm.
 	a.callRunning(call)
 	ctx = tools.WithCallID(ctx, call.ID)
 	ctx = tools.WithWake(ctx, a.wakeChan()) // a subagent's own: the parent's wakes only the parent's waits
+	ctx = tools.WithJobs(ctx, a.Jobs)       // nil in a subagent, whose ctx comes from its parent's call
 	res = llm.Block{Type: llm.BlockToolResult, ToolUseID: call.ID}
 	if call.Name == "read" {
 		if note := a.unchangedRead(call); note != "" {

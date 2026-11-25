@@ -73,7 +73,10 @@ type Agent struct {
 	Env func() string
 	// Notices reports events the model should know about before its next
 	// request (a background shell ended); "" when there are none.
-	Notices  func() string
+	Notices func() string
+	// Jobs lets tools run long work in the background (an MCP server's
+	// task); nil, as in subagents: their calls wait for it.
+	Jobs     tools.Jobs
 	Subagent bool // a task subagent (labelled as such to the provider)
 	// Plan, when set and true, is plan mode (plan.go): shared with the UI,
 	// which toggles it between turns, and with subagents.

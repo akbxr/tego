@@ -20,6 +20,7 @@ func (a *app) setupBackground(task *agent.TaskTool) {
 	a.bgDone = make(chan struct{}, 1)
 	a.footerBG.Store(a.bg)
 	task.Background = a.bg
+	a.ag.Jobs = a.bg.Jobs(a.ag) // an MCP server's long task goes on in the background too
 	shells := a.ag.Notices
 	a.ag.Notices = func() string {
 		var notes []string

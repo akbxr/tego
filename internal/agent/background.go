@@ -42,6 +42,7 @@ type bgTask struct {
 	parent *Agent
 	cancel context.CancelFunc
 	unlink func() bool // ends Close's hold on one a task call ran first (adopt)
+	job    bool        // a tool's work (StartJob), not a subagent: it takes no messages
 
 	ended     bool
 	delivered bool // its report was handed to the session
@@ -98,6 +99,81 @@ func (b *Background) newIDLocked(parent *Agent) string {
 		id = fmt.Sprintf("t%d", b.next)
 	}
 	return id
+}
+
+// Jobs lets parent's tools run work as background tasks (StartJob).
+func (b *Background) Jobs(parent *Agent) tools.Jobs { return bgJobs{b, parent} }
+
+type bgJobs struct {
+	b      *Background
+	parent *Agent
+}
+
+func (j bgJobs) Start(name, desc string, run func(ctx context.Context, progress func(string)) (string, error)) string {
+	return j.b.StartJob(j.parent, name, desc, run)
+}
+
+// jobLogMax caps the progress lines kept of a job.
+const jobLogMax = 50
+
+// StartJob runs a tool's work (an MCP server's task) as a background task
+// of parent's session and returns its id: task_status and /tasks show it,
+// and its report comes as a background subagent's does. progress sets
+// what it is doing (its last line).
+func (b *Background) StartJob(parent *Agent, name, desc string, run func(ctx context.Context, progress func(string)) (string, error)) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.initLocked()
+	id := b.newIDLocked(parent)
+	st := &SubagentStatus{Name: name, Prompt: desc, ID: id, State: SubRunning, Started: time.Now()}
+	ctx, cancel := context.WithCancel(b.ctx)
+	bt := &bgTask{id: id, prompt: desc, st: st, parent: parent, cancel: cancel, job: true}
+	b.tasks = append(b.tasks, bt)
+	b.wg.Add(1)
+	go func() {
+		defer b.wg.Done()
+		defer cancel()
+		progress := func(s string) {
+			s = strings.TrimSpace(s)
+			if s == "" {
+				return
+			}
+			parent.setSub(st, func(st *SubagentStatus) {
+				st.Last = s
+				if st.Log = append(st.Log, s); len(st.Log) > jobLogMax {
+					st.Log = st.Log[len(st.Log)-jobLogMax:]
+				}
+			})
+		}
+		report, err := run(ctx, progress)
+		status, state := "done", SubDone
+		switch {
+		case err != nil && ctx.Err() != nil:
+			status, state = "cancelled", SubFailed
+		case err != nil:
+			status, state = "failed: "+firstSentence(err.Error(), 200), SubFailed
+		}
+		if err != nil {
+			report = strings.TrimSpace(report + "\n" + err.Error())
+		}
+		parent.setSub(st, func(st *SubagentStatus) {
+			st.State, st.Ended, st.Text = state, time.Now(), firstSentence(report, 2000)
+			if err != nil {
+				st.Err = err.Error()
+			}
+		})
+		b.finish(bt, status, report)
+	}()
+	b.pruneLocked()
+	return id
+}
+
+// isJob reports whether id is a tool's work (StartJob).
+func (b *Background) isJob(id string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	bt := b.findLocked(id)
+	return bt != nil && bt.job
 }
 
 // adopt makes a subagent a task call runs a background task, once a
@@ -158,7 +234,11 @@ func (bt *bgTask) section() string {
 	if r := []rune(prompt); len(r) > 200 {
 		prompt = string(r[:200]) + "…"
 	}
-	s := fmt.Sprintf("## %s %s (%s)\nTask: %s", bt.id, bt.st.Name, bt.status, prompt)
+	label := "Task"
+	if bt.job {
+		label = "Call"
+	}
+	s := fmt.Sprintf("## %s %s (%s)\n%s: %s", bt.id, bt.st.Name, bt.status, label, prompt)
 	if bt.report != "" {
 		s += "\n\n" + bt.report
 	}
@@ -184,12 +264,20 @@ func (b *Background) Take() string {
 		return ""
 	}
 	b.mu.Lock()
+	jobs := false
+	for _, bt := range b.tasks {
+		jobs = jobs || bt.job && bt.ended && !bt.delivered && !bt.dropped
+	}
 	reports := b.takeLocked()
 	b.mu.Unlock()
 	if len(reports) == 0 {
 		return ""
 	}
-	return "Background tasks you started ended. Their reports (from subagents, not the user):\n\n" + strings.Join(reports, "\n\n")
+	from := "from subagents, not the user"
+	if jobs {
+		from = "from subagents and MCP servers, not the user"
+	}
+	return "Background tasks you started ended. Their reports (" + from + "):\n\n" + strings.Join(reports, "\n\n")
 }
 
 // Notice is Take for Agent.Notices.
@@ -444,6 +532,11 @@ func (t *TaskStatusTool) Run(ctx context.Context, input json.RawMessage) (string
 	if msg := strings.TrimSpace(in.Message); msg != "" {
 		if len(in.IDs) == 0 || in.Cancel {
 			return "", errors.New("message needs ids, and goes without cancel")
+		}
+		for _, id := range in.IDs {
+			if b.isJob(id) {
+				return "", fmt.Errorf("%s is a tool's work (an MCP server's task), which takes no messages", id)
+			}
 		}
 		sent, ended, unknown := b.Send(in.IDs, msg)
 		if len(unknown) > 0 {
