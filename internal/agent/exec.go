@@ -311,6 +311,9 @@ func (a *Agent) run(ctx context.Context, t tools.Tool, call llm.Block) (res llm.
 	if out == "" {
 		out = "(no output)"
 	}
+	if note := a.serverNotes(t); note != "" { // an MCP server's instructions, the first time it is used
+		out += "\n\n" + note
+	}
 	res.Content = capResult(out)
 	return res
 }

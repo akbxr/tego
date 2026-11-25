@@ -59,6 +59,7 @@ func (a *Agent) activate(names ...string) {
 // activateFromHistory keeps MCP tools the conversation already used loaded
 // (resumed or branched sessions).
 func (a *Agent) activateFromHistory(msgs []llm.Message) {
+	a.instructedFromHistory(msgs)
 	a.toolMu.Lock()
 	a.activated = nil
 	a.toolMu.Unlock()
@@ -143,11 +144,17 @@ func (t *toolSearch) RunRefs(_ context.Context, input json.RawMessage) (string, 
 	q := strings.ToLower(strings.TrimSpace(in.Query))
 
 	// A server name lists its tools without loading them all.
-	var listed []string
+	var (
+		listed []string
+		first  tools.Tool
+	)
 	for _, tl := range catalog {
 		d := tl.Def()
 		if mcpServer(d.Name) == q {
 			listed = append(listed, fmt.Sprintf("- %s: %s", d.Name, firstSentence(d.Description, 120)))
+			if first == nil {
+				first = tl
+			}
 		}
 	}
 	if len(listed) > 0 {
@@ -155,11 +162,17 @@ func (t *toolSearch) RunRefs(_ context.Context, input json.RawMessage) (string, 
 		if t.a.defersTools() {
 			how = "search for the ones you need by keyword or exact name to load them"
 		}
-		return fmt.Sprintf("Server %s has %d tools (not loaded; %s):\n%s", q, len(listed), how, strings.Join(listed, "\n")), nil, nil
+		out := fmt.Sprintf("Server %s has %d tools (not loaded; %s):\n%s", q, len(listed), how, strings.Join(listed, "\n"))
+		if note := t.a.serverNotes(first); note != "" {
+			out += "\n\n" + note
+		}
+		return out, nil, nil
 	}
 
 	var hits []tools.Tool
+	selected := false
 	if sel, ok := strings.CutPrefix(q, "select:"); ok {
+		selected = true
 		// Claude Code's syntax for loading tools by exact name, which
 		// Claude models use unprompted: "select:a,b".
 		want := map[string]bool{}
@@ -187,6 +200,21 @@ func (t *toolSearch) RunRefs(_ context.Context, input json.RawMessage) (string, 
 		d := tl.Def()
 		names = append(names, d.Name)
 		fmt.Fprintf(&b, "\n## %s\n%s\n%s\n", d.Name, firstSentence(d.Description, 400), paramSummary(d.Schema))
+	}
+	// The instructions of the servers the model picked, or of the best
+	// match's: a keyword search shows the tools of servers it won't use.
+	noted := hits[:1]
+	if selected {
+		noted = hits
+	}
+	if note := t.a.serverNotes(noted...); note != "" {
+		if t.a.defersTools() {
+			// The references replace this text, and may not share the
+			// result with text: the note goes beside it.
+			t.a.holdNote(note)
+		} else {
+			b.WriteString("\n" + note + "\n")
+		}
 	}
 	t.a.activate(names...)
 	return b.String(), names, nil

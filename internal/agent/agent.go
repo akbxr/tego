@@ -182,8 +182,10 @@ type Agent struct {
 	audioMu    sync.Mutex
 	audioTexts map[[32]byte]string // audio blocks as transcripts, for models that can't hear (audio.go)
 
-	toolMu    sync.Mutex
-	activated map[string]bool // deferred MCP tools loaded into the request
+	toolMu     sync.Mutex
+	activated  map[string]bool // deferred MCP tools loaded into the request
+	instructed map[string]bool // MCP servers whose instructions the conversation has (mcpnotes.go)
+	heldNotes  []string        // their instructions for the next request, beside tool references
 
 	holdMu sync.Mutex
 	hold   <-chan struct{} // calls that may change files wait for it to close (hold.go)
@@ -402,6 +404,9 @@ func (a *Agent) loop(ctx context.Context) error {
 			if n := a.Notices(); n != "" {
 				a.remind(n)
 			}
+		}
+		if n := a.takeNotes(); n != "" {
+			a.remind(n)
 		}
 		// Checked before every request, including mid-turn between tool
 		// rounds, using the latest usage plus what was added since.
